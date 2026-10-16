@@ -1,0 +1,424 @@
+// Unit tests for the workspace milestone driver (design sections 6.6-6.13).
+#include <gtest/gtest.h>
+
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include <unistd.h>
+
+#include "cf/orch/driver.hpp"
+
+namespace {
+
+using cf::orch::AgentRunner;
+using cf::orch::AgentTurnOutcome;
+using cf::orch::AgentTurnRequest;
+using cf::orch::DriverConfig;
+using cf::orch::GateOutcome;
+using cf::orch::MilestoneEvent;
+using cf::orch::MilestoneLoop;
+using cf::orch::MilestonePhase;
+using cf::orch::MilestoneState;
+using cf::orch::StateMachine;
+using cf::orch::TurnResult;
+using cf::orch::WorkspaceDriver;
+
+std::filesystem::path make_temp_dir() {
+  static std::atomic<int> counter{0};
+  const auto dir = std::filesystem::temp_directory_path() /
+                   ("cf_driver_test_" + std::to_string(::getpid()) + "_" +
+                    std::to_string(counter.fetch_add(1)));
+  std::filesystem::create_directories(dir);
+  return dir;
+}
+
+void write_file(const std::filesystem::path& path, const std::string& content) {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream out(path, std::ios::binary);
+  out << content;
+}
+
+class FakeAgentRunner final : public AgentRunner {
+ public:
+  using TurnFn =
+      std::function<cf::Result<AgentTurnOutcome>(const AgentTurnRequest&)>;
+
+  cf::Result<AgentTurnOutcome> run_turn(const AgentTurnRequest& request) override {
+    phases.push_back(request.phase);
+    if (on_turn) {
+      return on_turn(request);
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    return outcome;
+  }
+
+  cf::Result<AgentTurnOutcome> run_system_validation(
+      const AgentTurnRequest& request) override {
+    if (on_system) {
+      return on_system(request);
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.exit_criteria_met = true;
+    return outcome;
+  }
+
+  TurnFn on_turn;
+  TurnFn on_system;
+  std::vector<MilestonePhase> phases;
+};
+
+const char* kPassingProfile = R"yaml(
+id: test-profile
+image: test-image
+languages:
+  cpp:
+    standard_var: CMAKE_CXX_STANDARD
+    guardrails: { steps: [[true]] }
+    format: { steps: [[true]] }
+build_systems:
+  cmake:
+    steps: [[true]]
+test_frameworks:
+  gtest: { steps: [[true]], languages: [cpp] }
+)yaml";
+
+const char* kFailingBuildProfile = R"yaml(
+id: test-profile
+image: test-image
+languages:
+  cpp:
+    standard_var: CMAKE_CXX_STANDARD
+    guardrails: { steps: [[true]] }
+    format: { steps: [[true]] }
+build_systems:
+  cmake:
+    steps:
+      - [sh, -c, "test ! -f src/bad.cpp"]
+test_frameworks:
+  gtest: { steps: [[true]], languages: [cpp] }
+)yaml";
+
+class DriverTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    dir_ = make_temp_dir();
+    auto created = cf::git::Repository::create(dir_ / "repo", executor_);
+    ASSERT_TRUE(created.has_value()) << created.error().message;
+    repository_ = std::make_unique<cf::git::Repository>(std::move(*created));
+
+    write_file(dir_ / "repo" / "README.md", "initial\n");
+    cf::git::CommitTrailers trailers;
+    trailers.run_id = "R12";
+    trailers.op_id = "op_init";
+    ASSERT_TRUE(
+        repository_->commit_paths(dir_ / "repo", {"README.md"}, "chore: init", trailers)
+            .has_value());
+
+    auto opened = cf::store::RunStore::open(dir_ / "run.db");
+    ASSERT_TRUE(opened.has_value()) << opened.error().message;
+    store_ = std::move(*opened);
+    cf::store::RunRecord run;
+    run.run_id = "R12";
+    run.state = "Executing";
+    run.created_at = cf::store::unix_now();
+    ASSERT_TRUE(store_->create_run(run).has_value());
+
+    plan_.plan_id = "PLAN-X";
+    plan_.product = "Y";
+    plan_.version = "1";
+    cf::plan::MilestoneSpec milestone;
+    milestone.id = "M3";
+    milestone.title = "Registry";
+    milestone.requirements = {"REQ-010"};
+    plan_.milestones.push_back(milestone);
+    plan_.target.language = "cpp";
+    plan_.target.standard = "c++20";
+    plan_.target.build_system = "cmake";
+    plan_.target.test_framework = "gtest";
+    now_ = cf::store::unix_now();
+  }
+
+  void TearDown() override {
+    store_.reset();
+    repository_.reset();
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+
+  DriverConfig config_for(const std::string& profile_yaml) {
+    auto profile = cf::gates::load_profile_string(profile_yaml);
+    EXPECT_TRUE(profile.has_value()) << profile.error().message;
+    DriverConfig config;
+    config.run_id = "R12";
+    config.workspace_root = dir_ / "workspace";
+    config.integration_branch = "cf/R12/integration";
+    config.base_branch = "main";
+    config.profile = profile.has_value() ? *profile : cf::gates::Profile{};
+    config.profile_language = "cpp";
+    config.profile_build_system = "cmake";
+    config.profile_test_framework = "gtest";
+    config.step_timeout = std::chrono::milliseconds(10000);
+    return config;
+  }
+
+  std::filesystem::path dir_;
+  cf::process::LocalProcessExecutor executor_;
+  std::unique_ptr<cf::git::Repository> repository_;
+  std::unique_ptr<cf::store::RunStore> store_;
+  cf::plan::Plan plan_;
+  cf::store::UnixTime now_ = 0;
+};
+
+TEST_F(DriverTest, FullLoopReachesDoneWithRealCommitsAndGates) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    switch (request.phase) {
+      case MilestonePhase::AuthorTests:
+        write_file(std::filesystem::path(request.worktree) / "tests" / "m3_test.cpp",
+                   "test\n");
+        break;
+      case MilestonePhase::Code:
+        write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp",
+                   "int registry() { return 0; }\n");
+        break;
+      case MilestonePhase::Validate: {
+        AgentTurnOutcome outcome;
+        outcome.completed = true;
+        outcome.exit_criteria_met = true;
+        return outcome;
+      }
+      default:
+        break;
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  StateMachine machine(*store_, "R12");
+  ASSERT_TRUE(machine.register_milestone("M3").has_value());
+  ASSERT_TRUE(machine.apply("M3", MilestoneEvent::Start, now_).has_value());
+  MilestoneLoop loop(*store_, machine, driver);
+
+  const auto state = loop.drive("M3", now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, MilestoneState::Done);
+
+  // The review ran (first gate run -> full review) and the QA tests ran.
+  EXPECT_NE(std::find(runner.phases.begin(), runner.phases.end(),
+                      MilestonePhase::Review),
+            runner.phases.end());
+  EXPECT_NE(std::find(runner.phases.begin(), runner.phases.end(),
+                      MilestonePhase::AuthorTests),
+            runner.phases.end());
+
+  // The integration branch carries the merged work.
+  const auto integration = driver.integration_worktree();
+  EXPECT_TRUE(std::filesystem::exists(integration / "src" / "m3.cpp"));
+  EXPECT_TRUE(std::filesystem::exists(integration / "tests" / "m3_test.cpp"));
+
+  // Commits carry the CF trailers on the milestone branch.
+  auto commit = repository_->find_commit_by_trailer("cf-local/R12/M3/coder",
+                                                    "CF-Milestone", "M3");
+  ASSERT_TRUE(commit.has_value()) << commit.error().message;
+
+  // Gate results are recorded for the gated commit.
+  auto gates = store_->latest_gate_results("R12", "M3");
+  ASSERT_TRUE(gates.has_value()) << gates.error().message;
+  EXPECT_FALSE(gates->empty());
+  for (const auto& row : *gates) {
+    EXPECT_TRUE(row.passed) << row.gate;
+  }
+
+  const auto stored = store_->get_milestone("R12", "M3");
+  ASSERT_TRUE(stored.has_value());
+  EXPECT_EQ(stored->state, "Done");
+  EXPECT_EQ(stored->iterations, 1u);
+}
+
+TEST_F(DriverTest, GateFailureLeadsToFixAndSecondIteration) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    const std::filesystem::path worktree(request.worktree);
+    switch (request.phase) {
+      case MilestonePhase::AuthorTests:
+        write_file(worktree / "tests" / "m3_test.cpp", "test\n");
+        break;
+      case MilestonePhase::Code:
+        write_file(worktree / "src" / "m3.cpp", "v1\n");
+        write_file(worktree / "src" / "bad.cpp", "broken\n");
+        break;
+      case MilestonePhase::Fix:
+        std::filesystem::remove(worktree / "src" / "bad.cpp");
+        write_file(worktree / "src" / "m3.cpp", "v2\n");
+        break;
+      case MilestonePhase::Validate: {
+        AgentTurnOutcome outcome;
+        outcome.completed = true;
+        outcome.exit_criteria_met = true;
+        return outcome;
+      }
+      default:
+        break;
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    return outcome;
+  };
+
+  WorkspaceDriver driver(plan_, config_for(kFailingBuildProfile), *repository_,
+                         executor_, runner, store_.get());
+  StateMachine machine(*store_, "R12");
+  ASSERT_TRUE(machine.register_milestone("M3").has_value());
+  ASSERT_TRUE(machine.apply("M3", MilestoneEvent::Start, now_).has_value());
+  MilestoneLoop loop(*store_, machine, driver);
+
+  const auto state = loop.drive("M3", now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, MilestoneState::Done);
+  EXPECT_NE(std::find(runner.phases.begin(), runner.phases.end(), MilestonePhase::Fix),
+            runner.phases.end());
+
+  const auto stored = store_->get_milestone("R12", "M3");
+  ASSERT_TRUE(stored.has_value());
+  EXPECT_EQ(stored->iterations, 2u);
+}
+
+TEST_F(DriverTest, SnapshotWithoutChangesFailsTheTurn) {
+  FakeAgentRunner runner;  // completes but writes nothing
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  const TurnResult result = driver.run(MilestonePhase::Code, "M3");
+  EXPECT_FALSE(result.completed);
+  EXPECT_FALSE(result.detail.empty());
+}
+
+TEST_F(DriverTest, ReviewChangesRequestedPropagates) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    if (request.phase == MilestonePhase::Review) {
+      outcome.changes_requested = true;
+    }
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  const TurnResult result = driver.run(MilestonePhase::Review, "M3");
+  EXPECT_TRUE(result.completed);
+  EXPECT_TRUE(result.changes_requested);
+}
+
+TEST_F(DriverTest, SystemValidationDelegatesToTheRunner) {
+  FakeAgentRunner runner;
+  runner.on_system = [](const AgentTurnRequest&) -> cf::Result<AgentTurnOutcome> {
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.exit_criteria_met = false;
+    outcome.detail = "system defects found";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  const auto validation = driver.validate_system();
+  EXPECT_TRUE(validation.completed);
+  EXPECT_FALSE(validation.passed);
+  EXPECT_EQ(validation.detail, "system defects found");
+}
+
+TEST_F(DriverTest, IntegrateConflictIsReported) {
+  FakeAgentRunner runner;
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+
+  // Integration branch has its own version of the file.
+  const auto integration = driver.integration_worktree();
+  ASSERT_TRUE(repository_
+                  ->create_worktree(integration, "cf/R12/integration", "main")
+                  .has_value());
+  write_file(integration / "conflict.cpp", "integration\n");
+  cf::git::CommitTrailers integration_trailers;
+  integration_trailers.op_id = "op_int";
+  ASSERT_TRUE(repository_
+                  ->commit_paths(integration, {"conflict.cpp"}, "feat: integration",
+                                 integration_trailers)
+                  .has_value());
+
+  // The milestone branch edits the same file differently.
+  const auto coder = driver.worktree_for("M3", "coder");
+  ASSERT_TRUE(repository_
+                  ->create_worktree(coder, "cf-local/R12/M3/coder", "main")
+                  .has_value());
+  write_file(coder / "conflict.cpp", "coder\n");
+  cf::git::CommitTrailers coder_trailers;
+  coder_trailers.run_id = "R12";
+  coder_trailers.milestone_id = "M3";
+  coder_trailers.op_id = "op_coder";
+  ASSERT_TRUE(repository_
+                  ->commit_paths(coder, {"conflict.cpp"}, "feat: coder", coder_trailers)
+                  .has_value());
+
+  const TurnResult result = driver.run(MilestonePhase::Integrate, "M3");
+  EXPECT_TRUE(result.completed);
+  EXPECT_FALSE(result.merged);
+  EXPECT_TRUE(result.conflicts);
+}
+
+TEST_F(DriverTest, OpenDefectsArePassedToTheAgent) {
+  cf::store::DefectRecord defect;
+  defect.id = "D-1";
+  defect.run_id = "R12";
+  defect.milestone_id = "M3";
+  defect.status = "OPEN";
+  defect.severity = "high";
+  defect.body_json = "{}";
+  ASSERT_TRUE(store_->upsert_defect(defect).has_value());
+  cf::store::DefectRecord verified;
+  verified.id = "D-2";
+  verified.run_id = "R12";
+  verified.milestone_id = "M3";
+  verified.status = "VERIFIED";
+  verified.severity = "minor";
+  verified.body_json = "{}";
+  ASSERT_TRUE(store_->upsert_defect(verified).has_value());
+
+  FakeAgentRunner runner;
+  std::vector<std::string> seen_defects;
+  runner.on_turn = [&seen_defects](const AgentTurnRequest& request)
+      -> cf::Result<AgentTurnOutcome> {
+    seen_defects = request.open_defect_ids;
+    write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp", "code\n");
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  const TurnResult result = driver.run(MilestonePhase::Code, "M3");
+  EXPECT_TRUE(result.completed) << result.detail;
+  EXPECT_EQ(seen_defects, (std::vector<std::string>{"D-1"}));
+}
+
+TEST_F(DriverTest, WorktreeLayoutFollowsTheDesign) {
+  FakeAgentRunner runner;
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  EXPECT_EQ(driver.worktree_for("M3", "coder"),
+            dir_ / "workspace" / "wt" / "R12" / "M3" / "coder");
+  EXPECT_EQ(driver.integration_worktree(),
+            dir_ / "workspace" / "wt" / "R12" / "integration");
+}
+
+}  // namespace

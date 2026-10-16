@@ -1,0 +1,22 @@
+# Build output
+build/
+build-*/
+out/
+
+# vcpkg (pinned via vcpkg.json builtin-baseline and third_party/VERSIONS)
+third_party/vcpkg/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+
+# Runtime artifacts
+*.log
+spike-out/
+reports/
+bench-work/
+
+# Local scratch
+.cache/
+compile_commands.json

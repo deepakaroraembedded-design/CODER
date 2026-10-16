@@ -1,0 +1,29 @@
+# Reliability scenario: the orchestrator is killed at each protocol step and
+# must recover (lease takeover, stale locks, in-flight operations, worktree
+# reset) without duplicating side effects. The scenario passes only when the
+# run reaches a terminal state with recovery correctness intact.
+plan_id: GOLD-REL-ORCHESTRATOR-CRASH
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Metrics aggregation with crash injection
+    requirements: [REQ-REL-1]
+    acceptance:
+      - "The run reaches a terminal state after every injected crash"
+      - "No operation is executed twice"
+      - "The final report matches a crash-free run"
+target:
+  language: cpp
+  standard: c++20
+  build_system: cmake
+  test_framework: gtest
+  platforms: [linux-x86_64]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 25
+  max_wall_clock_hours: 8

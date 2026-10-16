@@ -1,0 +1,41 @@
+# Golden plan: agent registry with interface contracts (T2, C/C++).
+#
+# Hidden acceptance tests cover the registry contract (registration order,
+# duplicate handling, lookup by name), the callback interface, and the
+# dependency wiring between the two components.
+plan_id: GOLD-T2-CPP-REGISTRY
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Registry core with deterministic lookup
+    requirements: [REQ-REG-1]
+    acceptance:
+      - "Provide a header-only template at include/registry.hpp in namespace cf_golden: template <typename Key, typename Value> class Registry"
+      - "Interface: bool add(const Key&, Value), std::optional<Value> lookup(const Key&) const, bool remove(const Key&), std::size_t size() const, std::vector<Key> keys() const"
+      - "add rejects a duplicate key by returning false and keeps the original value; remove returns false for an absent key"
+      - "keys() returns the keys in registration order"
+      - "The header compiles standalone with g++ -std=c++20 -Wall -Wextra"
+  - id: M2
+    title: Observer callbacks on register/unregister
+    requirements: [REQ-REG-2]
+    depends_on: [M1]
+    acceptance:
+      - "Keep the M1 interface unchanged (header-only include/registry.hpp)"
+      - "Provide void set_observer(std::function<void(const Key&, bool added)>)"
+      - "Callbacks fire exactly once per successful mutation (add that returns true, remove that returns true)"
+      - "Unregister during callback does not invalidate iteration over keys()"
+target:
+  language: cpp
+  standard: c++20
+  build_system: cmake
+  test_framework: gtest
+  platforms: [linux-x86_64]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 40
+  max_wall_clock_hours: 12

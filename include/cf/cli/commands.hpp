@@ -1,0 +1,110 @@
+// cf-cli: command implementations (design section 9.2).
+//
+// Thin, honest layers over the built subsystems: plan validation and run
+// initialization, status, recovery (cf resume), escalation bundles and the
+// final report. Commands return a process exit code and write to the given
+// streams so they are unit-testable.
+#pragma once
+
+#include <filesystem>
+#include <map>
+#include <ostream>
+#include <string>
+
+#include "cf/llm/client.hpp"
+#include "cf/orch/session_agent_runner.hpp"
+
+namespace cf::cli {
+
+// Workspace layout: <workspace>/runs/<run_id>/run.db, plan.yaml, escalations/
+// and <workspace>/wt/... for worktrees.
+std::filesystem::path run_directory(const std::filesystem::path& workspace,
+                                    const std::string& run_id);
+
+// Validates the plan against the profile registry (FR-18) and prints a JSON
+// summary. Exit 0 on success, 1 on an invalid plan, 2 on an environment error.
+int check_command(const std::filesystem::path& plan_path,
+                  const std::filesystem::path& profiles_dir, std::ostream& out,
+                  std::ostream& err);
+
+// Creates the run: validates the plan, creates the run store, copies the plan
+// into the run directory and registers the milestones in Pending. An empty
+// run_id is generated. Exit 0 on success, 1 when the run already exists,
+// 2 on an environment error.
+int run_command(const std::filesystem::path& plan_path,
+                const std::filesystem::path& profiles_dir,
+                const std::filesystem::path& workspace, const std::string& run_id,
+                std::ostream& out, std::ostream& err);
+
+// Prints the run state: milestones, operations, locks, lease, cost, recent
+// transitions, gate results and defects. `json` selects machine output.
+int status_command(const std::filesystem::path& workspace, const std::string& run_id,
+                   bool json, std::ostream& out, std::ostream& err);
+
+// cf resume: takes the lease, releases stale locks, reconciles in-flight
+// operations and resets worktrees to their checkpoints when a repository is
+// given. Prints the recovery report.
+int resume_command(const std::filesystem::path& workspace, const std::string& run_id,
+                   const std::string& holder, const std::filesystem::path& repository_path,
+                   std::ostream& out, std::ostream& err);
+
+// Lists the escalation bundles of a run as JSON.
+int escalations_command(const std::filesystem::path& workspace,
+                        const std::string& run_id, std::ostream& out, std::ostream& err);
+
+// Writes report.json and report.md: milestone/gate history, requirement
+// traceability, defects, cost and escalations.
+int report_command(const std::filesystem::path& workspace, const std::string& run_id,
+                   const std::filesystem::path& out_dir, std::ostream& out,
+                   std::ostream& err);
+
+// cf approve --stage design: moves a run from AwaitingDesignApproval to
+// Executing (the human approval gate, design section 7.1).
+int approve_command(const std::filesystem::path& workspace, const std::string& run_id,
+                    const std::string& stage, std::ostream& out, std::ostream& err);
+
+struct IngestOptions {
+  std::filesystem::path docs_dir;  // Markdown documents with YAML front matter
+  std::filesystem::path out_dir;   // optional: normalized copies for cf-mcp --docs
+  std::filesystem::path db_path;   // optional: run store for doc_versions
+};
+
+// cf ingest: validates company documents, holds anything that looks like an
+// injected instruction, writes normalized copies and records document
+// versions (design sections 6.3.1, 8.4).
+int ingest_command(const IngestOptions& options, std::ostream& out, std::ostream& err);
+
+struct ExecuteOptions {
+  std::filesystem::path workspace;
+  std::string run_id;
+  std::filesystem::path profiles_dir = "profiles";
+  std::filesystem::path repository_path;  // the target repository (required)
+  std::string opencode_binary = "opencode";
+  std::string mcp_binary = "cf-mcp";
+  std::map<std::string, std::string, std::less<>> role_models;
+  std::string sandbox_image;  // empty: gates run through the local executor
+  std::string docs_dir;
+  // Design refinement is not implemented yet; this advances the run through
+  // Ingesting/Refining/AwaitingDesignApproval to Executing explicitly.
+  bool skip_refinement = false;
+
+  // GitHub flow (design section 10.4.4); enabled when owner and repo are set.
+  std::string github_owner;
+  std::string github_repo;
+  std::string github_api_base = "https://api.github.com";
+  // GitHub App identity (design section 10.4.2); the key file is read into
+  // memory and never written anywhere.
+  std::string github_app_id;
+  std::string github_installation_id;
+  std::string github_private_key_file;
+  std::string github_token;  // fallback: a static token
+  // Tests inject a transport; production uses cpr.
+  cf::llm::HttpTransport* github_transport = nullptr;
+};
+
+// cf run --execute: drives the run with the production opencode factory, or
+// with an injected factory in tests.
+int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostream& err,
+                    cf::orch::SessionDriverFactory session_driver_factory = {});
+
+}  // namespace cf::cli

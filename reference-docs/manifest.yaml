@@ -1,0 +1,27 @@
+# Approved reference documentation sets (design section 6.3.1).
+#
+# Only the URLs and repositories listed here are contacted by cf-refmirror.
+# Change this file only through a pull request approved by a tech lead.
+# Every remote source must carry the sha256 of the approved artifact; a
+# mismatch stops the set and alerts the owner.
+#
+# The entries below are the design's examples; fill in the real URLs and
+# checksums before the first production mirroring run.
+sets:
+  - id: cppreference
+    version: "2026-09"
+    source: https://<cppreference offline archive URL>
+    sha256: "<checksum>"
+    license: CC-BY-SA-3.0
+  - id: boost
+    version: "1.89.0"
+    source: https://<boost release archive URL>
+    extract: ["doc/html", "libs/*/doc/html"]
+    sha256: "<checksum>"
+    license: BSL-1.0
+  - id: nlohmann-json
+    version: "3.12.0"
+    generate: doxygen
+    repo: https://github.com/nlohmann/json
+    ref: v3.12.0
+    license: MIT

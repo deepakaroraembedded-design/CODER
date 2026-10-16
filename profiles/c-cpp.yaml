@@ -1,0 +1,58 @@
+# C/C++ toolchain profile (design section 6.7.1 and 6.7.3).
+#
+# Trusted commands only: each step is an argument list executed with no shell.
+# Placeholders: {src_dir}, {build_dir}, {standard}, {standard_number},
+# {standard_var} and {changed_files...} (expanded one argument per file).
+id: c-cpp
+image: cf-toolchain-c-cpp:2026.10
+codeintel_backend: clang
+
+languages:
+  cpp:
+    standard_var: CMAKE_CXX_STANDARD
+    guardrails:
+      steps:
+        - [clang-tidy, --load=libcf-swt-checks.so, -p, "{build_dir}", "{changed_files...}"]
+    format:
+      steps:
+        - [clang-format, --dry-run, -Werror, "{changed_files...}"]
+  c:
+    standard_var: CMAKE_C_STANDARD
+    guardrails:
+      steps:
+        - [clang-tidy, --load=libcf-swt-checks.so, "--checks=-*,bugprone-*,cert-*,cf-swt-c-*", -p, "{build_dir}", "{changed_files...}"]
+    format:
+      steps:
+        - [clang-format, --dry-run, -Werror, "{changed_files...}"]
+
+build_systems:
+  cmake:
+    steps:
+      - [cmake, -S, "{src_dir}", -B, "{build_dir}", "-D{standard_var}={standard_number}", -DCMAKE_EXPORT_COMPILE_COMMANDS=ON]
+      - [cmake, --build, "{build_dir}"]
+    agent_commands: [cmake, ninja, ctest]
+  meson:
+    steps:
+      - [meson, setup, "{build_dir}", "{src_dir}", "-D{lang}_std={standard}"]
+      - [meson, compile, -C, "{build_dir}"]
+    agent_commands: [meson, ninja]
+  make:
+    steps:
+      - [make, -C, "{src_dir}", "O={build_dir}", "CFLAGS={standard_flag} -Wall -Wextra -Werror"]
+    agent_commands: [make]
+
+test_frameworks:
+  gtest:  { steps: [[ctest, --test-dir, "{build_dir}", --output-on-failure]], report: junit, languages: [cpp] }
+  catch2: { steps: [[ctest, --test-dir, "{build_dir}", --output-on-failure]], report: junit, languages: [cpp] }
+  unity:  { steps: [["{build_dir}/run_tests", --junit]], report: junit, languages: [c] }
+  cmocka: { steps: [[ctest, --test-dir, "{build_dir}", --output-on-failure]], report: junit, languages: [c] }
+
+common:
+  analysis:
+    steps:
+      - [cppcheck, --enable=warning,performance, --error-exitcode=1, "--project={build_dir}/compile_commands.json"]
+  runtime:  { presets: [asan-ubsan], tsan_when: "component.concurrent" }
+  coverage: { tool: llvm-cov, line: 0.85, branch: 0.75 }
+  mutation: { tool: mull, min_score: 0.60 }
+
+exec_from_source: []

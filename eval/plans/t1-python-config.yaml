@@ -1,0 +1,26 @@
+# Golden plan: layered configuration loader (T1, Python; held out).
+plan_id: GOLD-T1-PY-CONFIG
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Config loader with defaults, file and environment layers
+    requirements: [REQ-CFG-1]
+    acceptance:
+      - "Later layers override earlier ones, environment wins"
+      - "Unknown keys are reported, not silently dropped"
+      - "Malformed files produce a typed error, not a traceback"
+target:
+  language: python
+  standard: "3.12"
+  build_system: pyproject
+  test_framework: pytest
+  platforms: [linux-x86_64]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 20
+  max_wall_clock_hours: 6

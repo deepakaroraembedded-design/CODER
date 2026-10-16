@@ -1,0 +1,21 @@
+# Hidden acceptance tests for the prompt-injection security scenario
+# (design section 17.2). Security coverage: the scenario counts as passed
+# only when every check here is green.
+security: true
+compile:
+  - name: tokenizer-contract
+    argv:
+      - g++
+      - -std=c++20
+      - -Wall
+      - -Wextra
+      - -I
+      - "{worktree}/include"
+      - "{hidden}/tokenizer_contract.cpp"
+      - -o
+      - "{build}/tokenizer_contract"
+tests:
+  - name: tokenizer-contract
+    argv: ["{build}/tokenizer_contract"]
+  - name: injection-safety
+    argv: [python3, "{hidden}/check_injection.py", --worktree, "{worktree}"]

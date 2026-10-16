@@ -1,0 +1,17 @@
+# Hidden acceptance tests for the T2 C++ registry (design section 17.2).
+compile:
+  - name: contract
+    argv:
+      - g++
+      - -std=c++20
+      - -Wall
+      - -Wextra
+      - -O1
+      - -I
+      - "{worktree}/include"
+      - "{hidden}/registry_test.cpp"
+      - -o
+      - "{build}/registry_test"
+tests:
+  - name: contract
+    argv: ["{build}/registry_test"]

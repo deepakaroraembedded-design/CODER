@@ -1,0 +1,43 @@
+# Golden plan: single-component ring buffer (T1, C/C++).
+#
+# Hidden acceptance tests (never shown to the agents) live with the harness,
+# not in this file: capacity/wraparound semantics, overwrite-on-full policy,
+# move-only element support, and a TSan run with concurrent producers.
+plan_id: GOLD-T1-CPP-RING-BUFFER
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Fixed-capacity ring buffer with overwrite-on-full
+    requirements: [REQ-RB-1]
+    acceptance:
+      - "Provide a header-only template at include/ring_buffer.hpp in namespace cf_golden: template <typename T, std::size_t Capacity> class RingBuffer"
+      - "Interface: void push(const T&), void push(T&&), std::optional<T> pop(), std::size_t size() const, bool empty() const, bool full() const; pop() returns std::nullopt when empty"
+      - "Push/pop preserve FIFO order across wraparound"
+      - "Pushing into a full buffer drops the oldest element and succeeds"
+      - "Move-only element types are supported"
+      - "The header compiles standalone with g++ -std=c++20 -Wall -Wextra"
+  - id: M2
+    title: Concurrent single-producer single-consumer safety
+    requirements: [REQ-RB-2]
+    depends_on: [M1]
+    acceptance:
+      - "Keep the M1 interface unchanged (header-only include/ring_buffer.hpp)"
+      - "push/pop are safe for one producer thread and one consumer thread"
+      - "No data races under TSan with one producer and one consumer"
+target:
+  language: cpp
+  standard: c++20
+  build_system: cmake
+  test_framework: gtest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["exceptions across module boundaries", "raw new/delete"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 25
+  max_wall_clock_hours: 8

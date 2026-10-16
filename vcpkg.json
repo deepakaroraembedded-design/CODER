@@ -1,0 +1,25 @@
+{
+  "name": "coder-framework",
+  "version-string": "0.1.0",
+  "description": "Coder Framework (CF): multi-agent, guardrail-driven code generation",
+  "builtin-baseline": "e456309491fd875487bf02b8a0dca76c1b1b00cc",
+  "dependencies": [
+    "boost-asio",
+    "boost-beast",
+    "boost-system",
+    "cli11",
+    {
+      "name": "cpr",
+      "features": ["ssl"]
+    },
+    "fmt",
+    "gsl-lite",
+    "gtest",
+    "nlohmann-json",
+    "openssl",
+    "spdlog",
+    "sqlitecpp",
+    "tl-expected",
+    "yaml-cpp"
+  ]
+}

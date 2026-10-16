@@ -1,0 +1,32 @@
+// cf-orch: opencode role configuration (design section 6.6).
+//
+// Builds each role's opencode.json from policy: the provider and model, the
+// permission block (edit, bash allow/deny lists derived from the toolchain
+// profile, everything else ask or deny), and the role's cf-mcp server with
+// its run/milestone identity and calls file.
+#pragma once
+
+#include <string>
+#include <vector>
+
+#include <nlohmann/json.hpp>
+
+namespace cf::orch {
+
+struct RoleConfigSpec {
+  std::string role;  // coder | reviewer | qa
+  std::string provider_base_url = "https://api.fireworks.ai/inference/v1";
+  std::string api_key_env = "FIREWORKS_API_KEY";
+  std::string provider_model_id;  // e.g. accounts/fireworks/models/<model>
+  std::vector<std::string> allowed_commands;  // profile agent_commands
+  std::string mcp_command;                    // path to the cf-mcp binary
+  std::string run_id;
+  std::string milestone_id;
+  std::string db_path;
+  std::string docs_dir;
+  std::string calls_file;  // CF_MCP_CALLS_FILE for this role
+};
+
+nlohmann::json build_role_config(const RoleConfigSpec& spec);
+
+}  // namespace cf::orch

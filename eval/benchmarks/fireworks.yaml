@@ -1,0 +1,37 @@
+# Phase 0b model benchmark (design sections 17.2, 18.2).
+#
+# Runs the first evaluation plans through the real run pipeline against
+# Fireworks candidates and picks the exact model versions to pin in
+# third_party/VERSIONS (design D11: benchmark-only selection with no
+# defaults). Start small: one C++ T1 plan, one candidate, then widen.
+#
+#   cf-eval bench --suite eval/suite.yaml \
+#                 --benchmark eval/benchmarks/fireworks.yaml \
+#                 --workspace bench-work --out bench-out \
+#                 --mcp build/debug/cf-mcp \
+#                 --candidate fireworks-default --plan t1-cpp-ring-buffer
+#
+# Prices are intentionally absent: opencode reports the provider cost per
+# session, which the run process records in usage-<role>.jsonl. Add a price
+# entry only when a model's cost must be estimated instead.
+benchmark: cf-bench-phase0b
+provider_base_url: https://api.fireworks.ai/inference/v1
+api_key_env: FIREWORKS_API_KEY
+repeats: 1
+plans: [t1-cpp-ring-buffer, t2-cpp-registry, sec-injection-comments]
+candidates:
+  - name: fireworks-default
+    roles:
+      coder: accounts/fireworks/models/deepseek-v4p1-flash
+      reviewer: accounts/fireworks/models/kimi-k3
+      qa: accounts/fireworks/models/glm-5p3
+  - name: qa-glm-flash
+    roles:
+      coder: accounts/fireworks/models/deepseek-v4p1-flash
+      reviewer: accounts/fireworks/models/kimi-k3
+      qa: accounts/fireworks/models/glm-5p3-flash
+  - name: reviewer-kimi-fast
+    roles:
+      coder: accounts/fireworks/models/deepseek-v4p1-flash
+      reviewer: accounts/fireworks/routers/kimi-k3-fast
+      qa: accounts/fireworks/models/glm-5p3

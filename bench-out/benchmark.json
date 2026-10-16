@@ -1,0 +1,22 @@
+{
+  "benchmark": "cf-bench-phase0b",
+  "candidates": [
+    {
+      "config": "qa-glm-flash",
+      "cost_per_milestone_usd": 0.0,
+      "escalation_rate": 1.0,
+      "hidden_test_pass": 0.0,
+      "milestone_completion": 0.0,
+      "name": "qa-glm-flash",
+      "run_completion": 0.0,
+      "runs": 1
+    }
+  ],
+  "plans": [
+    "t1-cpp-ring-buffer",
+    "t2-cpp-registry",
+    "sec-injection-comments"
+  ],
+  "provider_base_url": "https://api.fireworks.ai/inference/v1",
+  "recommended": "qa-glm-flash"
+}

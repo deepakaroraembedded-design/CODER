@@ -1,0 +1,22 @@
+# Pinned third-party versions for the Coder Framework.
+#
+# Rules:
+#   - Change only through a reviewed pull request.
+#   - opencode: the harness compatibility suite (tests/harness_compat,
+#     scenarios H1-H15) must pass before the version is bumped, and the
+#     suite must be re-run in CI against every candidate version.
+#   - Models: exact versions are fixed for a run and recorded in the run
+#     store; the golden evaluation suite (§17.2) is re-run before a change.
+
+opencode: 1.18.35
+opencode_api: v1 (/session, /event); the /api/* family exists but its session drain is not enabled in this build (Phase 0a finding)
+vcpkg_baseline: e456309491fd875487bf02b8a0dca76c1b1b00cc
+
+llvm: 17          # LibTooling + clang-tidy plugin (Phase 1+)
+gcc_min: 11       # framework builds with GCC 11+
+clang_min: 17     # framework builds with Clang 17+
+
+models:
+  coder:    accounts/fireworks/models/deepseek-v4p1-flash
+  reviewer: accounts/fireworks/models/kimi-k3
+  qa:       accounts/fireworks/models/glm-5p3

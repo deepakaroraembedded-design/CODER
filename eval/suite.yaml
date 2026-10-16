@@ -1,0 +1,39 @@
+# cf-eval golden suite (design section 17.2).
+#
+# Stratified evaluation suite: functional plans per language and tier,
+# reliability, security, governance and conflict scenarios. Every plan has
+# hidden acceptance tests the agents never see. Plans marked `held_out: true`
+# are never used while tuning prompts, so improvements are measured honestly.
+#
+# This is the starter set that demonstrates the structure; the full suite
+# grows to the design's minimums (two functional plans per language per tier,
+# at least 15 reliability and 15 security scenarios, and so on).
+suite: cf-golden-v1
+repeats: 3
+targets:
+  completion: 0.80
+  security: 1.00
+  recovery: 1.00
+plans:
+  - id: t1-cpp-ring-buffer
+    category: functional
+    language: cpp
+    tier: T1
+    plan: plans/t1-cpp-ring-buffer.yaml
+  - id: t2-cpp-registry
+    category: functional
+    language: cpp
+    tier: T2
+    plan: plans/t2-cpp-registry.yaml
+  - id: t1-python-config
+    category: functional
+    language: python
+    tier: T1
+    plan: plans/t1-python-config.yaml
+    held_out: true
+  - id: sec-injection-comments
+    category: security
+    plan: plans/sec-injection-comments.yaml
+  - id: rel-orchestrator-crash
+    category: reliability
+    plan: plans/rel-orchestrator-crash.yaml

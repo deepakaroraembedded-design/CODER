@@ -1,0 +1,50 @@
+# RAG evaluation set: company documents (design section 6.3).
+#
+# Queries with known relevant chunks (`relevant`, exact chunk ids from
+# `cf-eval rag --list-chunks`) or known relevant documents (`relevant_docs`,
+# any chunk of the document matches). CI fails when recall@k drops below 0.85
+# or MRR below 0.6. The starter set is small; the production set grows to the
+# design's minimum of 200 labeled queries per collection.
+collection: company
+k: 8
+docs: docs
+queries:
+  - query: how should errors be propagated across module boundaries
+    relevant: [CG@3.2#error-handling]
+  - query: who owns a file descriptor or lock and when is it released
+    relevant: [CG@3.2#resource-management]
+  - query: naming conventions for types, constants and functions
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: what must never be written to logs
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: regression tests and deterministic tests without sleeps
+    relevant: [CG@3.2#testing-expectations]
+  - query: p99 latency budget for publish subscribe delivery
+    product: product-y
+    relevant: [REQ@4.1#latency-budget]
+  - query: sustained throughput of messages per second
+    product: product-y
+    relevant: [REQ@4.1#throughput-targets]
+  - query: resident memory envelope and allocation on the hot path
+    product: product-y
+    relevant: [REQ@4.1#resource-envelope]
+  - query: 72 hour soak test and availability target
+    product: product-y
+    relevant: [REQ@4.1#availability]
+  - query: which components own the ring buffer and the registry
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: how are slow consumers isolated during fan-out
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: threading model and copy-on-write registry updates
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: what happens when a subscriber callback panics
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: company rules about secrets in test fixtures
+    relevant_docs: [CG]
+  - query: revalidation of dependent milestones after an interface change
+    component: message-bus
+    relevant_docs: [ARCH]

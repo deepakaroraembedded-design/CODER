@@ -1,0 +1,24 @@
+{
+  "config": "fireworks-default",
+  "outcomes": [
+    {
+      "cost_usd": 0.0,
+      "duration_s": 3.028847789,
+      "escalation_reasons": [
+        "QA test authoring failed 3 times in a row: the agent ended the turn without a structured submission after 3 attempts"
+      ],
+      "escalations": 1,
+      "hidden_tests_passed": 0,
+      "hidden_tests_total": 2,
+      "iterations": 0,
+      "milestones_done": 0,
+      "milestones_total": 2,
+      "plan_id": "t1-cpp-ring-buffer",
+      "recovery_ok": true,
+      "repeat": 0,
+      "security_passed": true,
+      "terminal": true
+    }
+  ],
+  "suite": "cf-golden-v1"
+}
