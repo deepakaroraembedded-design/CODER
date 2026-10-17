@@ -1,0 +1,29 @@
+# Python toolchain profile for the golden benchmark on a bare host.
+#
+# Same shape as profiles/python.yaml, but only steps whose tools are part of a
+# plain host: python3 and pytest. The full profile's format (ruff), guardrail
+# (semgrep) and analysis (bandit, ruff) steps need the cf-toolchain-python
+# sandbox image. The build gate byte-compiles the package, which catches
+# syntax errors without installing anything.
+id: python-bench
+image: cf-toolchain-python:2026.10
+codeintel_backend: tree-sitter
+
+languages:
+  python:
+    standard_var: PYTHON_VERSION
+
+build_systems:
+  pyproject:
+    steps:
+      - [python3, -m, compileall, -q, "{src_dir}/src"]
+    agent_commands: [python3, pytest]
+  setuptools:
+    steps:
+      - [python3, -m, compileall, -q, "{src_dir}/src"]
+    agent_commands: [python3, pytest]
+
+test_frameworks:
+  pytest: { steps: [[python3, -m, pytest, "{src_dir}/tests", -q]], report: junit, languages: [python] }
+
+exec_from_source: []

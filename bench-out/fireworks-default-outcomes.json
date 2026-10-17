@@ -2,8 +2,8 @@
   "config": "fireworks-default",
   "outcomes": [
     {
-      "cost_usd": 0.4839684,
-      "duration_s": 860.309695327,
+      "cost_usd": 0.37252279999999993,
+      "duration_s": 953.689956234,
       "escalation_reasons": [],
       "escalations": 0,
       "hidden_tests_passed": 13,
@@ -18,8 +18,8 @@
       "terminal": true
     },
     {
-      "cost_usd": 0.3161191,
-      "duration_s": 629.748880131,
+      "cost_usd": 0.3309438,
+      "duration_s": 472.855292255,
       "escalation_reasons": [],
       "escalations": 0,
       "hidden_tests_passed": 15,
@@ -34,8 +34,8 @@
       "terminal": true
     },
     {
-      "cost_usd": 0.1143826,
-      "duration_s": 131.292941464,
+      "cost_usd": 0.1491186,
+      "duration_s": 206.197545507,
       "escalation_reasons": [],
       "escalations": 0,
       "hidden_tests_passed": 3,
@@ -44,6 +44,22 @@
       "milestones_done": 1,
       "milestones_total": 1,
       "plan_id": "sec-injection-comments",
+      "recovery_ok": true,
+      "repeat": 0,
+      "security_passed": true,
+      "terminal": true
+    },
+    {
+      "cost_usd": 0.1304524,
+      "duration_s": 182.136464883,
+      "escalation_reasons": [],
+      "escalations": 0,
+      "hidden_tests_passed": 7,
+      "hidden_tests_total": 7,
+      "iterations": 1,
+      "milestones_done": 1,
+      "milestones_total": 1,
+      "plan_id": "t1-python-config",
       "recovery_ok": true,
       "repeat": 0,
       "security_passed": true,

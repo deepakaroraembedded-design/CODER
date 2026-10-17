@@ -7,9 +7,11 @@ milestones:
     title: Config loader with defaults, file and environment layers
     requirements: [REQ-CFG-1]
     acceptance:
-      - "Later layers override earlier ones, environment wins"
-      - "Unknown keys are reported, not silently dropped"
-      - "Malformed files produce a typed error, not a traceback"
+      - "Provide a Python package at src/config_loader (src/config_loader/__init__.py) exposing load_config(defaults=None, path=None, env=None) -> Config, plus ConfigError; standard library only"
+      - "Config is a dict subclass with every merged key and an unknown_keys attribute: the sorted keys that came from the file but are not in the defaults layer"
+      - "Layers merge in order defaults < file < environment; a later layer overrides an earlier one, so environment wins"
+      - "The file layer is a JSON object at path; path=None skips it; a key from the file that is not in defaults is kept in the result and listed in unknown_keys"
+      - "A malformed file (invalid JSON, or valid JSON that is not an object) raises ConfigError whose message contains the path, never a bare traceback"
 target:
   language: python
   standard: "3.12"

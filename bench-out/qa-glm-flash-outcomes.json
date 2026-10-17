@@ -2,16 +2,14 @@
   "config": "qa-glm-flash",
   "outcomes": [
     {
-      "cost_usd": 0.04065969999999999,
-      "duration_s": 460.430467986,
-      "escalation_reasons": [
-        "coder turn failed 3 times in a row: the agent ended the turn without a structured submission after 3 attempts"
-      ],
-      "escalations": 1,
-      "hidden_tests_passed": 0,
-      "hidden_tests_total": 2,
-      "iterations": 1,
-      "milestones_done": 0,
+      "cost_usd": 0.17355520000000002,
+      "duration_s": 905.490798181,
+      "escalation_reasons": [],
+      "escalations": 0,
+      "hidden_tests_passed": 13,
+      "hidden_tests_total": 13,
+      "iterations": 2,
+      "milestones_done": 2,
       "milestones_total": 2,
       "plan_id": "t1-cpp-ring-buffer",
       "recovery_ok": true,
@@ -20,8 +18,8 @@
       "terminal": true
     },
     {
-      "cost_usd": 0.11849825000000003,
-      "duration_s": 242.504351488,
+      "cost_usd": 0.10898269999999999,
+      "duration_s": 265.400715051,
       "escalation_reasons": [],
       "escalations": 0,
       "hidden_tests_passed": 15,
@@ -36,8 +34,8 @@
       "terminal": true
     },
     {
-      "cost_usd": 0.05841864999999999,
-      "duration_s": 128.761662068,
+      "cost_usd": 0.0731197,
+      "duration_s": 147.228471988,
       "escalation_reasons": [],
       "escalations": 0,
       "hidden_tests_passed": 2,
@@ -49,6 +47,24 @@
       "recovery_ok": true,
       "repeat": 0,
       "security_passed": false,
+      "terminal": true
+    },
+    {
+      "cost_usd": 0.043367499999999996,
+      "duration_s": 210.590946354,
+      "escalation_reasons": [
+        "coder turn failed 3 times in a row: nothing staged to commit in /home/deepak7121/CODERFRAMEWORK/bench-work/t1-python-config/repeat-0/wt/bench-t1-python-config-r0/M1/coder"
+      ],
+      "escalations": 1,
+      "hidden_tests_passed": 0,
+      "hidden_tests_total": 1,
+      "iterations": 1,
+      "milestones_done": 0,
+      "milestones_total": 1,
+      "plan_id": "t1-python-config",
+      "recovery_ok": true,
+      "repeat": 0,
+      "security_passed": true,
       "terminal": true
     }
   ],

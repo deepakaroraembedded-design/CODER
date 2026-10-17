@@ -3,39 +3,40 @@
   "candidates": [
     {
       "config": "fireworks-default",
-      "cost_per_milestone_usd": 0.17147545,
+      "cost_per_milestone_usd": 0.157826075,
       "escalation_rate": 0.0,
       "hidden_test_pass": 1.0,
       "milestone_completion": 1.0,
       "name": "fireworks-default",
       "run_completion": 1.0,
-      "runs": 3
+      "runs": 4
     },
     {
       "config": "qa-glm-flash",
-      "cost_per_milestone_usd": 0.0588338875,
-      "escalation_rate": 0.3333333333333333,
-      "hidden_test_pass": 0.5555555555555555,
-      "milestone_completion": 0.6666666666666666,
+      "cost_per_milestone_usd": 0.07146288333333334,
+      "escalation_rate": 0.25,
+      "hidden_test_pass": 0.6666666666666666,
+      "milestone_completion": 0.75,
       "name": "qa-glm-flash",
-      "run_completion": 0.6666666666666666,
-      "runs": 3
+      "run_completion": 0.75,
+      "runs": 4
     },
     {
       "config": "reviewer-kimi-fast",
-      "cost_per_milestone_usd": 0.2359628,
+      "cost_per_milestone_usd": 0.15810782499999998,
       "escalation_rate": 0.0,
       "hidden_test_pass": 1.0,
       "milestone_completion": 1.0,
       "name": "reviewer-kimi-fast",
       "run_completion": 1.0,
-      "runs": 3
+      "runs": 4
     }
   ],
   "plans": [
     "t1-cpp-ring-buffer",
     "t2-cpp-registry",
-    "sec-injection-comments"
+    "sec-injection-comments",
+    "t1-python-config"
   ],
   "provider_base_url": "https://api.fireworks.ai/inference/v1",
   "recommended": "fireworks-default"

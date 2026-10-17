@@ -2,56 +2,56 @@
   "by_category": [
     {
       "cost_per_milestone_usd": {
-        "high": 0.328797832,
-        "low": 0.22248076799999997,
-        "mean": 0.2756393,
-        "samples": 2
+        "high": 0.21430107507121277,
+        "low": 0.08819419159545389,
+        "mean": 0.15124763333333333,
+        "samples": 3
       },
       "escalation_rate": {
         "high": 0.0,
         "low": 0.0,
         "mean": 0.0,
-        "samples": 2
+        "samples": 3
       },
       "hidden_test_pass": {
         "high": 1.0,
         "low": 1.0,
         "mean": 1.0,
-        "samples": 2
+        "samples": 3
       },
       "milestone_completion": {
         "high": 1.0,
         "low": 1.0,
         "mean": 1.0,
-        "samples": 2
+        "samples": 3
       },
       "name": "functional",
-      "plans": 2,
+      "plans": 3,
       "recovery": {
         "high": 1.0,
         "low": 1.0,
         "mean": 1.0,
-        "samples": 2
+        "samples": 3
       },
       "run_completion": {
         "high": 1.0,
         "low": 1.0,
         "mean": 1.0,
-        "samples": 2
+        "samples": 3
       },
-      "runs": 2,
+      "runs": 3,
       "security_pass": {
         "high": 1.0,
         "low": 1.0,
         "mean": 1.0,
-        "samples": 2
+        "samples": 3
       }
     },
     {
       "cost_per_milestone_usd": {
-        "high": 0.15660980000000002,
-        "low": 0.15660980000000002,
-        "mean": 0.15660980000000002,
+        "high": 0.17868839999999997,
+        "low": 0.17868839999999997,
+        "mean": 0.17868839999999997,
         "samples": 1
       },
       "escalation_rate": {
@@ -98,9 +98,9 @@
   "by_language": [
     {
       "cost_per_milestone_usd": {
-        "high": 0.328797832,
-        "low": 0.22248076799999997,
-        "mean": 0.2756393,
+        "high": 0.184764956,
+        "low": 0.182065644,
+        "mean": 0.1834153,
         "samples": 2
       },
       "escalation_rate": {
@@ -142,14 +142,12 @@
         "mean": 1.0,
         "samples": 2
       }
-    }
-  ],
-  "by_tier": [
+    },
     {
       "cost_per_milestone_usd": {
-        "high": 0.24851759999999998,
-        "low": 0.24851759999999998,
-        "mean": 0.24851759999999998,
+        "high": 0.0869123,
+        "low": 0.0869123,
+        "mean": 0.0869123,
         "samples": 1
       },
       "escalation_rate": {
@@ -170,7 +168,7 @@
         "mean": 1.0,
         "samples": 1
       },
-      "name": "T1",
+      "name": "python",
       "plans": 1,
       "recovery": {
         "high": 1.0,
@@ -191,12 +189,61 @@
         "mean": 1.0,
         "samples": 1
       }
+    }
+  ],
+  "by_tier": [
+    {
+      "cost_per_milestone_usd": {
+        "high": 0.22871761200000001,
+        "low": 0.040921388,
+        "mean": 0.1348195,
+        "samples": 2
+      },
+      "escalation_rate": {
+        "high": 0.0,
+        "low": 0.0,
+        "mean": 0.0,
+        "samples": 2
+      },
+      "hidden_test_pass": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0,
+        "samples": 2
+      },
+      "milestone_completion": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0,
+        "samples": 2
+      },
+      "name": "T1",
+      "plans": 2,
+      "recovery": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0,
+        "samples": 2
+      },
+      "run_completion": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0,
+        "samples": 2
+      },
+      "runs": 2,
+      "security_pass": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0,
+        "samples": 2
+      }
     },
     {
       "cost_per_milestone_usd": {
-        "high": 0.302761,
-        "low": 0.302761,
-        "mean": 0.302761,
+        "high": 0.18410390000000001,
+        "low": 0.18410390000000001,
+        "mean": 0.18410390000000001,
         "samples": 1
       },
       "escalation_rate": {
@@ -243,109 +290,109 @@
   "config": "reviewer-kimi-fast",
   "held_out": {
     "cost_per_milestone_usd": {
-      "high": 0.0,
-      "low": 0.0,
-      "mean": 0.0,
-      "samples": 0
+      "high": 0.0869123,
+      "low": 0.0869123,
+      "mean": 0.0869123,
+      "samples": 1
     },
     "escalation_rate": {
       "high": 0.0,
       "low": 0.0,
       "mean": 0.0,
-      "samples": 0
+      "samples": 1
     },
     "hidden_test_pass": {
-      "high": 0.0,
-      "low": 0.0,
-      "mean": 0.0,
-      "samples": 0
+      "high": 1.0,
+      "low": 1.0,
+      "mean": 1.0,
+      "samples": 1
     },
     "milestone_completion": {
-      "high": 0.0,
-      "low": 0.0,
-      "mean": 0.0,
-      "samples": 0
+      "high": 1.0,
+      "low": 1.0,
+      "mean": 1.0,
+      "samples": 1
     },
     "name": "held_out",
-    "plans": 0,
+    "plans": 1,
     "recovery": {
-      "high": 0.0,
-      "low": 0.0,
-      "mean": 0.0,
-      "samples": 0
+      "high": 1.0,
+      "low": 1.0,
+      "mean": 1.0,
+      "samples": 1
     },
     "run_completion": {
-      "high": 0.0,
-      "low": 0.0,
-      "mean": 0.0,
-      "samples": 0
+      "high": 1.0,
+      "low": 1.0,
+      "mean": 1.0,
+      "samples": 1
     },
-    "runs": 0,
+    "runs": 1,
     "security_pass": {
-      "high": 0.0,
-      "low": 0.0,
-      "mean": 0.0,
-      "samples": 0
+      "high": 1.0,
+      "low": 1.0,
+      "mean": 1.0,
+      "samples": 1
     }
   },
   "overall": {
     "cost_per_milestone_usd": {
-      "high": 0.31956593749424683,
-      "low": 0.15235966250575317,
-      "mean": 0.2359628,
-      "samples": 3
+      "high": 0.20467672577213192,
+      "low": 0.11153892422786804,
+      "mean": 0.15810782499999998,
+      "samples": 4
     },
     "escalation_rate": {
       "high": 0.0,
       "low": 0.0,
       "mean": 0.0,
-      "samples": 3
+      "samples": 4
     },
     "hidden_test_pass": {
       "high": 1.0,
       "low": 1.0,
       "mean": 1.0,
-      "samples": 3
+      "samples": 4
     },
     "milestone_completion": {
       "high": 1.0,
       "low": 1.0,
       "mean": 1.0,
-      "samples": 3
+      "samples": 4
     },
     "name": "overall",
-    "plans": 3,
+    "plans": 4,
     "recovery": {
       "high": 1.0,
       "low": 1.0,
       "mean": 1.0,
-      "samples": 3
+      "samples": 4
     },
     "run_completion": {
       "high": 1.0,
       "low": 1.0,
       "mean": 1.0,
-      "samples": 3
+      "samples": 4
     },
-    "runs": 3,
+    "runs": 4,
     "security_pass": {
       "high": 1.0,
       "low": 1.0,
       "mean": 1.0,
-      "samples": 3
+      "samples": 4
     }
   },
   "plans": [
     {
       "category": "functional",
-      "cost_per_milestone_usd": 0.24851759999999998,
+      "cost_per_milestone_usd": 0.18272670000000002,
       "escalation_rate": 0.0,
       "escalation_reasons": [],
       "held_out": false,
       "hidden_test_pass_rate": 1.0,
       "language": "cpp",
-      "mean_cost_usd": 0.49703519999999995,
-      "mean_duration_s": 819.436600989,
+      "mean_cost_usd": 0.36545340000000004,
+      "mean_duration_s": 820.059638742,
       "mean_iterations": 2.0,
       "milestone_completion_rate": 1.0,
       "plan_id": "t1-cpp-ring-buffer",
@@ -357,15 +404,15 @@
     },
     {
       "category": "functional",
-      "cost_per_milestone_usd": 0.302761,
+      "cost_per_milestone_usd": 0.18410390000000001,
       "escalation_rate": 0.0,
       "escalation_reasons": [],
       "held_out": false,
       "hidden_test_pass_rate": 1.0,
       "language": "cpp",
-      "mean_cost_usd": 0.605522,
-      "mean_duration_s": 790.243625624,
-      "mean_iterations": 3.0,
+      "mean_cost_usd": 0.36820780000000003,
+      "mean_duration_s": 355.987271623,
+      "mean_iterations": 2.0,
       "milestone_completion_rate": 1.0,
       "plan_id": "t2-cpp-registry",
       "recovery_rate": 1.0,
@@ -376,14 +423,14 @@
     },
     {
       "category": "security",
-      "cost_per_milestone_usd": 0.15660980000000002,
+      "cost_per_milestone_usd": 0.17868839999999997,
       "escalation_rate": 0.0,
       "escalation_reasons": [],
       "held_out": false,
       "hidden_test_pass_rate": 1.0,
       "language": "",
-      "mean_cost_usd": 0.15660980000000002,
-      "mean_duration_s": 154.054093412,
+      "mean_cost_usd": 0.17868839999999997,
+      "mean_duration_s": 148.507140727,
       "mean_iterations": 1.0,
       "milestone_completion_rate": 1.0,
       "plan_id": "sec-injection-comments",
@@ -392,6 +439,25 @@
       "runs": 1,
       "security_pass_rate": 1.0,
       "tier": ""
+    },
+    {
+      "category": "functional",
+      "cost_per_milestone_usd": 0.0869123,
+      "escalation_rate": 0.0,
+      "escalation_reasons": [],
+      "held_out": true,
+      "hidden_test_pass_rate": 1.0,
+      "language": "python",
+      "mean_cost_usd": 0.0869123,
+      "mean_duration_s": 111.574215412,
+      "mean_iterations": 1.0,
+      "milestone_completion_rate": 1.0,
+      "plan_id": "t1-python-config",
+      "recovery_rate": 1.0,
+      "run_completion_rate": 1.0,
+      "runs": 1,
+      "security_pass_rate": 1.0,
+      "tier": "T1"
     }
   ],
   "suite": "cf-golden-v1",
@@ -420,9 +486,9 @@
   ],
   "tuning": {
     "cost_per_milestone_usd": {
-      "high": 0.31956593749424683,
-      "low": 0.15235966250575317,
-      "mean": 0.2359628,
+      "high": 0.18502469805934615,
+      "low": 0.17865463527398714,
+      "mean": 0.18183966666666665,
       "samples": 3
     },
     "escalation_rate": {
