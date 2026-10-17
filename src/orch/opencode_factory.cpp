@@ -162,6 +162,10 @@ std::vector<std::string> sandboxed_server_launcher(
     // Approved design packages (design section 6.2 step 7), read-only.
     add_option(argv, "-v", config.designs_dir + ":/cf/designs:ro");
   }
+  if (!config.patterns_dir.empty()) {
+    // Pattern catalog (design section 6.2), read-only.
+    add_option(argv, "-v", config.patterns_dir + ":/cf/catalog:ro");
+  }
 
   add_option(argv, "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m");
   add_option(argv, "--tmpfs", "/home/cf:rw,noexec,nosuid,nodev,size=64m");
@@ -287,6 +291,9 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   spec.language = config_.language;
   if (!config_.designs_dir.empty()) {
     spec.designs_dir = sandboxed ? "/cf/designs" : config_.designs_dir;
+  }
+  if (!config_.patterns_dir.empty()) {
+    spec.patterns_dir = sandboxed ? "/cf/catalog" : config_.patterns_dir;
   }
   spec.calls_file = sandboxed ? "/cf/" + calls_file.filename().string()
                               : calls_file.string();

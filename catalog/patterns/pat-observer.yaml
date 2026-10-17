@@ -1,0 +1,14 @@
+# Pattern catalog entry (design section 6.2).
+id: PAT-OBSERVER
+name: Observer
+level: component
+use_when:
+  - "several consumers must react to state changes"
+  - "the producer must not know the consumers"
+avoid_when:
+  - "a single synchronous callback suffices"
+company_notes: "Prefer explicit subscription tokens with RAII unsubscribe over raw listener pointers."
+reference_impl: "repo://libs/events/observer.hpp"
+conformance_checks:
+  cpp: "cf-pattern-observer"
+  python: "swt.pattern.observer"

@@ -45,6 +45,7 @@ inline constexpr const char* kDimensionMismatch = "RAG_DIMENSION_MISMATCH";
 inline constexpr const char* kNotFound = "RAG_NOT_FOUND";
 inline constexpr const char* kEmptyDocument = "RAG_EMPTY_DOCUMENT";
 inline constexpr const char* kInvalidDocument = "RAG_INVALID_DOCUMENT";
+inline constexpr const char* kCatalogParseFailed = "RAG_CATALOG_PARSE_FAILED";
 }  // namespace error_codes
 
 struct Document {

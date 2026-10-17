@@ -16,6 +16,7 @@ add_executable(cf_unit_tests
   process_test.cpp
   gate_runner_test.cpp
   rag_index_test.cpp
+  catalog_test.cpp
   retriever_test.cpp
   rag_embedder_test.cpp
   rag_loader_test.cpp

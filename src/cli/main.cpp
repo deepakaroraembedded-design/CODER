@@ -56,6 +56,9 @@ int main(int argc, char** argv) {
   run->add_option("--design-model", design_model,
                   "Planner model for the design refiner (default: the coder "
                   "role's model)");
+  std::string patterns_dir = "catalog/patterns";
+  run->add_option("--patterns", patterns_dir,
+                  "Pattern catalog directory for the refiner and the agents");
   run->add_option("--model", model_overrides,
                   "Per-role model override, e.g. --model coder=accounts/...");
   run->add_option("--github-owner", github_owner, "GitHub owner for the PR flow");
@@ -126,6 +129,7 @@ int main(int argc, char** argv) {
     options.docs_dir = docs_dir;
     options.skip_refinement = skip_refinement;
     options.design_model = design_model;
+    options.patterns_dir = patterns_dir;
     options.github_owner = github_owner;
     options.github_repo = github_repo;
     options.github_app_id = github_app_id;

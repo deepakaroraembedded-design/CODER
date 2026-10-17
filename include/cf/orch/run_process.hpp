@@ -39,6 +39,8 @@ struct RunProcessConfig {
   std::map<std::string, nlohmann::json, std::less<>> role_options;
   std::string mcp_command;  // path to the cf-mcp binary
   std::string docs_dir;
+  // Pattern catalog directory (design section 6.2); empty omits it.
+  std::string patterns_dir;
   std::vector<std::pair<std::string, std::string>> environment;
   std::chrono::milliseconds turn_timeout{600000};
 

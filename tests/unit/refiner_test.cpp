@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "cf/orch/refiner.hpp"
+#include "cf/rag/catalog.hpp"
 #include "cf/rag/loader.hpp"
 
 namespace {
@@ -93,6 +94,30 @@ TEST(RefinerTest, RefinesAndKeepsThePlanContract) {
   ASSERT_EQ(package->adrs.size(), 1u);
   EXPECT_EQ(model.prompts.size(), 2u);  // design + self-critique
   EXPECT_NE(model.prompts[0].find("PLAN-X"), std::string::npos);
+}
+
+TEST(RefinerTest, ThePlannerPromptCarriesThePatternCatalog) {
+  auto entry = cf::rag::parse_pattern_entry(R"yaml(
+id: PAT-PRODUCER-CONSUMER
+name: Producer-consumer queue
+level: system
+use_when: ["producers hand work to consumers"]
+company_notes: "Fixed-capacity ring buffer with acquire/release atomics."
+)yaml",
+                                            "pc.yaml");
+  ASSERT_TRUE(entry.has_value()) << entry.error().message;
+  const std::vector<cf::rag::PatternEntry> catalog = {*entry};
+
+  ScriptedModel model;
+  model.replies = {kDesign, kOkCritique};
+  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner"},
+                        &catalog);
+  auto package = refiner.refine(sample_plan());
+  ASSERT_TRUE(package.has_value()) << package.error().message;
+  ASSERT_FALSE(model.prompts.empty());
+  EXPECT_NE(model.prompts[0].find("Pattern catalog"), std::string::npos);
+  EXPECT_NE(model.prompts[0].find("PAT-PRODUCER-CONSUMER"), std::string::npos);
+  EXPECT_NE(model.prompts[0].find("acquire/release atomics"), std::string::npos);
 }
 
 TEST(RefinerTest, RevisionFollowsTheCritique) {

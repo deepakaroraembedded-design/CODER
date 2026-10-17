@@ -1,0 +1,15 @@
+# Pattern catalog entry (design section 6.2). One file per approved pattern.
+id: PAT-STRATEGY
+name: Strategy
+level: component
+use_when:
+  - "several interchangeable algorithms behind one interface"
+  - "the algorithm is chosen at configuration or runtime"
+avoid_when:
+  - "only one implementation is foreseeable"
+  - "a hot path where indirect calls matter"
+company_notes: "Prefer std::function or templates over virtual inheritance in latency-critical modules."
+reference_impl: "repo://libs/pricing/strategy/"
+conformance_checks:
+  cpp: "cf-pattern-strategy"
+  python: "swt.pattern.strategy"

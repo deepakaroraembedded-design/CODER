@@ -24,7 +24,8 @@
 
 namespace cf::rag {
 class Retriever;
-}
+struct PatternEntry;
+}  // namespace cf::rag
 
 namespace cf::orch {
 
@@ -81,8 +82,11 @@ struct DesignRefinerOptions {
 
 class DesignRefiner {
  public:
+  // `catalog` is the curated pattern catalog (design section 6.2): the
+  // planner prompt carries it so pattern choices follow the catalog.
   DesignRefiner(DesignModel& model, const rag::Retriever* docs = nullptr,
-                DesignRefinerOptions options = {});
+                DesignRefinerOptions options = {},
+                const std::vector<rag::PatternEntry>* catalog = nullptr);
 
   // Runs the pipeline: design, self-critique, at most one revision. The
   // returned package is validated against the plan.
@@ -98,6 +102,7 @@ class DesignRefiner {
   DesignModel& model_;
   const rag::Retriever* docs_ = nullptr;
   DesignRefinerOptions options_;
+  const std::vector<rag::PatternEntry>* catalog_ = nullptr;
 };
 
 // Parses a design package from model output; code fences and prose around the

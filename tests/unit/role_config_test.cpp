@@ -25,6 +25,7 @@ RoleConfigSpec base_spec(const std::string& role) {
   spec.product = "Y";
   spec.language = "cpp";
   spec.designs_dir = "/work/designs";
+  spec.patterns_dir = "/work/catalog/patterns";
   spec.calls_file = "/work/runs/R12/calls-coder.jsonl";
   return spec;
 }
@@ -60,11 +61,12 @@ TEST(RoleConfigTest, CoderConfigAllowsEditsAndProfileCommands) {
   EXPECT_EQ(mcp["command"][3], "--milestone=M3");
   EXPECT_EQ(mcp["command"][4], "--db=/work/runs/R12/run.db");
   EXPECT_EQ(mcp["command"][5], "--docs=/work/docs");
-  // The RAG applicability context and the approved design packages are part
-  // of the MCP command (design sections 6.2 step 7, 6.3).
+  // The RAG applicability context, approved design packages and the pattern
+  // catalog are part of the MCP command (design sections 6.2 step 7, 6.3).
   EXPECT_EQ(mcp["command"][6], "--product=Y");
   EXPECT_EQ(mcp["command"][7], "--language=cpp");
   EXPECT_EQ(mcp["command"][8], "--designs=/work/designs");
+  EXPECT_EQ(mcp["command"][9], "--patterns=/work/catalog/patterns");
   EXPECT_EQ(mcp["environment"]["CF_MCP_CALLS_FILE"],
             "/work/runs/R12/calls-coder.jsonl");
 }
@@ -114,6 +116,7 @@ TEST(RoleConfigTest, OptionalSectionsAreOmitted) {
   spec.product.clear();
   spec.language.clear();
   spec.designs_dir.clear();
+  spec.patterns_dir.clear();
   spec.calls_file.clear();
   const Json config = build_role_config(spec);
   ASSERT_EQ(config["mcp"]["cf"]["command"].size(), 3u);

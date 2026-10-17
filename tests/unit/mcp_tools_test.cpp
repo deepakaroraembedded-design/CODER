@@ -155,6 +155,43 @@ TEST_F(McpToolsTest, SearchGuidelinesReturnsHits) {
   EXPECT_FALSE(result.structured["hits"][0]["citation"].get<std::string>().empty());
 }
 
+TEST_F(McpToolsTest, GetPatternReadsTheCuratedCatalog) {
+  // The curated catalog is authoritative (design section 6.2), including the
+  // conformance check ids; the retrieval index stays the fallback.
+  auto entry = cf::rag::parse_pattern_entry(R"yaml(
+id: PAT-STRATEGY
+name: Strategy
+level: component
+use_when: ["several interchangeable algorithms"]
+company_notes: "Prefer std::function."
+conformance_checks:
+  cpp: cf-pattern-strategy
+)yaml",
+                                            "strategy.yaml");
+  ASSERT_TRUE(entry.has_value()) << entry.error().message;
+  std::vector<cf::rag::PatternEntry> catalog = {*entry};
+
+  cf::mcp::ToolDependencies dependencies;
+  dependencies.run_id = "R12";
+  dependencies.retriever = retriever_.get();
+  dependencies.store = store_.get();
+  dependencies.patterns = &catalog;
+  const ToolRegistry with_catalog =
+      cf::mcp::build_tool_registry(std::move(dependencies));
+
+  const ToolResult found = with_catalog.call(
+      ToolRole::Coder, "get_pattern", Json{{"pattern_id", "PAT-STRATEGY"}});
+  ASSERT_FALSE(found.is_error) << found.text;
+  EXPECT_EQ(found.structured["name"], "Strategy");
+  EXPECT_EQ(found.structured["conformance_checks"]["cpp"], "cf-pattern-strategy");
+  EXPECT_NE(found.text.find("Prefer std::function"), std::string::npos);
+
+  const ToolResult missing = with_catalog.call(
+      ToolRole::Coder, "get_pattern", Json{{"pattern_id", "PAT-NOPE"}});
+  EXPECT_TRUE(missing.is_error);
+  EXPECT_EQ(missing.structured["code"], "TOOL_NOT_FOUND");
+}
+
 TEST_F(McpToolsTest, SearchUsesTheRunContextForScopedDocuments) {
   // A product-scoped approved design (design section 6.2 step 7) applies only
   // when the MCP server carries the run's product context.

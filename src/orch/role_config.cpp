@@ -86,6 +86,9 @@ nlohmann::json build_role_config(const RoleConfigSpec& spec) {
   if (!spec.designs_dir.empty()) {
     mcp_command.push_back("--designs=" + spec.designs_dir);
   }
+  if (!spec.patterns_dir.empty()) {
+    mcp_command.push_back("--patterns=" + spec.patterns_dir);
+  }
   config["mcp"]["cf"] = Json{{"type", "local"},
                              {"command", std::move(mcp_command)},
                              {"enabled", true}};

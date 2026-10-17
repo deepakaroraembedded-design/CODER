@@ -1,0 +1,14 @@
+# Pattern catalog entry (design section 6.2).
+id: PAT-FACTORY
+name: Factory
+level: component
+use_when:
+  - "object creation depends on configuration or input"
+  - "the concrete type must stay hidden behind an interface"
+avoid_when:
+  - "construction is a single deterministic call"
+company_notes: "Return std::unique_ptr and keep the factory header-only when the product is simple."
+reference_impl: "repo://libs/registry/factory/"
+conformance_checks:
+  cpp: "cf-pattern-factory"
+  python: "swt.pattern.factory"

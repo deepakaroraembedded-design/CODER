@@ -1,0 +1,13 @@
+# Pattern catalog entry (design section 6.2).
+id: PAT-PIMPL
+name: PIMPL
+level: component
+use_when:
+  - "the public header must not expose implementation details or dependencies"
+  - "ABI stability matters across releases"
+avoid_when:
+  - "the type is a small value type copied in hot paths"
+company_notes: "Use std::unique_ptr with an out-of-line destructor; keep the interface header-only when the type is internal."
+reference_impl: "repo://libs/engine/engine.hpp"
+conformance_checks:
+  cpp: "cf-pattern-pimpl"

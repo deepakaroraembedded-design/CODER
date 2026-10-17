@@ -387,15 +387,35 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
                     {"pattern_id"}),
       {ToolRole::Coder, ToolRole::Reviewer},
       [dependencies](const Json& arguments) -> ToolResult {
-        auto hits = search_rag(dependencies, arguments.at("pattern_id").get<std::string>(),
-                               {rag::DocType::Pattern}, 1);
+        const std::string pattern_id = arguments.at("pattern_id").get<std::string>();
+        // The curated catalog is authoritative (design section 6.2); the
+        // retrieval index is the fallback when no catalog is configured.
+        if (dependencies.patterns != nullptr) {
+          for (const auto& entry : *dependencies.patterns) {
+            if (entry.id != pattern_id) {
+              continue;
+            }
+            ToolResult result;
+            result.text = entry.to_markdown();
+            result.structured = Json{
+                {"id", entry.id},
+                {"name", entry.name},
+                {"level", entry.level},
+                {"use_when", entry.use_when},
+                {"avoid_when", entry.avoid_when},
+                {"company_notes", entry.company_notes},
+                {"reference_impl", entry.reference_impl},
+                {"conformance_checks", entry.conformance_checks},
+                {"source", entry.source_path}};
+            return result;
+          }
+        }
+        auto hits = search_rag(dependencies, pattern_id, {rag::DocType::Pattern}, 1);
         if (!hits) {
           return error_result(hits.error().code, hits.error().message);
         }
         if (hits->empty()) {
-          return error_result("TOOL_NOT_FOUND",
-                              "pattern not found: " +
-                                  arguments.at("pattern_id").get<std::string>());
+          return error_result("TOOL_NOT_FOUND", "pattern not found: " + pattern_id);
         }
         return hits_result(*hits, "no pattern found");
       }});

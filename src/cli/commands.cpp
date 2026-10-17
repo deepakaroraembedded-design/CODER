@@ -24,6 +24,7 @@
 #include "cf/orch/run_process.hpp"
 #include "cf/orch/state_machine.hpp"
 #include "cf/plan/plan.hpp"
+#include "cf/rag/catalog.hpp"
 #include "cf/rag/injection_scan.hpp"
 #include "cf/rag/loader.hpp"
 #include "cf/rag/retriever.hpp"
@@ -205,9 +206,21 @@ Result<orch::DesignPackage> refine_or_load(const ExecuteOptions& options,
     }
   }
 
+  // The curated pattern catalog (design section 6.2), when present.
+  std::vector<rag::PatternEntry> catalog;
+  if (!options.patterns_dir.empty() &&
+      std::filesystem::is_directory(options.patterns_dir)) {
+    auto loaded = rag::load_pattern_catalog(options.patterns_dir);
+    if (!loaded) {
+      return fail("ORCH_REFINE_FAILED", loaded.error().message);
+    }
+    catalog = std::move(*loaded);
+  }
+
   orch::DesignRefinerOptions refiner_options;
   refiner_options.model = model_id;
-  orch::DesignRefiner refiner(*active, retriever.get(), std::move(refiner_options));
+  orch::DesignRefiner refiner(*active, retriever.get(), std::move(refiner_options),
+                              &catalog);
   auto package = refiner.refine(plan);
   if (!package) {
     return package;
@@ -1018,6 +1031,10 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   config.role_models = options.role_models;
   config.mcp_command = options.mcp_binary;
   config.docs_dir = options.docs_dir;
+  if (!options.patterns_dir.empty() &&
+      std::filesystem::is_directory(options.patterns_dir)) {
+    config.patterns_dir = options.patterns_dir;
+  }
   config.profile = **profile;
   config.profile_language = effective.target.language;
   config.profile_build_system = effective.target.build_system;

@@ -157,6 +157,7 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     if (std::filesystem::is_directory(designs, designs_ec)) {
       factory_config.designs_dir = designs.string();
     }
+    factory_config.patterns_dir = config_.patterns_dir;
     const auto build =
         config_.profile.build_systems.find(config_.profile_build_system);
     if (build != config_.profile.build_systems.end()) {

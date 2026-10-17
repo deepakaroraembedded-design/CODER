@@ -41,6 +41,7 @@ struct OpencodeFactoryConfig {
   std::string product;
   std::string language;
   std::string designs_dir;
+  std::string patterns_dir;  // pattern catalog (design section 6.2)
   std::vector<std::string> coder_commands;  // profile agent commands
   std::vector<std::string> qa_commands;
   std::chrono::milliseconds start_timeout{30000};

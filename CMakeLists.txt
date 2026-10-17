@@ -179,6 +179,7 @@ add_library(cf_rag STATIC
   src/rag/vector_index.cpp
   src/rag/embedder.cpp
   src/rag/loader.cpp
+  src/rag/catalog.cpp
   src/rag/html.cpp
   src/rag/injection_scan.cpp
   src/rag/evaluation.cpp

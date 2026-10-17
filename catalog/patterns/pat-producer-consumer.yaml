@@ -1,0 +1,13 @@
+# Pattern catalog entry (design section 6.2).
+id: PAT-PRODUCER-CONSUMER
+name: Producer-consumer queue
+level: system
+use_when:
+  - "one or more producers hand work to one or more consumers"
+  - "bounded memory between stages"
+avoid_when:
+  - "the work is already serialized by the caller"
+company_notes: "Use a fixed-capacity ring buffer with acquire/release atomics for single-producer single-consumer; no locks on the hot path."
+reference_impl: "repo://libs/pipeline/ring_buffer.hpp"
+conformance_checks:
+  cpp: "cf-pattern-producer-consumer"

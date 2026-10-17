@@ -1,0 +1,13 @@
+# Pattern catalog entry (design section 6.2).
+id: PAT-RAII
+name: RAII wrapper
+level: component
+use_when:
+  - "a C resource or handle must be released on every path"
+  - "wrapping a C library in C++"
+avoid_when:
+  - "the handle is already owned by a standard container or smart pointer"
+company_notes: "No raw new/delete and no exceptions across module boundaries; the wrapper is noexcept on release."
+reference_impl: "repo://libs/platform/handle.hpp"
+conformance_checks:
+  cpp: "cf-pattern-raii"

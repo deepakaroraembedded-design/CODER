@@ -65,6 +65,7 @@ int main(int argc, char** argv) {
   std::string db_path;
   std::string docs_dir;
   std::string designs_dir;
+  std::string patterns_dir;
   std::string product;
   std::string language;
   std::string name;
@@ -77,6 +78,8 @@ int main(int argc, char** argv) {
                  "Directory of Markdown documents to index (optional)");
   app.add_option("--designs", designs_dir,
                  "Directory of approved design packages to index (optional)");
+  app.add_option("--patterns", patterns_dir,
+                 "Directory of pattern catalog entries (optional)");
   app.add_option("--product", product,
                  "Product scope for RAG applicability (design section 6.3)");
   app.add_option("--language", language,
@@ -93,8 +96,18 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  std::vector<cf::rag::PatternEntry> catalog;
+  if (!patterns_dir.empty()) {
+    auto loaded = cf::rag::load_pattern_catalog(patterns_dir);
+    if (!loaded) {
+      spdlog::error("cannot load the pattern catalog: {}", loaded.error().message);
+      return 3;
+    }
+    catalog = std::move(*loaded);
+  }
+
   std::shared_ptr<cf::rag::InMemoryRetriever> retriever;
-  if (!docs_dir.empty() || !designs_dir.empty()) {
+  if (!docs_dir.empty() || !designs_dir.empty() || !catalog.empty()) {
     retriever = std::make_shared<cf::rag::InMemoryRetriever>();
     for (const auto& directory : {docs_dir, designs_dir}) {
       if (directory.empty()) {
@@ -116,6 +129,16 @@ int main(int argc, char** argv) {
       spdlog::info("indexed {} document(s) from {}", documents->size(),
                    directory);
     }
+    // The pattern catalog is also part of the retrieval collection
+    // (design section 6.2).
+    for (const auto& entry : catalog) {
+      auto added = retriever->add_document(cf::rag::pattern_document(entry));
+      if (!added) {
+        spdlog::error("cannot index pattern {}: {}", entry.id,
+                      added.error().message);
+        return 3;
+      }
+    }
   }
 
   std::unique_ptr<cf::store::RunStore> store;
@@ -135,6 +158,7 @@ int main(int argc, char** argv) {
   dependencies.context.language = language;
   dependencies.retriever = retriever.get();
   dependencies.store = store.get();
+  dependencies.patterns = &catalog;
   const cf::mcp::ToolRegistry registry =
       cf::mcp::build_tool_registry(std::move(dependencies));
 

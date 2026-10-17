@@ -16,6 +16,7 @@
 #include <nlohmann/json.hpp>
 
 #include "cf/common/result.hpp"
+#include "cf/rag/catalog.hpp"
 #include "cf/rag/retriever.hpp"
 #include "cf/store/run_store.hpp"
 
@@ -72,6 +73,9 @@ struct ToolDependencies {
   rag::QueryContext context;  // product/component/language/as_of for RAG
   rag::Retriever* retriever = nullptr;
   store::RunStore* store = nullptr;
+  // The curated pattern catalog (design section 6.2); get_pattern reads it
+  // directly and falls back to the retrieval index when it is absent.
+  const std::vector<rag::PatternEntry>* patterns = nullptr;
 };
 
 // Builds the design section 9.1 tool surface.

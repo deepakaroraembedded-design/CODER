@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 #include <yaml-cpp/yaml.h>
 
+#include "cf/rag/catalog.hpp"
 #include "cf/rag/retriever.hpp"
 
 namespace cf::orch {
@@ -434,8 +435,9 @@ Result<std::filesystem::path> publish_design_package(
 }
 
 DesignRefiner::DesignRefiner(DesignModel& model, const rag::Retriever* docs,
-                             DesignRefinerOptions options)
-    : model_(model), docs_(docs), options_(std::move(options)) {}
+                             DesignRefinerOptions options,
+                             const std::vector<rag::PatternEntry>* catalog)
+    : model_(model), docs_(docs), options_(std::move(options)), catalog_(catalog) {}
 
 std::string DesignRefiner::design_prompt(const plan::Plan& plan) const {
   std::ostringstream out;
@@ -446,6 +448,26 @@ std::string DesignRefiner::design_prompt(const plan::Plan& plan) const {
   const std::string context = retrieved_context(docs_, plan, options_.context_hits);
   if (!context.empty()) {
     out << "Company documents and reference material:\n" << context << "\n";
+  }
+  if (catalog_ != nullptr && !catalog_->empty()) {
+    // The curated pattern catalog (design section 6.2): system- and
+    // component-level patterns with their company notes.
+    out << "Pattern catalog (choose patterns from this list and name them in "
+           "the ADRs):\n";
+    for (const auto& entry : *catalog_) {
+      out << "- " << entry.id << " " << entry.name << " (" << entry.level << ")";
+      if (!entry.use_when.empty()) {
+        out << " use when: " << join(entry.use_when, "; ");
+      }
+      if (!entry.avoid_when.empty()) {
+        out << " avoid when: " << join(entry.avoid_when, "; ");
+      }
+      if (!entry.company_notes.empty()) {
+        out << " note: " << entry.company_notes;
+      }
+      out << "\n";
+    }
+    out << "\n";
   }
   out << kDesignRules
       << "\nReturn exactly one JSON object, with no prose around it:\n"

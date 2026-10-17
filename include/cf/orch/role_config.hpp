@@ -35,6 +35,8 @@ struct RoleConfigSpec {
   std::string language;
   // Approved design packages (design section 6.2 step 7); empty omits them.
   std::string designs_dir;
+  // Pattern catalog directory (design section 6.2); empty omits it.
+  std::string patterns_dir;
   std::string calls_file;  // CF_MCP_CALLS_FILE for this role
 };
 

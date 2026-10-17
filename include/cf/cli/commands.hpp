@@ -92,6 +92,9 @@ struct ExecuteOptions {
   std::string design_model;  // planner model; empty: the coder role's model
   std::string provider_base_url = "https://api.fireworks.ai/inference/v1";
   std::string api_key_env = "FIREWORKS_API_KEY";
+  // Pattern catalog for the refiner prompt and the role MCP servers (design
+  // section 6.2); a missing directory is ignored.
+  std::string patterns_dir = "catalog/patterns";
   // Tests inject the planner; production builds a Fireworks client.
   cf::orch::DesignModel* design_model_override = nullptr;
 
