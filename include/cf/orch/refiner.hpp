@@ -12,6 +12,7 @@
 #pragma once
 
 #include <cstddef>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -116,5 +117,14 @@ plan::Plan design_package_to_plan(const DesignPackage& package,
 std::string design_package_to_json(const DesignPackage& package);
 // Human-readable summary for the approval gate.
 std::string design_package_to_markdown(const DesignPackage& package);
+
+// Publishes an approved design package as a RAG design document under
+// <workspace>/designs (design section 6.2 step 7): front-matter Markdown
+// with scope=product, status=approved, the source run and the approval date.
+// A design previously approved for the same plan becomes status=superseded
+// and is no longer returned by the retriever. Returns the written path.
+Result<std::filesystem::path> publish_design_package(
+    const std::filesystem::path& workspace, const std::string& run_id,
+    const DesignPackage& package, int64_t approved_at);
 
 }  // namespace cf::orch

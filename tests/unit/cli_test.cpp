@@ -484,6 +484,19 @@ TEST_F(CliTest, RefinementStopsAtTheApprovalGateAndTheRefinedPlanDrivesExecution
             0)
       << approve_err.str();
 
+  // Approving publishes the design as a RAG document for the product
+  // (design section 6.2 step 7).
+  const auto design_document = workspace_ / "designs" / "design-PLAN-CLI-R12.md";
+  ASSERT_TRUE(std::filesystem::exists(design_document));
+  {
+    std::ifstream in(design_document);
+    const std::string text((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    EXPECT_NE(text.find("status: approved"), std::string::npos);
+    EXPECT_NE(text.find("scope_value: Y"), std::string::npos);
+    EXPECT_NE(text.find("source: cf://runs/R12"), std::string::npos);
+  }
+
   auto factory = [run_dir](const std::string& role,
                            const std::string& worktree)
       -> cf::Result<std::unique_ptr<cf::orch::SessionDriver>> {

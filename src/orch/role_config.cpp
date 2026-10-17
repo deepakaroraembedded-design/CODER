@@ -77,6 +77,15 @@ nlohmann::json build_role_config(const RoleConfigSpec& spec) {
   if (!spec.docs_dir.empty()) {
     mcp_command.push_back("--docs=" + spec.docs_dir);
   }
+  if (!spec.product.empty()) {
+    mcp_command.push_back("--product=" + spec.product);
+  }
+  if (!spec.language.empty()) {
+    mcp_command.push_back("--language=" + spec.language);
+  }
+  if (!spec.designs_dir.empty()) {
+    mcp_command.push_back("--designs=" + spec.designs_dir);
+  }
   config["mcp"]["cf"] = Json{{"type", "local"},
                              {"command", std::move(mcp_command)},
                              {"enabled", true}};

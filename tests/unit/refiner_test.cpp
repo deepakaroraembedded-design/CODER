@@ -1,10 +1,15 @@
 // Unit tests for the plan refiner (design section 6.2).
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
+#include <unistd.h>
+
 #include "cf/orch/refiner.hpp"
+#include "cf/rag/loader.hpp"
 
 namespace {
 
@@ -197,6 +202,60 @@ TEST(RefinerTest, DesignPackageToPlanCarriesTheWriteSets) {
   EXPECT_EQ(refined.plan_id, "PLAN-X");
   EXPECT_EQ(refined.target.language, "cpp");
   EXPECT_EQ(refined.milestones[1].depends_on, (std::vector<std::string>{"M1"}));
+}
+
+TEST(RefinerTest, PublishesApprovedDesignsAndSupersedesOlderOnes) {
+  const auto dir = std::filesystem::temp_directory_path() /
+                   ("cf_refiner_publish_" + std::to_string(::getpid()));
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+
+  auto package = cf::orch::parse_design_package(kDesign);
+  ASSERT_TRUE(package.has_value()) << package.error().message;
+  // The refiner stamps these from the plan before the package is stored.
+  package->plan_id = "PLAN-X";
+  package->product = "Y";
+
+  auto first = cf::orch::publish_design_package(dir, "R1", *package, 1000);
+  ASSERT_TRUE(first.has_value()) << first.error().message;
+  EXPECT_EQ(first->filename().string(), "design-PLAN-X-R1.md");
+
+  // The document is a front-matter design document scoped to the product.
+  const std::string text = [&] {
+    std::ifstream in(*first, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+  }();
+  EXPECT_NE(text.find("doc_id: design-PLAN-X-R1"), std::string::npos);
+  EXPECT_NE(text.find("type: design"), std::string::npos);
+  EXPECT_NE(text.find("scope_value: Y"), std::string::npos);
+  EXPECT_NE(text.find("status: approved"), std::string::npos);
+  EXPECT_NE(text.find("source: cf://runs/R1"), std::string::npos);
+  EXPECT_NE(text.find("approved_at: 1000"), std::string::npos);
+  EXPECT_NE(text.find("# Design package: PLAN-X"), std::string::npos);
+
+  // A later approval for the same plan supersedes the earlier document.
+  auto second = cf::orch::publish_design_package(dir, "R2", *package, 2000);
+  ASSERT_TRUE(second.has_value()) << second.error().message;
+  const std::string first_text = [&] {
+    std::ifstream in(*first, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+  }();
+  EXPECT_NE(first_text.find("status: superseded"), std::string::npos);
+  const std::string second_text = [&] {
+    std::ifstream in(*second, std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+  }();
+  EXPECT_NE(second_text.find("status: approved"), std::string::npos);
+
+  // Both load back through the document loader (front matter is valid).
+  auto loaded = cf::rag::load_document_dir(dir / "designs");
+  ASSERT_TRUE(loaded.has_value()) << loaded.error().message;
+  EXPECT_EQ(loaded->size(), 2u);
+
+  std::filesystem::remove_all(dir, ec);
 }
 
 TEST(RefinerTest, ToleratesProseAroundTheJson) {

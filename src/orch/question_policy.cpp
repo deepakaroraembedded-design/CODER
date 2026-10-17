@@ -56,6 +56,8 @@ QuestionDecision RagQuestionPolicy::decide(const QuestionAsked& asked) {
     query.text = question.text;
     query.types = config_.answer_types;
     query.top_k = 1;
+    query.context.product = config_.product;
+    query.context.language = config_.language;
     auto hits = retriever_.search(query);
 
     std::string answer;

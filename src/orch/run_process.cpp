@@ -109,20 +109,30 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
 
   // RAG index for question answering (design section 6.6.1 layer 3).
   std::shared_ptr<rag::InMemoryRetriever> retriever;
-  if (!config_.docs_dir.empty()) {
+  const std::filesystem::path designs_dir = config_.workspace_root / "designs";
+  if (!config_.docs_dir.empty() || std::filesystem::is_directory(designs_dir)) {
     retriever = std::make_shared<rag::InMemoryRetriever>();
-    auto documents = rag::load_document_dir(config_.docs_dir);
-    if (documents) {
-      for (auto& document : *documents) {
-        auto added = retriever->add_document(std::move(document));
-        if (!added) {
-          spdlog::warn("cannot index {}: {}", document.doc_id,
-                       added.error().message);
-        }
+    // Company documents plus approved design packages from earlier runs
+    // (design section 6.2 step 7); the applicability filter keeps only the
+    // ones scoped to this run's product and language.
+    for (const auto& directory :
+         {std::filesystem::path(config_.docs_dir), designs_dir}) {
+      if (directory.empty()) {
+        continue;
       }
-    } else {
-      spdlog::warn("cannot load documents for question answering: {}",
-                   documents.error().message);
+      auto documents = rag::load_document_dir(directory);
+      if (documents) {
+        for (auto& document : *documents) {
+          auto added = retriever->add_document(std::move(document));
+          if (!added) {
+            spdlog::warn("cannot index {}: {}", document.doc_id,
+                         added.error().message);
+          }
+        }
+      } else {
+        spdlog::warn("cannot load documents from {} for question answering: {}",
+                     directory.string(), documents.error().message);
+      }
     }
   }
 
@@ -138,6 +148,15 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     factory_config.mcp_command = config_.mcp_command;
     factory_config.db_path = (run_dir / "run.db").string();
     factory_config.docs_dir = config_.docs_dir;
+    // RAG applicability context and approved design packages (design
+    // sections 6.2 step 7, 6.3).
+    factory_config.product = plan_.product;
+    factory_config.language = plan_.target.language;
+    const std::filesystem::path designs = config_.workspace_root / "designs";
+    std::error_code designs_ec;
+    if (std::filesystem::is_directory(designs, designs_ec)) {
+      factory_config.designs_dir = designs.string();
+    }
     const auto build =
         config_.profile.build_systems.find(config_.profile_build_system);
     if (build != config_.profile.build_systems.end()) {

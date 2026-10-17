@@ -36,6 +36,11 @@ struct OpencodeFactoryConfig {
   std::string mcp_command;  // path to the cf-mcp binary
   std::string db_path;      // run store
   std::string docs_dir;
+  // RAG applicability context and approved design packages for the role's
+  // cf-mcp (design sections 6.2, 6.3).
+  std::string product;
+  std::string language;
+  std::string designs_dir;
   std::vector<std::string> coder_commands;  // profile agent commands
   std::vector<std::string> qa_commands;
   std::chrono::milliseconds start_timeout{30000};

@@ -64,6 +64,9 @@ int main(int argc, char** argv) {
   std::string milestone_id;
   std::string db_path;
   std::string docs_dir;
+  std::string designs_dir;
+  std::string product;
+  std::string language;
   std::string name;
   app.add_option("--role", role_text, "Agent role: coder, reviewer or qa")
       ->required();
@@ -72,6 +75,12 @@ int main(int argc, char** argv) {
   app.add_option("--db", db_path, "Run store database (optional)");
   app.add_option("--docs", docs_dir,
                  "Directory of Markdown documents to index (optional)");
+  app.add_option("--designs", designs_dir,
+                 "Directory of approved design packages to index (optional)");
+  app.add_option("--product", product,
+                 "Product scope for RAG applicability (design section 6.3)");
+  app.add_option("--language", language,
+                 "Target language scope for RAG applicability");
   app.add_option("--name", name, "Server name reported to MCP");
   CLI11_PARSE(app, argc, argv);
 
@@ -85,21 +94,28 @@ int main(int argc, char** argv) {
   }
 
   std::shared_ptr<cf::rag::InMemoryRetriever> retriever;
-  if (!docs_dir.empty()) {
+  if (!docs_dir.empty() || !designs_dir.empty()) {
     retriever = std::make_shared<cf::rag::InMemoryRetriever>();
-    auto documents = cf::rag::load_document_dir(docs_dir);
-    if (!documents) {
-      spdlog::error("cannot load documents: {}", documents.error().message);
-      return 3;
-    }
-    for (auto& document : *documents) {
-      auto added = retriever->add_document(std::move(document));
-      if (!added) {
-        spdlog::error("cannot index documents: {}", added.error().message);
+    for (const auto& directory : {docs_dir, designs_dir}) {
+      if (directory.empty()) {
+        continue;
+      }
+      auto documents = cf::rag::load_document_dir(directory);
+      if (!documents) {
+        spdlog::error("cannot load documents from {}: {}", directory,
+                      documents.error().message);
         return 3;
       }
+      for (auto& document : *documents) {
+        auto added = retriever->add_document(std::move(document));
+        if (!added) {
+          spdlog::error("cannot index documents: {}", added.error().message);
+          return 3;
+        }
+      }
+      spdlog::info("indexed {} document(s) from {}", documents->size(),
+                   directory);
     }
-    spdlog::info("indexed {} document(s) from {}", documents->size(), docs_dir);
   }
 
   std::unique_ptr<cf::store::RunStore> store;
@@ -115,6 +131,8 @@ int main(int argc, char** argv) {
   cf::mcp::ToolDependencies dependencies;
   dependencies.run_id = run_id;
   dependencies.milestone_id = milestone_id;
+  dependencies.context.product = product;
+  dependencies.context.language = language;
   dependencies.retriever = retriever.get();
   dependencies.store = store.get();
   const cf::mcp::ToolRegistry registry =

@@ -70,7 +70,10 @@ void InMemoryRetriever::set_embedder(std::shared_ptr<Embedder> embedder) {
 }
 
 bool InMemoryRetriever::applies(const Chunk& chunk, const QueryContext& context) {
-  if (chunk.status != "active") {
+  // Active documents are the default; approved design packages (design
+  // section 6.2 step 7) are retrievable too, while superseded, withdrawn and
+  // draft documents are not.
+  if (chunk.status != "active" && chunk.status != "approved") {
     return false;
   }
   if (chunk.scope == "product") {

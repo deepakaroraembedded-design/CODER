@@ -178,19 +178,29 @@ Result<orch::DesignPackage> refine_or_load(const ExecuteOptions& options,
     active = model.get();
   }
 
+  // Company documents plus approved design packages from earlier runs
+  // (design section 6.2 step 7); the applicability filter keeps only the
+  // ones scoped to this plan's product.
+  const std::filesystem::path designs_dir = options.workspace / "designs";
   std::unique_ptr<rag::InMemoryRetriever> retriever;
-  if (!options.docs_dir.empty()) {
+  if (!options.docs_dir.empty() || std::filesystem::is_directory(designs_dir)) {
     retriever = std::make_unique<rag::InMemoryRetriever>();
-    auto documents = rag::load_document_dir(options.docs_dir);
-    if (!documents) {
-      return fail("ORCH_REFINE_FAILED",
-                  "cannot load documents for refinement: " +
-                      documents.error().message);
-    }
-    for (auto& document : *documents) {
-      auto added = retriever->add_document(std::move(document));
-      if (!added) {
-        return fail("ORCH_REFINE_FAILED", added.error().message);
+    for (const auto& directory :
+         {std::filesystem::path(options.docs_dir), designs_dir}) {
+      if (directory.empty()) {
+        continue;
+      }
+      auto documents = rag::load_document_dir(directory);
+      if (!documents) {
+        return fail("ORCH_REFINE_FAILED",
+                    "cannot load documents for refinement from " +
+                        directory.string() + ": " + documents.error().message);
+      }
+      for (auto& document : *documents) {
+        auto added = retriever->add_document(std::move(document));
+        if (!added) {
+          return fail("ORCH_REFINE_FAILED", added.error().message);
+        }
       }
     }
   }
@@ -731,13 +741,36 @@ int approve_command(const std::filesystem::path& workspace, const std::string& r
     return 2;
   }
   orch::StateMachine machine(**store, run_id);
-  const auto applied = machine.apply(orch::RunEvent::Approved, {}, store::unix_now());
+  const int64_t now = store::unix_now();
+  const auto applied = machine.apply(orch::RunEvent::Approved, {}, now);
   if (!applied) {
     err << applied.error().code << ": " << applied.error().message << "\n";
     return 1;
   }
+
+  // Approved designs feed back into RAG (design section 6.2 step 7): the
+  // package becomes a design document under <workspace>/designs, scoped to
+  // the product, and an earlier approved design for the same plan becomes
+  // superseded. Runs without a package (--skip-refinement) just approve.
+  Json published;
+  const std::filesystem::path design_path = run_directory(workspace, run_id) / "design.json";
+  std::error_code design_ec;
+  if (std::filesystem::exists(design_path, design_ec)) {
+    auto package = orch::parse_design_package(read_file_text(design_path));
+    if (!package) {
+      err << package.error().code << ": " << package.error().message << "\n";
+      return 1;
+    }
+    auto path = orch::publish_design_package(workspace, run_id, *package, now);
+    if (!path) {
+      err << path.error().code << ": " << path.error().message << "\n";
+      return 1;
+    }
+    published = path->string();
+  }
   out << Json{{"run_id", run_id},
-              {"state", std::string(orch::to_string(*applied))}}
+              {"state", std::string(orch::to_string(*applied))},
+              {"design_document", std::move(published)}}
              .dump(2)
       << "\n";
   return 0;

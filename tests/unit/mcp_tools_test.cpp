@@ -155,6 +155,41 @@ TEST_F(McpToolsTest, SearchGuidelinesReturnsHits) {
   EXPECT_FALSE(result.structured["hits"][0]["citation"].get<std::string>().empty());
 }
 
+TEST_F(McpToolsTest, SearchUsesTheRunContextForScopedDocuments) {
+  // A product-scoped approved design (design section 6.2 step 7) applies only
+  // when the MCP server carries the run's product context.
+  cf::rag::Document design;
+  design.doc_id = "design-PLAN-A-R1";
+  design.version = "1";
+  design.type = cf::rag::DocType::Design;
+  design.status = "approved";
+  design.scope = "product";
+  design.scope_value = "Y";
+  design.text = "# Design\n\nZebraCache uses a write-through layer.\n";
+  design.source = "cf://runs/R1";
+  ASSERT_TRUE(retriever_->add_document(design).has_value());
+
+  cf::mcp::ToolDependencies dependencies;
+  dependencies.run_id = "R12";
+  dependencies.context.product = "Y";
+  dependencies.retriever = retriever_.get();
+  dependencies.store = store_.get();
+  const ToolRegistry scoped =
+      cf::mcp::build_tool_registry(std::move(dependencies));
+
+  const ToolResult with_context = scoped.call(
+      ToolRole::Coder, "search_guidelines", Json{{"query", "ZebraCache"}});
+  ASSERT_FALSE(with_context.is_error) << with_context.text;
+  ASSERT_FALSE(with_context.structured["hits"].empty());
+  EXPECT_EQ(with_context.structured["hits"][0]["doc_id"], "design-PLAN-A-R1");
+
+  // Without the product context the scoped document does not apply.
+  const ToolResult without_context = registry_.call(
+      ToolRole::Coder, "search_guidelines", Json{{"query", "ZebraCache"}});
+  ASSERT_FALSE(without_context.is_error) << without_context.text;
+  EXPECT_TRUE(without_context.structured["hits"].empty());
+}
+
 TEST_F(McpToolsTest, SearchGuidelinesHonoursTypeFilter) {
   const ToolResult result = registry_.call(
       ToolRole::Coder, "search_guidelines",

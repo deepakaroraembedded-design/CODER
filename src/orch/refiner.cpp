@@ -1,12 +1,14 @@
 #include "cf/orch/refiner.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <map>
 #include <set>
 #include <sstream>
 #include <utility>
 
 #include <spdlog/spdlog.h>
+#include <yaml-cpp/yaml.h>
 
 #include "cf/rag/retriever.hpp"
 
@@ -355,6 +357,80 @@ std::string design_package_to_markdown(const DesignPackage& package) {
     }
   }
   return out.str();
+}
+
+Result<std::filesystem::path> publish_design_package(
+    const std::filesystem::path& workspace, const std::string& run_id,
+    const DesignPackage& package, int64_t approved_at) {
+  const std::filesystem::path designs = workspace / "designs";
+  std::error_code ec;
+  std::filesystem::create_directories(designs, ec);
+  if (ec) {
+    return fail("ORCH_DESIGN_PUBLISH_FAILED",
+                "cannot create " + designs.string() + ": " + ec.message());
+  }
+
+  const std::string doc_id = "design-" + package.plan_id + "-" + run_id;
+
+  // A later design for the same plan replaces the earlier one: mark every
+  // other approved design document for this plan superseded (design section
+  // 6.2 step 7). The front matter is rewritten in place.
+  for (const auto& entry : std::filesystem::directory_iterator(designs, ec)) {
+    if (entry.path().extension() != ".md" ||
+        entry.path().stem().string() == doc_id) {
+      continue;
+    }
+    std::ifstream in(entry.path(), std::ios::binary);
+    std::string text((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    const auto end = text.find("\n---", 4);
+    if (end == std::string::npos) {
+      continue;
+    }
+    YAML::Node front;
+    try {
+      front = YAML::Load(text.substr(4, end - 4));
+    } catch (const YAML::Exception&) {
+      continue;
+    }
+    if (!front.IsMap() || front["plan_id"].as<std::string>("") != package.plan_id ||
+        front["status"].as<std::string>("") != "approved") {
+      continue;
+    }
+    const std::string needle = "\nstatus: approved";
+    const auto at = text.find(needle);
+    if (at == std::string::npos) {
+      continue;
+    }
+    text.replace(at, needle.size(), "\nstatus: superseded");
+    std::ofstream out(entry.path(), std::ios::binary | std::ios::trunc);
+    out << text;
+  }
+
+  std::ostringstream document;
+  document << "---\n"
+           << "doc_id: " << doc_id << "\n"
+           << "version: \"1\"\n"
+           << "type: design\n"
+           << "owner: cf-orchestrator\n"
+           << "classification: internal\n"
+           << "scope: product\n"
+           << "scope_value: " << package.product << "\n"
+           << "status: approved\n"
+           << "source: cf://runs/" << run_id << "\n"
+           << "plan_id: " << package.plan_id << "\n"
+           << "source_run: " << run_id << "\n"
+           << "approved_at: " << approved_at << "\n"
+           << "---\n\n"
+           << design_package_to_markdown(package);
+
+  const std::filesystem::path path = designs / (doc_id + ".md");
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) {
+    return fail("ORCH_DESIGN_PUBLISH_FAILED", "cannot write " + path.string());
+  }
+  out << document.str();
+  return path;
 }
 
 DesignRefiner::DesignRefiner(DesignModel& model, const rag::Retriever* docs,

@@ -20,6 +20,10 @@ namespace cf::orch {
 struct QuestionPolicyConfig {
   // JSONL file for recorded ambiguities (empty: not recorded).
   std::filesystem::path ambiguities_file;
+  // RAG applicability context (design section 6.3): the run's product and
+  // target language, so scoped documents can cover a question.
+  std::string product;
+  std::string language;
   // Minimum retrieval score for a passage to count as coverage.
   float min_score = 0.0f;
   std::vector<rag::DocType> answer_types = {rag::DocType::Policy,

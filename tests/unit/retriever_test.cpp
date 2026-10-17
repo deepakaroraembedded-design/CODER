@@ -132,6 +132,42 @@ TEST(RetrieverTest, InactiveStatusesAreFiltered) {
   EXPECT_TRUE(hits->empty());
 }
 
+TEST(RetrieverTest, ApprovedDesignDocumentsAreRetrievable) {
+  InMemoryRetriever retriever;
+  // Approved design packages (design section 6.2 step 7) are retrievable for
+  // their product; once superseded they are not.
+  Document approved = make_document("design-PLAN-A-R1", DocType::Design,
+                                    "# Design\n\nZebra protocol design decision.\n");
+  approved.status = "approved";
+  approved.scope = "product";
+  approved.scope_value = "zebra";
+  ASSERT_TRUE(retriever.add_document(approved).has_value());
+
+  Query query;
+  query.text = "zebra protocol design";
+  query.context.product = "zebra";
+  auto hits = retriever.search(query);
+  ASSERT_TRUE(hits.has_value()) << hits.error().message;
+  ASSERT_EQ(hits->size(), 1u);
+  EXPECT_EQ(hits->front().doc_id, "design-PLAN-A-R1");
+
+  // Another product does not see it.
+  query.context.product = "other";
+  hits = retriever.search(query);
+  ASSERT_TRUE(hits.has_value());
+  EXPECT_TRUE(hits->empty());
+
+  // A superseded design is not returned even for its own product.
+  InMemoryRetriever superseded_retriever;
+  Document superseded = approved;
+  superseded.status = "superseded";
+  ASSERT_TRUE(superseded_retriever.add_document(superseded).has_value());
+  query.context.product = "zebra";
+  hits = superseded_retriever.search(query);
+  ASSERT_TRUE(hits.has_value());
+  EXPECT_TRUE(hits->empty());
+}
+
 TEST(RetrieverTest, ScopeMustMatchTheRunContext) {
   InMemoryRetriever retriever;
   Document component_doc = make_document(

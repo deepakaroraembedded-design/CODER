@@ -29,6 +29,12 @@ struct RoleConfigSpec {
   std::string milestone_id;
   std::string db_path;
   std::string docs_dir;
+  // RAG applicability context for the role's cf-mcp (design section 6.3):
+  // the run's product and target language, so scoped documents apply.
+  std::string product;
+  std::string language;
+  // Approved design packages (design section 6.2 step 7); empty omits them.
+  std::string designs_dir;
   std::string calls_file;  // CF_MCP_CALLS_FILE for this role
 };
 

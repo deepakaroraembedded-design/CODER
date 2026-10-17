@@ -158,6 +158,10 @@ std::vector<std::string> sandboxed_server_launcher(
   for (const auto& [source, target] : config.extra_mounts) {
     add_option(argv, "-v", source + ":" + target);
   }
+  if (!config.designs_dir.empty()) {
+    // Approved design packages (design section 6.2 step 7), read-only.
+    add_option(argv, "-v", config.designs_dir + ":/cf/designs:ro");
+  }
 
   add_option(argv, "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m");
   add_option(argv, "--tmpfs", "/home/cf:rw,noexec,nosuid,nodev,size=64m");
@@ -279,6 +283,11 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   spec.run_id = config_.run_id;
   spec.db_path = sandboxed ? "/cf/run.db" : config_.db_path;
   spec.docs_dir = sandboxed ? "/cf/docs" : config_.docs_dir;
+  spec.product = config_.product;
+  spec.language = config_.language;
+  if (!config_.designs_dir.empty()) {
+    spec.designs_dir = sandboxed ? "/cf/designs" : config_.designs_dir;
+  }
   spec.calls_file = sandboxed ? "/cf/" + calls_file.filename().string()
                               : calls_file.string();
 
@@ -397,6 +406,8 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   if (config_.retriever != nullptr) {
     QuestionPolicyConfig question_config;
     question_config.ambiguities_file = config_.ambiguities_file;
+    question_config.product = config_.product;
+    question_config.language = config_.language;
     state.question_policy =
         std::make_unique<RagQuestionPolicy>(*config_.retriever, question_config);
   }
