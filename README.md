@@ -28,11 +28,12 @@ is still missing.
 | opencode-backed `AgentRunner` | Implemented end to end: turn driving with event-driven (`session.idle`) turn completion, permission broker, event routing, role configs, versioned prompt templates, RAG-backed question answering, server spawning, dead-server detection and restart before the next turn (§6.12, H8), `RunProcess` and `cf run --execute` |
 | GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences), dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment`), `GithubFlow` (milestone pushes, draft PR open/update/ready, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
 | CLI (`cf check/run/status/resume/escalations/report`) | Implemented and tested |
+| Design refinement (Phase 4) | First slice implemented and verified with the real planner model: the refiner turns the plan into a design package (`runs/<run>/design.{json,md}` — component design, refined milestone DAG with write sets/uses/interfaces for the scheduler, ADRs), self-critiques and revises once, stops at the human approval gate, and the approved package drives execution. Remaining: pattern catalog, ADR ingestion into RAG, pattern-conformance checks, adversarial conflict set |
 | Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the first full benchmark (3 candidates × 4 plans, C++ and Python) is complete and confirms the pinned models |
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **517 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **524 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -209,16 +210,24 @@ cf ingest --docs docs/ --out cf-work/docs --db cf-work/runs/R12/run.db
 # create a run (validates, creates the store, registers milestones)
 cf run --plan plans/product-x.yaml --profiles profiles --workspace cf-work --run-id R12
 
-# execute it: spawns opencode per role, runs the loop, merges into the
-# integration branch (refinement is not implemented yet, hence --skip-refinement;
-# without it the run stops at the design gate and waits for cf approve)
+# execute it. Without --skip-refinement the design refiner runs first: the
+# planner model writes runs/R12/design.{json,md} (component design, refined
+# milestone DAG with write sets and interfaces, ADRs) and the run stops at the
+# human approval gate. --skip-refinement bypasses the gate entirely.
 cf run --plan plans/product-x.yaml --profiles profiles --workspace cf-work --run-id R12 \
-       --execute --repo /path/to/target-repo --skip-refinement \
+       --execute --repo /path/to/target-repo \
+       [--design-model accounts/fireworks/models/<planner>] \
        [--model coder=accounts/fireworks/models/<model>] \
        [--sandbox-image cf-toolchain-c-cpp:2026.10] [--docs cf-work/docs]
 
-# approve the design stage (moves AwaitingDesignApproval -> Executing)
+# review the design package, then approve it (AwaitingDesignApproval -> Executing)
 cf approve --run R12 --workspace cf-work --stage design
+
+# execute again: the run already exists (re-running is idempotent), the
+# approved refined plan drives the scheduler (write sets, interfaces) and the
+# pipeline runs to Done
+cf run --plan plans/product-x.yaml --profiles profiles --workspace cf-work --run-id R12 \
+       --execute --repo /path/to/target-repo
 
 # inspect it
 cf status --run R12 --workspace cf-work          # human-readable
@@ -323,7 +332,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 517 unit tests
+ctest --test-dir build/debug --output-on-failure     # 524 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -527,7 +536,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (517)
+tests/unit/                 # GoogleTest unit tests (524)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

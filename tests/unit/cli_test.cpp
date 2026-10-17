@@ -131,10 +131,16 @@ TEST_F(CliTest, RunCommandCreatesTheRunAndRegistersMilestones) {
   ASSERT_TRUE(milestone.has_value());
   EXPECT_EQ(milestone->state, "Pending");
 
-  // A second run with the same id is rejected.
+  // Running the same id again is idempotent (the stored plan drives it, for
+  // example `cf run --execute` after `cf approve`); nothing is recreated.
+  std::ostringstream second_out;
   std::ostringstream second_err;
-  EXPECT_EQ(run(out, second_err), 1);
-  EXPECT_NE(second_err.str().find("STORE_CONFLICT"), std::string::npos);
+  EXPECT_EQ(run(second_out, second_err), 0) << second_err.str();
+  const auto second = nlohmann::json::parse(second_out.str());
+  EXPECT_EQ(second["state"], "Created");
+  auto milestones = (*store)->list_milestones("R12");
+  ASSERT_TRUE(milestones.has_value());
+  EXPECT_EQ(milestones->size(), 1u);  // not registered twice
 }
 
 TEST_F(CliTest, StatusCommandPrintsStateAndJson) {
@@ -272,6 +278,21 @@ TEST_F(CliTest, ReportCommandWritesTraceabilityAndCost) {
 }
 
 // Scripted session driver: writes the phase's files into the worktree and
+// Scripted planner model for the refinement pipeline (design section 6.2).
+class ScriptedDesignModel final : public cf::orch::DesignModel {
+ public:
+  std::vector<std::string> replies;
+
+  cf::Result<std::string> complete(std::string_view) override {
+    if (replies.empty()) {
+      return cf::fail("TEST_NO_REPLY", "the design script has no reply left");
+    }
+    std::string reply = replies.front();
+    replies.erase(replies.begin());
+    return reply;
+  }
+};
+
 // appends the structured submission to the role's calls file, like a real
 // agent would through cf-mcp.
 class ScriptedDriver final : public cf::orch::SessionDriver {
@@ -400,21 +421,83 @@ TEST_F(CliTest, IngestRejectsAMissingDirectory) {
   EXPECT_FALSE(err.str().empty());
 }
 
-TEST_F(CliTest, ExecuteRequiresDesignApprovalWithoutSkip) {
+TEST_F(CliTest, RefinementStopsAtTheApprovalGateAndTheRefinedPlanDrivesExecution) {
   std::ostringstream out;
   std::ostringstream err;
   ASSERT_EQ(run(out, err), 0) << err.str();
+
+  // Target repository for the second (approved) execution.
+  cf::process::LocalProcessExecutor executor;
+  auto created = cf::git::Repository::create(dir_ / "repo", executor);
+  ASSERT_TRUE(created.has_value()) << created.error().message;
+  write_file(dir_ / "repo" / "README.md", "initial\n");
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.op_id = "op_init";
+  ASSERT_TRUE(created->commit_paths(dir_ / "repo", {"README.md"}, "chore: init",
+                                    trailers)
+                  .has_value());
+
+  ScriptedDesignModel design;
+  design.replies = {
+      R"json({"system_design": "Single core component.",
+              "milestones": [
+                {"id": "M1", "title": "Core", "requirements": ["REQ-001"],
+                 "depends_on": [], "acceptance": ["works"],
+                 "writes": ["src"], "uses": [],
+                 "writes_interfaces": ["include/core.hpp"]}
+              ],
+              "adrs": [{"id": "ADR-001", "title": "Small core",
+                        "decision": "Keep it small", "alternatives": ["none"]}]})json",
+      R"json({"verdict": "ok", "issues": []})json"};
 
   cf::cli::ExecuteOptions options;
   options.workspace = workspace_;
   options.run_id = "R12";
   options.profiles_dir = dir_ / "profiles";
   options.repository_path = dir_ / "repo";
-  options.skip_refinement = false;
+  options.design_model_override = &design;
+  options.role_models = {{"coder", "test/coder"}, {"reviewer", "test/reviewer"},
+                         {"qa", "test/qa"}};
+
+  // First execution: the refiner runs, the package is stored, the run waits
+  // at the human approval gate (design section 6.2).
+  std::ostringstream first_out;
+  std::ostringstream first_err;
+  EXPECT_EQ(cf::cli::execute_command(options, first_out, first_err), 0)
+      << first_err.str();
+  EXPECT_NE(first_out.str().find("AwaitingDesignApproval"), std::string::npos);
+  const auto run_dir = cf::cli::run_directory(workspace_, "R12");
+  EXPECT_TRUE(std::filesystem::exists(run_dir / "design.json"));
+  EXPECT_TRUE(std::filesystem::exists(run_dir / "design.md"));
+  {
+    auto store = cf::store::RunStore::open(run_dir / "run.db");
+    ASSERT_TRUE(store.has_value());
+    cf::orch::StateMachine machine(**store, "R12");
+    EXPECT_EQ(machine.current(), cf::orch::RunState::AwaitingDesignApproval);
+  }
+
+  std::ostringstream approve_out;
+  std::ostringstream approve_err;
+  EXPECT_EQ(cf::cli::approve_command(workspace_, "R12", "design", approve_out,
+                                     approve_err),
+            0)
+      << approve_err.str();
+
+  auto factory = [run_dir](const std::string& role,
+                           const std::string& worktree)
+      -> cf::Result<std::unique_ptr<cf::orch::SessionDriver>> {
+    return std::unique_ptr<cf::orch::SessionDriver>(std::make_unique<ScriptedDriver>(
+        role, worktree, run_dir / ("calls-" + role + ".jsonl")));
+  };
   std::ostringstream exec_out;
   std::ostringstream exec_err;
-  EXPECT_EQ(cf::cli::execute_command(options, exec_out, exec_err), 1);
-  EXPECT_NE(exec_err.str().find("approve"), std::string::npos);
+  EXPECT_EQ(cf::cli::execute_command(options, exec_out, exec_err, factory), 0)
+      << exec_err.str();
+  const auto document = nlohmann::json::parse(exec_out.str());
+  EXPECT_EQ(document["state"], "Done");
+  // The stored package was reused: the scripted model has no replies left.
+  EXPECT_TRUE(design.replies.empty());
 }
 
 TEST_F(CliTest, ApproveCommandMovesToExecuting) {

@@ -1,6 +1,7 @@
 #include "cf/cli/commands.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
 #include "cf/common/hash.hpp"
 #include "cf/common/process.hpp"
@@ -24,6 +26,7 @@
 #include "cf/plan/plan.hpp"
 #include "cf/rag/injection_scan.hpp"
 #include "cf/rag/loader.hpp"
+#include "cf/rag/retriever.hpp"
 #include "cf/store/run_store.hpp"
 
 namespace cf::cli {
@@ -93,6 +96,124 @@ std::string resolve_profile_id(const gates::ProfileRegistry& registry,
   return profile.has_value() ? (*profile)->id : std::string();
 }
 
+std::string read_file_text(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in),
+                     std::istreambuf_iterator<char>());
+}
+
+// Bridges the planner model over cf-llm (design section 6.2): the refiner
+// makes direct model calls, not opencode agent turns.
+class LlmDesignModel final : public orch::DesignModel {
+ public:
+  LlmDesignModel(llm::FireworksClient& client, std::string model)
+      : client_(client), model_(std::move(model)) {}
+
+  Result<std::string> complete(std::string_view prompt) override {
+    llm::ChatRequest request;
+    request.model = model_;
+    llm::ChatMessage message;
+    message.role = "user";
+    message.content = std::string(prompt);
+    request.messages.push_back(std::move(message));
+    request.temperature = 0.2;
+    request.max_tokens = 8192;
+    auto response = client_.chat(request);
+    if (!response) {
+      return tl::make_unexpected(response.error());
+    }
+    return response->content;
+  }
+
+ private:
+  llm::FireworksClient& client_;
+  std::string model_;
+};
+
+// Runs the refinement pipeline for a run in Refining: an existing design
+// package is reused (so a retry after a crash never plans twice), otherwise
+// the planner model produces one, validated and stored as design.json plus a
+// human-readable design.md (design section 6.2).
+Result<orch::DesignPackage> refine_or_load(const ExecuteOptions& options,
+                                           const std::filesystem::path& run_dir,
+                                           const plan::Plan& plan,
+                                           std::ostream& out) {
+  const std::filesystem::path design_path = run_dir / "design.json";
+  std::error_code ec;
+  if (std::filesystem::exists(design_path, ec)) {
+    auto existing = orch::parse_design_package(read_file_text(design_path));
+    if (existing) {
+      return existing;
+    }
+    spdlog::warn("stored design package is unusable ({}); refining again",
+                 existing.error().message);
+  }
+
+  std::string model_id = options.design_model;
+  if (model_id.empty()) {
+    const auto coder = options.role_models.find("coder");
+    if (coder != options.role_models.end()) {
+      model_id = coder->second;
+    }
+  }
+  std::unique_ptr<llm::FireworksClient> client;
+  std::unique_ptr<LlmDesignModel> model;
+  orch::DesignModel* active = options.design_model_override;
+  if (active == nullptr) {
+    if (model_id.empty()) {
+      return fail("ORCH_REFINE_FAILED",
+                  "no planner model: pass --design-model or a coder --model");
+    }
+    const char* key = std::getenv(options.api_key_env.c_str());
+    if (key == nullptr || *key == '\0') {
+      return fail("ORCH_REFINE_FAILED",
+                  options.api_key_env + " is not set (needed for design refinement)");
+    }
+    llm::ClientOptions client_options;
+    client_options.base_url = options.provider_base_url;
+    client_options.api_key = key;
+    client = std::make_unique<llm::FireworksClient>(
+        client_options, std::make_unique<llm::CprTransport>());
+    model = std::make_unique<LlmDesignModel>(*client, model_id);
+    active = model.get();
+  }
+
+  std::unique_ptr<rag::InMemoryRetriever> retriever;
+  if (!options.docs_dir.empty()) {
+    retriever = std::make_unique<rag::InMemoryRetriever>();
+    auto documents = rag::load_document_dir(options.docs_dir);
+    if (!documents) {
+      return fail("ORCH_REFINE_FAILED",
+                  "cannot load documents for refinement: " +
+                      documents.error().message);
+    }
+    for (auto& document : *documents) {
+      auto added = retriever->add_document(std::move(document));
+      if (!added) {
+        return fail("ORCH_REFINE_FAILED", added.error().message);
+      }
+    }
+  }
+
+  orch::DesignRefinerOptions refiner_options;
+  refiner_options.model = model_id;
+  orch::DesignRefiner refiner(*active, retriever.get(), std::move(refiner_options));
+  auto package = refiner.refine(plan);
+  if (!package) {
+    return package;
+  }
+  {
+    std::ofstream json_out(design_path, std::ios::binary);
+    json_out << orch::design_package_to_json(*package);
+  }
+  {
+    std::ofstream markdown_out(run_dir / "design.md", std::ios::binary);
+    markdown_out << orch::design_package_to_markdown(*package);
+  }
+  out << "design package written: " << design_path.string() << "\n";
+  return package;
+}
+
 }  // namespace
 
 std::filesystem::path run_directory(const std::filesystem::path& workspace,
@@ -154,6 +275,43 @@ int run_command(const std::filesystem::path& plan_path,
     err << "cannot create run directory: " << ec.message() << "\n";
     return 2;
   }
+
+  auto store = store::RunStore::open(store_path(workspace, run_id));
+  if (!store) {
+    err << store.error().code << ": " << store.error().message << "\n";
+    return 2;
+  }
+
+  // Re-running an existing run is not an error: the stored plan drives it
+  // (for example `cf run --execute` again after `cf approve`). Nothing is
+  // recreated or overwritten.
+  auto existing = (*store)->get_run(run_id);
+  if (existing.has_value()) {
+    if (existing->plan_id != plan->plan_id) {
+      err << "note: run " << run_id << " is bound to plan " << existing->plan_id
+          << "; ignoring " << plan->plan_id << "\n";
+    }
+    auto milestones = (*store)->list_milestones(run_id);
+    Json ids = Json::array();
+    if (milestones.has_value()) {
+      for (const auto& milestone : *milestones) {
+        ids.push_back(milestone.milestone_id);
+      }
+    }
+    out << Json{{"run_id", run_id},
+                {"state", existing->state},
+                {"plan_id", existing->plan_id},
+                {"milestones", std::move(ids)},
+                {"store", store_path(workspace, run_id).string()}}
+                   .dump(2)
+        << "\n";
+    return 0;
+  }
+  if (existing.error().code != store::error_codes::kNotFound) {
+    err << existing.error().code << ": " << existing.error().message << "\n";
+    return 1;
+  }
+
   std::filesystem::copy_file(plan_path, directory / "plan.yaml",
                              std::filesystem::copy_options::overwrite_existing, ec);
   if (ec) {
@@ -161,11 +319,6 @@ int run_command(const std::filesystem::path& plan_path,
     return 2;
   }
 
-  auto store = store::RunStore::open(store_path(workspace, run_id));
-  if (!store) {
-    err << store.error().code << ": " << store.error().message << "\n";
-    return 2;
-  }
   store::RunRecord run;
   run.run_id = run_id;
   run.plan_id = plan->plan_id;
@@ -703,58 +856,100 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
     return 1;
   }
 
-  // Advance to Executing. Design refinement is not implemented yet, so
-  // reaching Executing requires --skip-refinement (or cf approve after a
-  // future refiner).
+  // Advance the run state (design section 7.1). Without --skip-refinement
+  // the refinement pipeline runs first and the run stops at the human
+  // approval gate (design section 6.2); `cf approve --stage design` releases
+  // it, and the next execution runs with the refined plan.
   orch::StateMachine machine(**store, options.run_id);
-  for (int step = 0; step < 8; ++step) {
-    const orch::RunState state = machine.current();
-    if (state == orch::RunState::Executing) {
-      break;
+  const auto advance = [&](orch::RunEvent event) {
+    const auto applied = machine.apply(event, {}, store::unix_now());
+    if (!applied) {
+      err << applied.error().code << ": " << applied.error().message << "\n";
+      return false;
     }
-    const auto advance = [&](orch::RunEvent event) {
-      const auto applied = machine.apply(event, {}, store::unix_now());
-      if (!applied) {
-        err << applied.error().code << ": " << applied.error().message << "\n";
-        return false;
-      }
-      return true;
-    };
-    if (state == orch::RunState::Created || state == orch::RunState::Ingesting ||
-        state == orch::RunState::Refining ||
-        state == orch::RunState::AwaitingDesignApproval) {
-      if (!options.skip_refinement) {
-        err << "run " << options.run_id << " is in state "
-            << std::string(orch::to_string(state))
-            << "; approve the design (cf approve --run " << options.run_id
-            << " --stage design) or pass --skip-refinement\n";
+    return true;
+  };
+
+  if (!options.skip_refinement) {
+    orch::RunState state = machine.current();
+    if (state == orch::RunState::Created) {
+      if (!advance(orch::RunEvent::Start)) return 1;
+      state = machine.current();
+    }
+    if (state == orch::RunState::Ingesting) {
+      if (!advance(orch::RunEvent::IndexReady)) return 1;
+      state = machine.current();
+    }
+    if (state == orch::RunState::Refining) {
+      auto package = refine_or_load(options, directory, *plan, out);
+      if (!package) {
+        err << package.error().code << ": " << package.error().message << "\n";
         return 1;
       }
-      switch (state) {
-        case orch::RunState::Created:
-          if (!advance(orch::RunEvent::Start)) return 1;
-          break;
-        case orch::RunState::Ingesting:
-          if (!advance(orch::RunEvent::IndexReady)) return 1;
-          break;
-        case orch::RunState::Refining:
-          if (!advance(orch::RunEvent::DesignPackageReady)) return 1;
-          break;
-        case orch::RunState::AwaitingDesignApproval:
-          if (!advance(orch::RunEvent::Approved)) return 1;
-          break;
-        default:
-          break;
-      }
-      continue;
+      if (!advance(orch::RunEvent::DesignPackageReady)) return 1;
+      state = machine.current();
     }
-    err << "run " << options.run_id << " is in state "
-        << std::string(orch::to_string(state)) << " and cannot be executed\n";
-    return 1;
+    if (state == orch::RunState::AwaitingDesignApproval) {
+      out << "run " << options.run_id
+          << " is AwaitingDesignApproval; review the design package and run:\n"
+          << "  cf approve --run " << options.run_id << " --stage design\n";
+      return 0;
+    }
+    if (state != orch::RunState::Executing) {
+      err << "run " << options.run_id << " is in state "
+          << std::string(orch::to_string(state)) << " and cannot be executed\n";
+      return 1;
+    }
+  } else {
+    for (int step = 0; step < 8; ++step) {
+      const orch::RunState state = machine.current();
+      if (state == orch::RunState::Executing) {
+        break;
+      }
+      if (state == orch::RunState::Created || state == orch::RunState::Ingesting ||
+          state == orch::RunState::Refining ||
+          state == orch::RunState::AwaitingDesignApproval) {
+        switch (state) {
+          case orch::RunState::Created:
+            if (!advance(orch::RunEvent::Start)) return 1;
+            break;
+          case orch::RunState::Ingesting:
+            if (!advance(orch::RunEvent::IndexReady)) return 1;
+            break;
+          case orch::RunState::Refining:
+            if (!advance(orch::RunEvent::DesignPackageReady)) return 1;
+            break;
+          case orch::RunState::AwaitingDesignApproval:
+            if (!advance(orch::RunEvent::Approved)) return 1;
+            break;
+          default:
+            break;
+        }
+        continue;
+      }
+      err << "run " << options.run_id << " is in state "
+          << std::string(orch::to_string(state)) << " and cannot be executed\n";
+      return 1;
+    }
+    if (machine.current() != orch::RunState::Executing) {
+      err << "run " << options.run_id << " did not reach Executing\n";
+      return 1;
+    }
   }
-  if (machine.current() != orch::RunState::Executing) {
-    err << "run " << options.run_id << " did not reach Executing\n";
-    return 1;
+
+  // A stored design package refines the plan that drives execution: the
+  // scheduler reads the milestones' write sets and interfaces (design
+  // sections 6.2, 6.13.2). The original plan stays for traceability.
+  plan::Plan effective = *plan;
+  const std::filesystem::path design_path = directory / "design.json";
+  std::error_code design_ec;
+  if (std::filesystem::exists(design_path, design_ec)) {
+    auto package = orch::parse_design_package(read_file_text(design_path));
+    if (!package) {
+      err << package.error().code << ": " << package.error().message << "\n";
+      return 1;
+    }
+    effective = orch::design_package_to_plan(*package, *plan);
   }
 
   if (options.repository_path.empty()) {
@@ -773,8 +968,9 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
     err << profiles.error().code << ": " << profiles.error().message << "\n";
     return 2;
   }
-  auto profile = profiles->resolve(plan->target.language, plan->target.build_system,
-                                   plan->target.test_framework);
+  auto profile = profiles->resolve(effective.target.language,
+                                   effective.target.build_system,
+                                   effective.target.test_framework);
   if (!profile) {
     err << profile.error().code << ": " << profile.error().message << "\n";
     return 1;
@@ -790,16 +986,16 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   config.mcp_command = options.mcp_binary;
   config.docs_dir = options.docs_dir;
   config.profile = **profile;
-  config.profile_language = plan->target.language;
-  config.profile_build_system = plan->target.build_system;
-  config.profile_test_framework = plan->target.test_framework;
+  config.profile_language = effective.target.language;
+  config.profile_build_system = effective.target.build_system;
+  config.profile_test_framework = effective.target.test_framework;
   config.sandbox_image = options.sandbox_image;
   config.orchestrator.escalation_dir = (directory / "escalations").string();
-  if (plan->budget.max_usd_total.has_value()) {
-    config.orchestrator.max_usd_total = plan->budget.max_usd_total;
+  if (effective.budget.max_usd_total.has_value()) {
+    config.orchestrator.max_usd_total = effective.budget.max_usd_total;
   }
-  if (plan->budget.max_tokens_total.has_value()) {
-    config.orchestrator.max_tokens_total = plan->budget.max_tokens_total;
+  if (effective.budget.max_tokens_total.has_value()) {
+    config.orchestrator.max_tokens_total = effective.budget.max_tokens_total;
   }
 
   // GitHub flow: the App identity (preferred) or a static token.
@@ -836,7 +1032,7 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
     }
   }
 
-  orch::RunProcess process(**store, *plan, config, *repository, executor);
+  orch::RunProcess process(**store, effective, config, *repository, executor);
   if (session_driver_factory) {
     process.set_session_driver_factory(std::move(session_driver_factory));
   }

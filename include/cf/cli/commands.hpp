@@ -12,6 +12,7 @@
 #include <string>
 
 #include "cf/llm/client.hpp"
+#include "cf/orch/refiner.hpp"
 #include "cf/orch/session_agent_runner.hpp"
 
 namespace cf::cli {
@@ -84,9 +85,15 @@ struct ExecuteOptions {
   std::map<std::string, std::string, std::less<>> role_models;
   std::string sandbox_image;  // empty: gates run through the local executor
   std::string docs_dir;
-  // Design refinement is not implemented yet; this advances the run through
-  // Ingesting/Refining/AwaitingDesignApproval to Executing explicitly.
+  // Design refinement (design section 6.2). Unless --skip-refinement is set,
+  // the first execution refines the plan, writes the design package and stops
+  // at AwaitingDesignApproval; `cf approve --stage design` releases it.
   bool skip_refinement = false;
+  std::string design_model;  // planner model; empty: the coder role's model
+  std::string provider_base_url = "https://api.fireworks.ai/inference/v1";
+  std::string api_key_env = "FIREWORKS_API_KEY";
+  // Tests inject the planner; production builds a Fireworks client.
+  cf::orch::DesignModel* design_model_override = nullptr;
 
   // GitHub flow (design section 10.4.4); enabled when owner and repo are set.
   std::string github_owner;

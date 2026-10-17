@@ -115,6 +115,7 @@ add_library(cf_orch STATIC
   src/orch/session_agent_runner.cpp
   src/orch/opencode_factory.cpp
   src/orch/run_process.cpp
+  src/orch/refiner.cpp
   src/orch/prompt_library.cpp
   src/orch/question_policy.cpp
   src/orch/github_handlers.cpp

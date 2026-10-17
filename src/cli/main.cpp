@@ -50,8 +50,12 @@ int main(int argc, char** argv) {
                   "Run gates in this Docker image (design section 6.8)");
   run->add_option("--docs", docs_dir, "Documentation directory for the RAG index");
   run->add_flag("--skip-refinement", skip_refinement,
-                "Advance to Executing without a design gate (refinement is not "
-                "implemented yet)");
+                "Skip the design refiner and the approval gate (design section "
+                "6.2)");
+  std::string design_model;
+  run->add_option("--design-model", design_model,
+                  "Planner model for the design refiner (default: the coder "
+                  "role's model)");
   run->add_option("--model", model_overrides,
                   "Per-role model override, e.g. --model coder=accounts/...");
   run->add_option("--github-owner", github_owner, "GitHub owner for the PR flow");
@@ -121,6 +125,7 @@ int main(int argc, char** argv) {
     options.sandbox_image = sandbox_image;
     options.docs_dir = docs_dir;
     options.skip_refinement = skip_refinement;
+    options.design_model = design_model;
     options.github_owner = github_owner;
     options.github_repo = github_repo;
     options.github_app_id = github_app_id;
