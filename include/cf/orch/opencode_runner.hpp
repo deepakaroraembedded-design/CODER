@@ -49,6 +49,9 @@ class SessionDriver {
   // Best-effort usage for a finished session (provider cost and tokens);
   // drivers that cannot report it return an error (design section 6.11).
   virtual Result<nlohmann::json> session_usage(std::string_view session_id);
+  // False when the backing opencode server died; the runner then recreates
+  // the server before the next turn (design section 6.12, H8).
+  virtual bool healthy() const { return true; }
 };
 
 struct OpencodeRunnerOptions {
@@ -91,6 +94,9 @@ class OpencodeAgentRunner final : public AgentRunner {
   // The prompt built for a turn (exposed for tests and prompt review).
   std::string build_prompt(const AgentTurnRequest& request,
                            bool system_validation) const;
+
+  // False when the driver's opencode server died.
+  bool healthy() const { return driver_.healthy(); }
 
  private:
   Result<AgentTurnOutcome> drive(const AgentTurnRequest& request,

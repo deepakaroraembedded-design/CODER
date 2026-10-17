@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -20,9 +21,12 @@ class OpencodeSessionDriver final : public SessionDriver {
  public:
   // `tracker` and `stream` are optional: without them (or when the stream is
   // unavailable) turn completion falls back to polling /session/status.
+  // `health` reports whether the backing server is alive; empty means always
+  // healthy.
   explicit OpencodeSessionDriver(agents::OpencodeClient& client,
                                  SessionIdleTracker* tracker = nullptr,
-                                 agents::EventStream* stream = nullptr);
+                                 agents::EventStream* stream = nullptr,
+                                 std::function<bool()> health = {});
 
   Result<std::string> create_session() override;
   Status send_prompt(std::string_view session_id, std::string_view text) override;
@@ -31,11 +35,13 @@ class OpencodeSessionDriver final : public SessionDriver {
                    std::chrono::milliseconds stall_timeout) override;
   Status abort(std::string_view session_id) override;
   Result<agents::Json> session_usage(std::string_view session_id) override;
+  bool healthy() const override;
 
  private:
   agents::OpencodeClient& client_;
   SessionIdleTracker* tracker_ = nullptr;
   agents::EventStream* stream_ = nullptr;
+  std::function<bool()> health_;
   std::mutex baselines_mutex_;
   std::unordered_map<std::string, std::uint64_t> baselines_;
 };

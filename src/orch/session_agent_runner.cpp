@@ -2,6 +2,8 @@
 
 #include <utility>
 
+#include <spdlog/spdlog.h>
+
 namespace cf::orch {
 
 SessionAgentRunner::SessionAgentRunner(SessionDriverFactory factory,
@@ -13,9 +15,17 @@ SessionAgentRunner::SessionAgentRunner(SessionDriverFactory factory,
 
 OpencodeAgentRunner* SessionAgentRunner::runner_for(const AgentTurnRequest& request) {
   const std::string key = request.role + "|" + request.worktree;
-  const auto existing = runners_.find(key);
+  auto existing = runners_.find(key);
   if (existing != runners_.end()) {
-    return existing->second.get();
+    if (existing->second->healthy()) {
+      return existing->second.get();
+    }
+    // The opencode server died: drop the cached runner and driver so the
+    // factory starts a fresh server for the same role and worktree before
+    // the next turn (design section 6.12, scenario H8).
+    spdlog::warn("opencode server for {} died; recreating it", key);
+    runners_.erase(existing);
+    drivers_.erase(key);
   }
   auto driver = factory_(request.role, request.worktree);
   if (!driver) {

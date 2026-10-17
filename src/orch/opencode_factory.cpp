@@ -202,11 +202,23 @@ OpencodeRoleFactory::~OpencodeRoleFactory() = default;
 Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
     const std::string& role, const std::string& worktree) {
   const std::string key = role + "|" + worktree;
-  const auto existing = roles_.find(key);
+  auto existing = roles_.find(key);
   if (existing != roles_.end()) {
+    if (existing->second.server && !existing->second.server->running()) {
+      // The server died mid-run: drop the state (stopping the dead process
+      // and its stream) and start a fresh server for the same role and
+      // worktree (design section 6.12, scenario H8).
+      spdlog::warn("opencode[{}] server died; restarting it", role);
+      roles_.erase(existing);
+      existing = roles_.end();
+    }
+  }
+  if (existing != roles_.end()) {
+    OpencodeServerProcess* server = existing->second.server.get();
     return std::unique_ptr<SessionDriver>(std::make_unique<OpencodeSessionDriver>(
         *existing->second.client, existing->second.idle_tracker.get(),
-        existing->second.stream.get()));
+        existing->second.stream.get(),
+        [server] { return server == nullptr || server->running(); }));
   }
 
   // Start the egress allow-listing proxy once (design section 6.8.2). On an
@@ -420,8 +432,10 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
     });
   }
 
+  OpencodeServerProcess* server = state.server.get();
   auto driver = std::unique_ptr<SessionDriver>(std::make_unique<OpencodeSessionDriver>(
-      *state.client, state.idle_tracker.get(), state.stream.get()));
+      *state.client, state.idle_tracker.get(), state.stream.get(),
+      [server] { return server == nullptr || server->running(); }));
   roles_.emplace(key, std::move(state));
   return driver;
 }

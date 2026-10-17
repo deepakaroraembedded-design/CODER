@@ -6,8 +6,9 @@ namespace cf::orch {
 
 OpencodeSessionDriver::OpencodeSessionDriver(agents::OpencodeClient& client,
                                              SessionIdleTracker* tracker,
-                                             agents::EventStream* stream)
-    : client_(client), tracker_(tracker), stream_(stream) {}
+                                             agents::EventStream* stream,
+                                             std::function<bool()> health)
+    : client_(client), tracker_(tracker), stream_(stream), health_(std::move(health)) {}
 
 Result<std::string> OpencodeSessionDriver::create_session() {
   auto response = client_.create_session(agents::Json::object());
@@ -113,6 +114,10 @@ Status OpencodeSessionDriver::abort(std::string_view session_id) {
 Result<agents::Json> OpencodeSessionDriver::session_usage(
     std::string_view session_id) {
   return client_.session_info(session_id);
+}
+
+bool OpencodeSessionDriver::healthy() const {
+  return !health_ || health_();
 }
 
 }  // namespace cf::orch

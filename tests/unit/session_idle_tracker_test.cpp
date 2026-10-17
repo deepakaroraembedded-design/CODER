@@ -205,6 +205,23 @@ class FakeStream final : public cf::agents::EventStream {
   bool wait_running(std::chrono::milliseconds) override { return true; }
 };
 
+TEST(OpencodeSessionDriverTest, HealthFollowsTheServerCallback) {
+  FakeStream stream;
+  SessionIdleTracker tracker;
+  cf::agents::OpencodeClientOptions client_options;
+  cf::agents::OpencodeClient client(client_options);
+  bool healthy = true;
+  OpencodeSessionDriver driver(client, &tracker, &stream,
+                               [&] { return healthy; });
+  EXPECT_TRUE(driver.healthy());
+  healthy = false;
+  EXPECT_FALSE(driver.healthy());
+
+  // Without a callback the driver reports healthy (tests, fakes).
+  OpencodeSessionDriver always(client);
+  EXPECT_TRUE(always.healthy());
+}
+
 TEST(OpencodeSessionDriverTest, RunningToolCallIsNotAStall) {
 #ifdef CF_TSAN_NO_COND_CLOCKWAIT
   GTEST_SKIP() << "GCC libtsan does not intercept pthread_cond_clockwait";

@@ -30,6 +30,7 @@ add_executable(cf_unit_tests
   role_config_test.cpp
   event_router_test.cpp
   session_idle_tracker_test.cpp
+  session_agent_runner_test.cpp
   opencode_server_test.cpp
   opencode_sandbox_test.cpp
   proxy_test.cpp
