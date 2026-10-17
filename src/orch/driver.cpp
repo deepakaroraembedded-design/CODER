@@ -31,6 +31,23 @@ bool is_qa_owned_path(std::string_view path) {
   return starts_with(path, "tests/") || starts_with(path, "qa/");
 }
 
+// Build and cache directories an agent may create while working; they are
+// never committed by the snapshot, so they do not count as out-of-scope
+// changes (design section 6.13.2).
+bool is_build_artifact(std::string_view path) {
+  static const std::set<std::string_view> ignored = {
+      "build",        "out",           "dist",          "target",
+      "node_modules", "__pycache__",   ".cache",        ".pytest_cache",
+      ".mypy_cache",  ".ruff_cache",   "cmake-build-debug", "cmake-build-release"};
+  const auto slash = path.find('/');
+  const std::string_view first =
+      slash == std::string_view::npos ? path : path.substr(0, slash);
+  if (ignored.count(first) > 0) {
+    return true;
+  }
+  return first.rfind("build-", 0) == 0 || first.rfind("cmake-build-", 0) == 0;
+}
+
 // True when a changed path is inside the milestone's declared write set
 // (design section 6.13.2): an exact entry or a path below a directory entry.
 bool within_write_set(const std::vector<std::string>& writes, std::string_view path) {
@@ -321,14 +338,40 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
   // revalidating milestone is already merged, so its review and validation
   // run against the integration worktree (design section 6.13.3).
   const bool revalidating = revalidating_.count(std::string(milestone_id)) > 0;
+  // Review and validation of a revalidating milestone look at the merged
+  // result; a fix works on the milestone's branch (synced below).
+  const bool integration_view =
+      revalidating &&
+      (phase == MilestonePhase::Review || phase == MilestonePhase::Validate);
   Result<std::filesystem::path> worktree =
-      (revalidating && phase != MilestonePhase::AuthorTests)
+      integration_view
           ? ensure_integration_worktree()
           : ensure_worktree(milestone_id,
                             phase == MilestonePhase::Validate ? "coder" : role);
   if (!worktree) {
     return TurnResult{false, "", worktree.error().message, false, false, false, false,
                       false, ""};
+  }
+
+  // A fix during revalidation targets the new integration head: the
+  // milestone's work is already merged, so sync the coder worktree to the
+  // integration before the turn (design section 6.13.3). Without this the
+  // agent would fix against the pre-change interface.
+  if (phase == MilestonePhase::Fix &&
+      revalidating_.count(std::string(milestone_id)) > 0) {
+    auto integration = ensure_integration_worktree();
+    if (integration) {
+      auto head = repository_.head_sha(*integration);
+      if (head) {
+        auto reset = repository_.reset_hard(*worktree, *head);
+        if (!reset) {
+          return TurnResult{false, "", reset.error().message, false, false, false,
+                            false, false, ""};
+        }
+        spdlog::info("milestone {}: revalidation fix starts from the integration head",
+                     milestone_id);
+      }
+    }
   }
 
   AgentTurnRequest request = make_request(phase, milestone_id, role);
@@ -377,6 +420,9 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
           }
           std::vector<std::string> outside;
           for (const auto& path : *changes) {
+            if (is_build_artifact(path)) {
+              continue;
+            }
             if (!within_write_set(spec->writes, path)) {
               outside.push_back(path);
             }

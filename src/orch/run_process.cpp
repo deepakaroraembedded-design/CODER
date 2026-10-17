@@ -117,7 +117,9 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     // ones scoped to this run's product and language.
     for (const auto& directory :
          {std::filesystem::path(config_.docs_dir), designs_dir}) {
-      if (directory.empty()) {
+      std::error_code directory_ec;
+      if (directory.empty() ||
+          !std::filesystem::is_directory(directory, directory_ec)) {
         continue;
       }
       auto documents = rag::load_document_dir(directory);

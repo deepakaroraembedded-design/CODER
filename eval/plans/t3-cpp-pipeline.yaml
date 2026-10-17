@@ -1,0 +1,69 @@
+# Golden plan: message pipeline with a shared interface that changes mid-run
+# (T3, C/C++). Exercises the scheduler's parallel-safety rules (write sets,
+# interface locks) and the revalidation of Done dependents when a shared
+# interface changes (design sections 6.13.2, 6.13.3).
+plan_id: GOLD-T3-CPP-PIPELINE
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Message type and wire format
+    requirements: [REQ-PL-1]
+    depends_on: []
+    writes: [include/pipeline/message.hpp]
+    uses: []
+    writes_interfaces: [include/pipeline/message.hpp]
+    acceptance:
+      - "Header-only include/pipeline/message.hpp in namespace cf_golden: struct Message { int id = 0; std::string payload; };"
+      - "std::string encode(const Message& message) emits \"id:payload\""
+      - "std::optional<Message> decode(std::string_view text) parses that format and returns std::nullopt on malformed input"
+      - "The header compiles standalone with g++ -std=c++20 -Wall -Wextra -Werror"
+  - id: M2
+    title: Channel and producer
+    requirements: [REQ-PL-2]
+    depends_on: [M1]
+    writes: [include/pipeline/channel.hpp, include/pipeline/producer.hpp]
+    uses: [include/pipeline/message.hpp]
+    writes_interfaces: [include/pipeline/channel.hpp, include/pipeline/producer.hpp]
+    acceptance:
+      - "Header-only include/pipeline/channel.hpp: class Channel with void push(const Message& message), std::optional<Message> pop() (nullopt when empty) and bool empty() const; FIFO order"
+      - "Header-only include/pipeline/producer.hpp: class Producer with explicit Producer(Channel& channel) and void submit(int id, std::string payload) that encodes a Message and pushes it into the channel"
+      - "The headers compile standalone with g++ -std=c++20 -Wall -Wextra -Werror"
+  - id: M3
+    title: Consumer
+    requirements: [REQ-PL-3]
+    depends_on: [M1]
+    writes: [include/pipeline/consumer.hpp]
+    uses: [include/pipeline/message.hpp, include/pipeline/channel.hpp]
+    writes_interfaces: [include/pipeline/consumer.hpp]
+    acceptance:
+      - "Header-only include/pipeline/consumer.hpp: class Consumer with explicit Consumer(Channel& channel) and std::vector<Message> drain() that pops and decodes every queued message in order, skipping undecodable ones"
+      - "The header compiles standalone with g++ -std=c++20 -Wall -Wextra -Werror"
+  - id: M4
+    title: Message format v2 with a version field
+    requirements: [REQ-PL-4]
+    depends_on: [M2, M3]
+    writes: [include/pipeline/message.hpp]
+    uses: []
+    writes_interfaces: [include/pipeline/message.hpp]
+    acceptance:
+      - "struct Message gains int version = 1;"
+      - "encode emits \"id:version:payload\" using the message's version"
+      - "decode accepts both \"id:version:payload\" and the legacy \"id:payload\" (version 1), and still returns std::nullopt on malformed input"
+      - "The producer and consumer keep working through the channel unchanged"
+target:
+  language: cpp
+  standard: c++20
+  build_system: cmake
+  test_framework: gtest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["exceptions across module boundaries", "raw new/delete"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 40
+  max_wall_clock_hours: 8

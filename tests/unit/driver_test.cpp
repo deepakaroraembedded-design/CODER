@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "cf/orch/driver.hpp"
+#include "cf/orch/orchestrator.hpp"
 
 namespace {
 
@@ -475,6 +476,77 @@ TEST_F(DriverTest, TestDisputeDecisionRunsQaInTheCoderWorktree) {
   EXPECT_EQ(resolved->status, "VERIFIED");
 }
 
+TEST_F(DriverTest, MultiMilestoneCoderWorktreesCarryTheMergedWork) {
+  // M3 depends on M1 and uses the interface M2 writes: the scheduler blocks
+  // it until M2 is merged, and its coder worktree must then start from its
+  // QA branch (which starts from the integration).
+  plan_.milestones.clear();
+  cf::plan::MilestoneSpec m1;
+  m1.id = "M1";
+  m1.title = "Message";
+  m1.writes = {"include/message.hpp"};
+  cf::plan::MilestoneSpec m2;
+  m2.id = "M2";
+  m2.title = "Channel";
+  m2.depends_on = {"M1"};
+  m2.writes = {"include/channel.hpp"};
+  m2.uses = {"include/message.hpp"};
+  m2.writes_interfaces = {"include/channel.hpp"};
+  cf::plan::MilestoneSpec m3;
+  m3.id = "M3";
+  m3.title = "Consumer";
+  m3.depends_on = {"M1"};
+  m3.writes = {"include/consumer.hpp"};
+  m3.uses = {"include/message.hpp", "include/channel.hpp"};
+  plan_.milestones = {m1, m2, m3};
+
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    const std::filesystem::path worktree(request.worktree);
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    switch (request.phase) {
+      case MilestonePhase::AuthorTests:
+        write_file(worktree / "tests" / (request.milestone_id + "_test.cpp"), "test\n");
+        break;
+      case MilestonePhase::Code:
+        if (request.milestone_id == "M1") {
+          write_file(worktree / "include" / "message.hpp", "// message\n");
+        } else if (request.milestone_id == "M2") {
+          write_file(worktree / "include" / "channel.hpp", "// channel\n");
+        } else if (request.milestone_id == "M3") {
+          write_file(worktree / "include" / "consumer.hpp", "// consumer\n");
+        }
+        break;
+      case MilestonePhase::Validate:
+        outcome.exit_criteria_met = true;
+        break;
+      default:
+        break;
+    }
+    return outcome;
+  };
+
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  StateMachine machine(*store_, "R12");
+  for (const auto& spec : plan_.milestones) {
+    ASSERT_TRUE(machine.register_milestone(spec.id).has_value());
+  }
+  cf::orch::RunOrchestrator orchestrator(*store_, "R12", plan_, driver);
+  const auto state = orchestrator.step(now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, cf::orch::RunState::SystemValidation);
+
+  // Every coder worktree carries its own QA tests plus the work merged
+  // before it started.
+  const auto coder_worktree = driver.worktree_for("M3", "coder");
+  EXPECT_TRUE(std::filesystem::exists(coder_worktree / "tests" / "M3_test.cpp"));
+  EXPECT_TRUE(std::filesystem::exists(coder_worktree / "include" / "message.hpp"));
+  EXPECT_TRUE(std::filesystem::exists(coder_worktree / "include" / "channel.hpp"));
+}
+
 TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
   plan_.milestones[0].writes = {"src/registry"};
 
@@ -484,6 +556,10 @@ TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
                "ok\n");
     write_file(std::filesystem::path(request.worktree) / "src" / "elsewhere" / "bad.cpp",
                "bad\n");
+    // Build artifacts are never committed and do not count as out-of-scope
+    // changes (the agent builds inside its worktree).
+    write_file(std::filesystem::path(request.worktree) / "build" / "artifact.o",
+               "binary\n");
     AgentTurnOutcome outcome;
     outcome.completed = true;
     return outcome;
@@ -495,6 +571,7 @@ TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
   EXPECT_FALSE(result.completed);
   EXPECT_NE(result.detail.find("outside the declared write set"), std::string::npos);
   EXPECT_NE(result.detail.find("src/elsewhere/bad.cpp"), std::string::npos);
+  EXPECT_EQ(result.detail.find("build/artifact.o"), std::string::npos);
 
   // Nothing was committed.
   const auto coder_worktree = driver.worktree_for("M3", "coder");
@@ -567,6 +644,52 @@ TEST_F(DriverTest, RevalidationGatesTheIntegrationAndReintegratingIsANoOp) {
   const TurnResult again = driver.run(MilestonePhase::Integrate, "M3");
   ASSERT_TRUE(again.completed) << again.detail;
   EXPECT_TRUE(again.merged);
+}
+
+TEST_F(DriverTest, RevalidationFixStartsFromTheIntegrationHead) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "include" / "core.hpp",
+                 "// v1\n");
+    }
+    if (request.phase == MilestonePhase::Fix) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "fix.cpp",
+                 "// fixed\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+  ASSERT_TRUE(driver.run(MilestonePhase::Integrate, "M3").completed);
+
+  // A later milestone changes the shared interface in the integration.
+  const auto integration = driver.integration_worktree();
+  write_file(integration / "include" / "core.hpp", "// v2\n");
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.milestone_id = "M4";
+  trailers.op_id = "op_m4";
+  ASSERT_TRUE(repository_->commit_paths(integration, {"include/core.hpp"},
+                                        "feat(M4): interface change", trailers)
+                  .has_value());
+
+  // The revalidation gates fail on the new interface and the fix must start
+  // from the integration head, not the stale milestone worktree.
+  driver.mark_revalidating("M3");
+  const TurnResult fixed = driver.run(MilestonePhase::Fix, "M3");
+  ASSERT_TRUE(fixed.completed) << fixed.detail;
+  const auto coder_worktree = driver.worktree_for("M3", "coder");
+  std::ifstream in(coder_worktree / "include" / "core.hpp");
+  const std::string core((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+  EXPECT_EQ(core, "// v2\n");
+  EXPECT_TRUE(std::filesystem::exists(coder_worktree / "src" / "fix.cpp"));
 }
 
 TEST_F(DriverTest, WorktreeLayoutFollowsTheDesign) {

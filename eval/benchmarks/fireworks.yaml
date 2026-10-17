@@ -29,7 +29,7 @@ benchmark: cf-bench-phase0b
 provider_base_url: https://api.fireworks.ai/inference/v1
 api_key_env: FIREWORKS_API_KEY
 repeats: 1
-plans: [t1-cpp-ring-buffer, t2-cpp-registry, sec-injection-comments, t1-python-config]
+plans: [t1-cpp-ring-buffer, t2-cpp-registry, t3-cpp-pipeline, sec-injection-comments, t1-python-config]
 candidates:
   - name: fireworks-default
     roles:

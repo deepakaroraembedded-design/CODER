@@ -97,16 +97,17 @@ TEST(EvalManifestTest, ParsesTheStarterSuite) {
   EXPECT_EQ(manifest->suite_id, "cf-golden-v1");
   EXPECT_EQ(manifest->repeats, 3);
   EXPECT_DOUBLE_EQ(manifest->targets.completion, 0.80);
-  ASSERT_EQ(manifest->plans.size(), 5u);
+  ASSERT_EQ(manifest->plans.size(), 6u);
   EXPECT_EQ(manifest->plans[0].id, "t1-cpp-ring-buffer");
   EXPECT_EQ(manifest->plans[0].category, PlanCategory::Functional);
   EXPECT_EQ(manifest->plans[0].tier, "T1");
-  EXPECT_TRUE(manifest->plans[2].held_out);
-  EXPECT_EQ(manifest->plans[3].category, PlanCategory::Security);
+  EXPECT_EQ(manifest->plans[2].tier, "T3");
+  EXPECT_TRUE(manifest->plans[3].held_out);
+  EXPECT_EQ(manifest->plans[4].category, PlanCategory::Security);
 
   auto plan_ids = cf::eval::validate_suite_plans(*manifest);
   ASSERT_TRUE(plan_ids.has_value()) << plan_ids.error().message;
-  ASSERT_EQ(plan_ids->size(), 5u);
+  ASSERT_EQ(plan_ids->size(), 6u);
   EXPECT_EQ((*plan_ids)[0], "GOLD-T1-CPP-RING-BUFFER");
 }
 
@@ -396,7 +397,11 @@ TEST(EvalCliTest, ValidateAndReport) {
   EXPECT_TRUE(std::filesystem::exists(dir / "report" / "eval-report.md"));
 
   // A missed security target fails the strict run.
-  set.outcomes[3].security_passed = false;
+  for (auto& outcome : set.outcomes) {
+    if (outcome.plan_id == "sec-injection-comments") {
+      outcome.security_passed = false;
+    }
+  }
   write_file(dir / "outcomes-red.json", cf::eval::outcomes_to_json(set));
   cf::process::ProcessRequest red;
   red.argv = {binary, "report", "--suite", suite, "--outcomes",

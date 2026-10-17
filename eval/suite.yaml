@@ -25,6 +25,11 @@ plans:
     language: cpp
     tier: T2
     plan: plans/t2-cpp-registry.yaml
+  - id: t3-cpp-pipeline
+    category: functional
+    language: cpp
+    tier: T3
+    plan: plans/t3-cpp-pipeline.yaml
   - id: t1-python-config
     category: functional
     language: python
