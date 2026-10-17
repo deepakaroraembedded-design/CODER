@@ -16,6 +16,8 @@
 #include <string_view>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 #include "cf/common/result.hpp"
 #include "cf/eval/outcome.hpp"
 #include "cf/eval/score.hpp"
@@ -39,6 +41,10 @@ struct ModelPrice {
 struct Candidate {
   std::string name;
   std::map<std::string, std::string, std::less<>> role_models;  // coder|reviewer|qa
+  // Extra opencode model options per role, written into the role's config
+  // (e.g. reasoning_effort: low). The benchmark compares model
+  // configurations, not only model ids.
+  std::map<std::string, nlohmann::json, std::less<>> role_options;
 };
 
 struct BenchmarkConfig {

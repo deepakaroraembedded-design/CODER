@@ -39,9 +39,12 @@ class SessionDriver {
   virtual Result<std::string> create_session() = 0;
   virtual Status send_prompt(std::string_view session_id, std::string_view text) = 0;
   // Blocks until the session is idle; a timeout returns an error and the
-  // runner aborts the session.
+  // runner aborts the session. A positive `stall_timeout` fails the wait
+  // early when no event for the session arrives for that long (design
+  // section 6.6.1 layer 3: no events for 120 s aborts the turn).
   virtual Status wait_idle(std::string_view session_id,
-                           std::chrono::milliseconds timeout) = 0;
+                           std::chrono::milliseconds timeout,
+                           std::chrono::milliseconds stall_timeout) = 0;
   virtual Status abort(std::string_view session_id) = 0;
   // Best-effort usage for a finished session (provider cost and tokens);
   // drivers that cannot report it return an error (design section 6.11).
@@ -56,10 +59,19 @@ struct OpencodeRunnerOptions {
   // benchmark. Empty disables it.
   std::filesystem::path usage_file;
   std::chrono::milliseconds turn_timeout{600000};
+  // No-events watchdog inside a turn: a session that emits nothing for this
+  // long is stalled (a hung provider stream emits no events at all), so the
+  // turn is aborted instead of waiting out `turn_timeout` (design section
+  // 6.6.1 layer 3). Zero disables it.
+  std::chrono::milliseconds stall_timeout{120000};
   // Fixed continuation attempts before the turn counts as failed.
   uint32_t max_continuations = 2;
   std::string target_language = "cpp";
   std::string target_standard = "c++20";
+  // The profile's agent commands (build/test), injected into the prompt so
+  // the model does not waste turns on denied shell commands. The read-only
+  // git commands are appended per role (design section 6.6.1 layer 1).
+  std::string allowed_commands;
   std::string continuation_message =
       "Proceed with the task as specified. Do not ask questions. Finish by "
       "calling the submission tool.";

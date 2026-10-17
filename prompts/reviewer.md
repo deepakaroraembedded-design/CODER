@@ -8,4 +8,6 @@ Open defects: {{open_defects}}
 
 Task: {{brief}}
 
+Tools: review from the diff; shell access is limited to single read-only commands ({{commands}}). If a tool call is denied or fails, do not stop: adapt and continue.
+
 Do not ask questions. Finish by calling the submission tool ({{submission_tools}}).

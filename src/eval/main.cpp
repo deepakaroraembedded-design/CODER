@@ -286,6 +286,7 @@ int run_bench(const BenchOptions& options) {
     executor_options.provider_base_url = config->provider_base_url;
     executor_options.api_key_env = config->api_key_env;
     executor_options.role_models = candidate.role_models;
+    executor_options.role_options = candidate.role_options;
     executor_options.prices = config->prices;
     executor_options.keep_scratch = !options.drop_scratch;
     cf::eval::RunProcessExecutor plan_executor(std::move(executor_options), executor);

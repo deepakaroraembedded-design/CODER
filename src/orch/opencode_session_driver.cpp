@@ -38,7 +38,8 @@ Status OpencodeSessionDriver::send_prompt(std::string_view session_id,
 }
 
 Status OpencodeSessionDriver::wait_idle(std::string_view session_id,
-                                        std::chrono::milliseconds timeout) {
+                                        std::chrono::milliseconds timeout,
+                                        std::chrono::milliseconds stall_timeout) {
   if (tracker_ == nullptr || stream_ == nullptr) {
     return client_.wait_idle(session_id, timeout);
   }
@@ -51,7 +52,8 @@ Status OpencodeSessionDriver::wait_idle(std::string_view session_id,
     }
   }
 
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  const auto start = std::chrono::steady_clock::now();
+  const auto deadline = start + timeout;
   for (;;) {
     const auto now = std::chrono::steady_clock::now();
     if (now >= deadline) {
@@ -61,9 +63,31 @@ Status OpencodeSessionDriver::wait_idle(std::string_view session_id,
         std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
     if (stream_->running()) {
       // The documented turn-end signal (Phase 0a): wait for session.idle.
-      const auto slice = std::min(remaining, std::chrono::milliseconds(1000));
+      auto slice = std::min(remaining, std::chrono::milliseconds(1000));
+      if (stall_timeout.count() > 0) {
+        slice = std::min(slice, stall_timeout);
+      }
       if (tracker_->wait_for_idle(session_id, baseline, slice)) {
         return {};
+      }
+      if (stall_timeout.count() > 0) {
+        // A hung provider stream emits nothing: no message part updates, no
+        // deltas, no status events. An event from before the wait does not
+        // count, so the watchdog starts at the prompt. A running tool call is
+        // not a stall: builds and tests legitimately emit nothing until they
+        // finish, and the overall turn timeout still bounds them.
+        auto last = tracker_->last_activity(session_id);
+        const auto reference =
+            (last.has_value() && *last > start) ? *last : start;
+        const bool tool_running =
+            last.has_value() && *last > start && tracker_->in_tool(session_id);
+        if (!tool_running &&
+            std::chrono::steady_clock::now() - reference >= stall_timeout) {
+          return fail(agents::error_codes::kTimeout,
+                      "session " + std::string(session_id) + " stalled: no events for " +
+                          std::to_string(stall_timeout.count()) +
+                          " ms (stall watchdog)");
+        }
       }
       continue;
     }

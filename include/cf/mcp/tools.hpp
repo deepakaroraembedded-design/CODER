@@ -31,7 +31,9 @@ std::optional<ToolRole> tool_role_from_string(std::string_view text);
 struct ToolResult {
   bool is_error = false;
   std::string text;
-  Json structured;  // null when there is nothing structured to return
+  // Null when there is nothing structured to return; otherwise an object
+  // (MCP structured content must be a record, never a bare array).
+  Json structured;
 };
 
 struct ToolDefinition {

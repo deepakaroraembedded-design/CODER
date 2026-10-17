@@ -149,10 +149,10 @@ TEST_F(McpToolsTest, SearchGuidelinesReturnsHits) {
   const ToolResult result = registry_.call(
       ToolRole::Coder, "search_guidelines", Json{{"query", "secret manager"}});
   ASSERT_FALSE(result.is_error) << result.text;
-  ASSERT_TRUE(result.structured.is_array());
-  ASSERT_FALSE(result.structured.empty());
-  EXPECT_EQ(result.structured[0]["doc_id"], "policy");
-  EXPECT_FALSE(result.structured[0]["citation"].get<std::string>().empty());
+  ASSERT_TRUE(result.structured["hits"].is_array());
+  ASSERT_FALSE(result.structured["hits"].empty());
+  EXPECT_EQ(result.structured["hits"][0]["doc_id"], "policy");
+  EXPECT_FALSE(result.structured["hits"][0]["citation"].get<std::string>().empty());
 }
 
 TEST_F(McpToolsTest, SearchGuidelinesHonoursTypeFilter) {
@@ -160,9 +160,9 @@ TEST_F(McpToolsTest, SearchGuidelinesHonoursTypeFilter) {
       ToolRole::Coder, "search_guidelines",
       Json{{"query", "registry"}, {"types", Json::array({"design"})}});
   ASSERT_FALSE(result.is_error) << result.text;
-  ASSERT_TRUE(result.structured.is_array());
-  ASSERT_FALSE(result.structured.empty());
-  for (const auto& hit : result.structured) {
+  ASSERT_TRUE(result.structured["hits"].is_array());
+  ASSERT_FALSE(result.structured["hits"].empty());
+  for (const auto& hit : result.structured["hits"]) {
     EXPECT_EQ(hit["type"], "design");
   }
 
@@ -181,6 +181,13 @@ TEST_F(McpToolsTest, GetDocumentFoundAndMissing) {
   EXPECT_NE(found.structured["text"].get<std::string>().find("secret manager"),
             std::string::npos);
 
+  // Models often copy the "doc_id@version" form rendered in search hits.
+  const ToolResult versioned = registry_.call(
+      ToolRole::Qa, "get_document", Json{{"doc_id", "policy@1"}});
+  ASSERT_FALSE(versioned.is_error) << versioned.text;
+  EXPECT_EQ(versioned.structured["doc_id"], "policy");
+  EXPECT_EQ(versioned.structured["version"], "1");
+
   const ToolResult missing =
       registry_.call(ToolRole::Qa, "get_document", Json{{"doc_id", "nope"}});
   EXPECT_TRUE(missing.is_error);
@@ -191,7 +198,7 @@ TEST_F(McpToolsTest, GetRequirementFindsById) {
   const ToolResult found =
       registry_.call(ToolRole::Reviewer, "get_requirement", Json{{"req_id", "REQ-010"}});
   ASSERT_FALSE(found.is_error) << found.text;
-  EXPECT_EQ(found.structured[0]["doc_id"], "srs");
+  EXPECT_EQ(found.structured["hits"][0]["doc_id"], "srs");
 
   const ToolResult missing =
       registry_.call(ToolRole::Reviewer, "get_requirement", Json{{"req_id", "REQ-999"}});
@@ -203,7 +210,7 @@ TEST_F(McpToolsTest, GetPatternFindsById) {
   const ToolResult found = registry_.call(ToolRole::Coder, "get_pattern",
                                            Json{{"pattern_id", "PAT-STRATEGY"}});
   ASSERT_FALSE(found.is_error) << found.text;
-  EXPECT_EQ(found.structured[0]["doc_id"], "patterns");
+  EXPECT_EQ(found.structured["hits"][0]["doc_id"], "patterns");
 
   const ToolResult missing = registry_.call(ToolRole::Coder, "get_pattern",
                                              Json{{"pattern_id", "PAT-NOPE"}});
@@ -252,9 +259,9 @@ TEST_F(McpToolsTest, GetGateResultsUsesTheStore) {
   const ToolResult latest =
       registry_.call(ToolRole::Reviewer, "get_gate_results", Json::object());
   ASSERT_FALSE(latest.is_error) << latest.text;
-  ASSERT_TRUE(latest.structured.is_array());
-  ASSERT_EQ(latest.structured.size(), 1u);
-  EXPECT_EQ(latest.structured[0]["gate"], "build");
+  ASSERT_TRUE(latest.structured["gates"].is_array());
+  ASSERT_EQ(latest.structured["gates"].size(), 1u);
+  EXPECT_EQ(latest.structured["gates"][0]["gate"], "build");
 
   const ToolResult missing = registry_.call(
       ToolRole::Reviewer, "get_gate_results", Json{{"commit", "deadbeef"}});
@@ -288,8 +295,65 @@ TEST_F(McpToolsTest, FileDefectDeduplicatesByFingerprint) {
   const ToolResult listed =
       registry_.call(ToolRole::Coder, "list_defects", Json::object());
   ASSERT_FALSE(listed.is_error);
-  ASSERT_EQ(listed.structured.size(), 1u);
-  EXPECT_EQ(listed.structured[0]["id"], id);
+  ASSERT_EQ(listed.structured["defects"].size(), 1u);
+  EXPECT_EQ(listed.structured["defects"][0]["id"], id);
+}
+
+TEST_F(McpToolsTest, DisputeTestRecordsADisputedDefect) {
+  const ToolResult first = registry_.call(
+      ToolRole::Coder, "dispute_test",
+      Json{{"test_id", "tests/rb_interface.cpp"},
+           {"rationale", "decltype of an overloaded member cannot compile"}});
+  ASSERT_FALSE(first.is_error) << first.text;
+  EXPECT_EQ(first.structured["status"], "DISPUTED");
+  EXPECT_EQ(first.structured["disputes"], 1);
+  EXPECT_EQ(first.structured["repeated"], false);
+  const std::string id = first.structured["id"].get<std::string>();
+
+  const auto stored = store_->get_defect(id);
+  ASSERT_TRUE(stored.has_value());
+  EXPECT_EQ(stored->status, "DISPUTED");
+  EXPECT_EQ(stored->fingerprint, "test-dispute:tests/rb_interface.cpp");
+
+  // Re-disputing before QA decided reuses the defect without counting a
+  // repeat: the escalation only applies after a QA rejection.
+  const ToolResult second = registry_.call(
+      ToolRole::Coder, "dispute_test",
+      Json{{"test_id", "tests/rb_interface.cpp"}, {"rationale", "same problem"}});
+  ASSERT_FALSE(second.is_error) << second.text;
+  EXPECT_EQ(second.structured["id"], id);
+  EXPECT_EQ(second.structured["disputes"], 1);
+  EXPECT_EQ(second.structured["repeated"], false);
+
+  // The driver marks the dispute decided after the QA decision; disputing the
+  // same test again then counts as a repeat and escalates (design section 12).
+  auto after_decision = store_->get_defect(id);
+  ASSERT_TRUE(after_decision.has_value());
+  Json body = Json::parse(after_decision->body_json);
+  body["decided"] = true;
+  after_decision->body_json = body.dump();
+  ASSERT_TRUE(store_->upsert_defect(*after_decision).has_value());
+  const ToolResult third = registry_.call(
+      ToolRole::Coder, "dispute_test",
+      Json{{"test_id", "tests/rb_interface.cpp"}, {"rationale", "still broken"}});
+  ASSERT_FALSE(third.is_error) << third.text;
+  EXPECT_EQ(third.structured["id"], id);
+  EXPECT_EQ(third.structured["disputes"], 2);
+  EXPECT_EQ(third.structured["repeated"], true);
+
+  // QA cannot dispute tests, and QA's verify_defect resolves the dispute.
+  const ToolResult denied = registry_.call(
+      ToolRole::Qa, "dispute_test",
+      Json{{"test_id", "tests/x.cpp"}, {"rationale", "nope"}});
+  EXPECT_TRUE(denied.is_error);
+  EXPECT_EQ(denied.structured["code"], "TOOL_DENIED");
+
+  const ToolResult verified = registry_.call(
+      ToolRole::Qa, "verify_defect", Json{{"id", id}, {"result", "VERIFIED"}});
+  ASSERT_FALSE(verified.is_error) << verified.text;
+  const auto resolved = store_->get_defect(id);
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_EQ(resolved->status, "VERIFIED");
 }
 
 TEST_F(McpToolsTest, VerifyDefectUpdatesStatus) {

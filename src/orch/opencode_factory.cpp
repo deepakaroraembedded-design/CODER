@@ -255,6 +255,10 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   if (model != config_.role_models.end()) {
     spec.provider_model_id = model->second;
   }
+  const auto role_options = config_.role_options.find(role);
+  if (role_options != config_.role_options.end()) {
+    spec.provider_options = role_options->second;
+  }
   spec.allowed_commands = role == "qa" ? config_.qa_commands : config_.coder_commands;
   if (role == "reviewer") {
     spec.allowed_commands.clear();

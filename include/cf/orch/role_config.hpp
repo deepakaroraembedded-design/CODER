@@ -18,6 +18,11 @@ struct RoleConfigSpec {
   std::string provider_base_url = "https://api.fireworks.ai/inference/v1";
   std::string api_key_env = "FIREWORKS_API_KEY";
   std::string provider_model_id;  // e.g. accounts/fireworks/models/<model>
+  // Extra provider/model options written verbatim into the model config
+  // (opencode model `options`), e.g. {"reasoning_effort": "low"} so a
+  // reasoning model does not spend its whole turn thinking. Empty omits the
+  // block.
+  nlohmann::json provider_options = nlohmann::json::object();
   std::vector<std::string> allowed_commands;  // profile agent_commands
   std::string mcp_command;                    // path to the cf-mcp binary
   std::string run_id;

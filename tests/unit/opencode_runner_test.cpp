@@ -44,6 +44,8 @@ class FakeSessionDriver final : public SessionDriver {
   std::vector<std::string> prompts;
   int aborts = 0;
   bool wait_fails = false;
+  // The stall watchdog timeout the runner passed on the last wait.
+  std::chrono::milliseconds last_stall_timeout{0};
   // When set, the driver reports this as the finished session's usage.
   Json usage;
 
@@ -61,9 +63,11 @@ class FakeSessionDriver final : public SessionDriver {
   }
 
   cf::Status wait_idle(std::string_view session_id,
-                       std::chrono::milliseconds timeout) override {
+                       std::chrono::milliseconds timeout,
+                       std::chrono::milliseconds stall_timeout) override {
     (void)session_id;
     (void)timeout;
+    last_stall_timeout = stall_timeout;
     if (wait_fails) {
       return cf::fail("OC_TIMEOUT", "no events for 120 s");
     }
@@ -92,6 +96,7 @@ class OpencodeRunnerTest : public ::testing::Test {
     calls_file_ = dir_ / "calls.jsonl";
     options_.calls_file = calls_file_.string();
     options_.max_continuations = 2;
+    options_.allowed_commands = "cmake, ninja, ctest";
   }
 
   void TearDown() override {
@@ -161,6 +166,42 @@ TEST_F(OpencodeRunnerTest, GivesUpAfterTheContinuationLimit) {
   EXPECT_EQ(driver.prompts.size(), 3u);  // 1 prompt + 2 continuations
 }
 
+TEST_F(OpencodeRunnerTest, DisputedTestEndsTheCoderTurn) {
+  FakeSessionDriver driver;
+  driver.on_prompt = [this](const std::string&) {
+    append_call(calls_file_,
+                Json{{"tool", "dispute_test"},
+                     {"arguments",
+                      Json{{"test_id", "tests/rb_interface.cpp"},
+                           {"rationale", "cannot compile against the interface"}}}});
+  };
+  OpencodeAgentRunner runner(driver, options_);
+  auto outcome = runner.run_turn(request(cf::orch::MilestonePhase::Code));
+  ASSERT_TRUE(outcome.has_value()) << outcome.error().message;
+  EXPECT_TRUE(outcome->completed);
+  EXPECT_EQ(outcome->disputed_test_id, "tests/rb_interface.cpp");
+  EXPECT_EQ(driver.prompts.size(), 1u);  // the dispute ends the turn
+}
+
+TEST_F(OpencodeRunnerTest, DisputeTakesPrecedenceOverWorkSubmission) {
+  FakeSessionDriver driver;
+  driver.on_prompt = [this](const std::string&) {
+    append_call(calls_file_,
+                Json{{"tool", "dispute_test"},
+                     {"arguments",
+                      Json{{"test_id", "tests/rb_interface.cpp"},
+                           {"rationale", "cannot compile"}}}});
+    append_call(calls_file_,
+                Json{{"tool", "submit_work"},
+                     {"arguments", Json{{"summary", "work came with it"}}}});
+  };
+  OpencodeAgentRunner runner(driver, options_);
+  auto outcome = runner.run_turn(request(cf::orch::MilestonePhase::Code));
+  ASSERT_TRUE(outcome.has_value()) << outcome.error().message;
+  EXPECT_TRUE(outcome->completed);
+  EXPECT_EQ(outcome->disputed_test_id, "tests/rb_interface.cpp");
+}
+
 TEST_F(OpencodeRunnerTest, WatchdogTimeoutAbortsTheSession) {
   FakeSessionDriver driver;
   driver.wait_fails = true;
@@ -169,6 +210,10 @@ TEST_F(OpencodeRunnerTest, WatchdogTimeoutAbortsTheSession) {
   ASSERT_FALSE(outcome.has_value());
   EXPECT_EQ(outcome.error().code, "ORCH_TURN_TIMEOUT");
   EXPECT_EQ(driver.aborts, 1);
+  // The wait carries both watchdogs: the overall turn timeout and the
+  // 120-second no-events stall timeout (design section 6.6.1 layer 3).
+  EXPECT_EQ(driver.last_stall_timeout, std::chrono::milliseconds(120000));
+  EXPECT_EQ(options_.stall_timeout, driver.last_stall_timeout);
 }
 
 TEST_F(OpencodeRunnerTest, ReviewVerdictMapsToChangesRequested) {
@@ -291,6 +336,19 @@ TEST_F(OpencodeRunnerTest, PromptCarriesRoleLanguageAndRequirements) {
   EXPECT_NE(prompt.find("Implement the registry"), std::string::npos);
   EXPECT_NE(prompt.find("submit_work"), std::string::npos);
   EXPECT_NE(prompt.find("Do not ask questions"), std::string::npos);
+  // The prompt names the commands the role's config actually allows.
+  EXPECT_NE(prompt.find("cmake, ninja, ctest, git status, git diff, git log"),
+            std::string::npos);
+}
+
+TEST_F(OpencodeRunnerTest, PromptNamesTheReadOnlyToolsForTheReviewer) {
+  FakeSessionDriver driver;
+  OpencodeAgentRunner runner(driver, options_);
+  const std::string prompt = runner.build_prompt(
+      request(cf::orch::MilestonePhase::Review, "reviewer"), false);
+  EXPECT_NE(prompt.find("git status, git diff, git log, grep, cat, head"),
+            std::string::npos);
+  EXPECT_EQ(prompt.find("cmake, ninja, ctest"), std::string::npos);
 }
 
 }  // namespace

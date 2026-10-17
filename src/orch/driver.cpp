@@ -5,6 +5,7 @@
 #include <system_error>
 #include <utility>
 
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 #include "cf/sandbox/docker.hpp"
@@ -142,12 +143,25 @@ AgentTurnRequest WorkspaceDriver::make_request(MilestonePhase phase,
       }
     }
   }
+  const auto join = [](const std::vector<std::string>& values) {
+    std::string out;
+    for (const auto& value : values) {
+      if (!out.empty()) {
+        out += "; ";
+      }
+      out += value;
+    }
+    return out;
+  };
   if (const plan::MilestoneSpec* spec = plan_.find_milestone(milestone_id)) {
     request.requirement_ids = spec->requirements;
     switch (phase) {
       case MilestonePhase::AuthorTests:
-        request.brief = "Author the test plan and tests for milestone " +
-                        std::string(milestone_id) + " (" + spec->title + ")";
+        request.brief =
+            "Author the test plan and tests for milestone " +
+            std::string(milestone_id) + " (" + spec->title +
+            "). The tests are expected to fail until the coder implements the "
+            "milestone, so do not file defects for the missing implementation";
         break;
       case MilestonePhase::Code:
         request.brief = "Implement milestone " + std::string(milestone_id) + " (" +
@@ -171,22 +185,22 @@ AgentTurnRequest WorkspaceDriver::make_request(MilestonePhase phase,
     }
     // The agents work from the plan's acceptance criteria and constraints
     // (design section 6.6.1): without them the brief is only a title.
-    const auto join = [](const std::vector<std::string>& values) {
-      std::string out;
-      for (const auto& value : values) {
-        if (!out.empty()) {
-          out += "; ";
-        }
-        out += value;
-      }
-      return out;
-    };
     if (!spec->acceptance.empty()) {
       request.brief += ". Acceptance criteria: " + join(spec->acceptance);
     }
     if (!plan_.forbidden.empty()) {
       request.brief += ". Forbidden: " + join(plan_.forbidden);
     }
+  }
+  // Validation decides the milestone's exit criteria (design section 11.1):
+  // every open defect must be re-tested and verified or the milestone cannot
+  // pass, whatever the tests say.
+  if (phase == MilestonePhase::Validate && !request.open_defect_ids.empty()) {
+    request.brief += ". Re-test the open defects (" +
+                     join(request.open_defect_ids) +
+                     ") and mark each VERIFIED with verify_defect when the failure "
+                     "no longer reproduces; the milestone cannot pass while any "
+                     "defect is open";
   }
   return request;
 }
@@ -201,13 +215,13 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
                                                  config_.base_branch);
       if (!created) {
         return TurnResult{false, "", created.error().message, false, false, false, false,
-                          false};
+                          false, ""};
       }
     }
     auto before = repository_.head_sha(path);
     if (!before) {
       return TurnResult{false, "", before.error().message, false, false, false, false,
-                        false};
+                        false, ""};
     }
     const std::string branch = "cf-local/" + config_.run_id + "/" +
                                std::string(milestone_id) + "/coder";
@@ -231,7 +245,7 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
         return conflict;
       }
       return TurnResult{false, "", merged.error().message, false, false, false, false,
-                        false};
+                        false, ""};
     }
     auto changes = repository_.diff(*before, *merged);
     bool interface_changed = false;
@@ -255,22 +269,28 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
                                                  phase == MilestonePhase::Validate
                                              ? "qa"
                                              : "coder");
-  auto worktree = ensure_worktree(milestone_id, role);
+  // QA validation checks the coder's committed work, so it runs in the
+  // coder's worktree: the QA worktree never received the implementation.
+  // Test authoring stays in the QA worktree (design sections 6.9, 7.3).
+  const std::string worktree_role =
+      phase == MilestonePhase::Validate ? "coder" : role;
+  auto worktree = ensure_worktree(milestone_id, worktree_role);
   if (!worktree) {
     return TurnResult{false, "", worktree.error().message, false, false, false, false,
-                      false};
+                      false, ""};
   }
 
-  const AgentTurnRequest request = make_request(phase, milestone_id, role);
+  AgentTurnRequest request = make_request(phase, milestone_id, role);
+  request.worktree = worktree->string();
   auto outcome = agent_runner_.run_turn(request);
   if (!outcome) {
     spdlog::warn("{} turn for {} failed: {}", role, milestone_id,
                  outcome.error().message);
     return TurnResult{false, "", outcome.error().message, false, false, false, false,
-                      false};
+                      false, ""};
   }
   if (!outcome->completed) {
-    return TurnResult{false, "", outcome->detail, false, false, false, false, false};
+    return TurnResult{false, "", outcome->detail, false, false, false, false, false, ""};
   }
 
   switch (phase) {
@@ -281,7 +301,7 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
                              store::new_op_id());
       if (!stored) {
         return TurnResult{false, "", stored.error().message, false, false, false, false,
-                          false};
+                          false, ""};
       }
       TurnResult result;
       result.completed = true;
@@ -295,13 +315,18 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
                              prefix + "(" + std::string(milestone_id) + "): " +
                                  outcome->summary,
                              store::new_op_id());
-      if (!stored) {
+      // A dispute-only turn may have changed nothing; that is not a failure.
+      if (!stored && (outcome->disputed_test_id.empty() ||
+                      stored.error().code != git::error_codes::kNoChanges)) {
         return TurnResult{false, "", stored.error().message, false, false, false, false,
-                          false};
+                          false, ""};
       }
       TurnResult result;
       result.completed = true;
       result.summary = outcome->summary;
+      // A turn that ended with dispute_test routes to the QA decision before
+      // the next gate run (design section 12).
+      result.disputed_test_id = outcome->disputed_test_id;
       return result;
     }
     case MilestonePhase::Review: {
@@ -321,7 +346,117 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
     case MilestonePhase::Integrate:
       break;  // handled above
   }
-  return TurnResult{false, "", "unreachable phase", false, false, false, false, false};
+  return TurnResult{false, "", "unreachable phase", false, false, false, false, false, ""};
+}
+
+// The QA decision turn for an open test dispute (design sections 6.9, 12):
+// QA fixes the protected test or rejects the dispute. The turn runs in the
+// coder's worktree so a corrected test is what the next gate run builds, and
+// the fix is committed there (tests/ and qa/ are QA-owned paths).
+TurnResult WorkspaceDriver::run_test_dispute(std::string_view milestone_id) {
+  const std::string id(milestone_id);
+  auto worktree = ensure_worktree(milestone_id, "coder");
+  if (!worktree) {
+    return TurnResult{false, "", worktree.error().message, false, false, false, false,
+                      false, ""};
+  }
+
+  std::string brief =
+      "Decide the open test dispute(s) for milestone " + id +
+      ". The tests under tests/ are QA-owned: if a disputed test is wrong (for "
+      "example it cannot compile against the agreed interface), fix it and mark "
+      "its dispute defect VERIFIED with verify_defect. If the test is correct, "
+      "reject the dispute by leaving it open. ";
+  if (store_ != nullptr) {
+    auto defects = store_->list_defects(config_.run_id, milestone_id,
+                                        store::open_defect_statuses());
+    if (defects.has_value()) {
+      for (const auto& defect : *defects) {
+        if (defect.status != "DISPUTED") {
+          continue;
+        }
+        const auto body = nlohmann::json::parse(defect.body_json, nullptr, false);
+        if (!body.is_object()) {
+          continue;
+        }
+        brief += "Dispute " + defect.id + " against test " +
+                 body.value("test_id", "") + ": " + body.value("rationale", "") +
+                 ". ";
+      }
+    }
+  }
+
+  AgentTurnRequest request = make_request(MilestonePhase::Validate, milestone_id, "qa");
+  request.worktree = worktree->string();
+  request.brief = std::move(brief);
+
+  auto outcome = agent_runner_.run_turn(request);
+  if (!outcome) {
+    spdlog::warn("test dispute decision for {} failed: {}", milestone_id,
+                 outcome.error().message);
+    return TurnResult{false, "", outcome.error().message, false, false, false, false,
+                      false, ""};
+  }
+  if (!outcome->completed) {
+    return TurnResult{false, "", outcome->detail, false, false, false, false, false, ""};
+  }
+
+  // A rejection changes nothing, so a clean worktree is not an error.
+  std::vector<std::string> qa_paths;
+  for (const char* path : {"tests", "qa"}) {
+    std::error_code ec;
+    if (std::filesystem::exists(*worktree / path, ec)) {
+      qa_paths.push_back(path);
+    }
+  }
+  bool fixed = false;
+  if (!qa_paths.empty()) {
+    git::CommitTrailers trailers;
+    trailers.run_id = config_.run_id;
+    trailers.milestone_id = id;
+    trailers.op_id = store::new_op_id();
+    const auto committed = repository_.commit_paths(
+        *worktree, qa_paths, "test(" + id + "): dispute decision", trailers);
+    if (committed.has_value()) {
+      fixed = true;
+    } else if (committed.error().code != git::error_codes::kNoChanges) {
+      return TurnResult{false, "", committed.error().message, false, false, false,
+                        false, false, ""};
+    }
+  }
+
+  // QA decides: a test change resolves the dispute, no change rejects it. A
+  // rejection is recorded so a further dispute of the same test escalates
+  // (design section 12).
+  if (store_ != nullptr) {
+    auto defects = store_->list_defects(config_.run_id, milestone_id,
+                                        store::open_defect_statuses());
+    if (defects.has_value()) {
+      for (const auto& defect : *defects) {
+        if (defect.status != "DISPUTED") {
+          continue;
+        }
+        if (fixed) {
+          (void)store_->set_defect_status(defect.id, "VERIFIED", defect.attempts);
+          continue;
+        }
+        auto body = nlohmann::json::parse(defect.body_json, nullptr, false);
+        if (!body.is_object() || body.value("decided", false)) {
+          continue;
+        }
+        body["decided"] = true;
+        store::DefectRecord updated = defect;
+        updated.body_json = body.dump();
+        (void)store_->upsert_defect(updated);
+      }
+    }
+  }
+
+  TurnResult result;
+  result.completed = true;
+  result.summary = outcome->summary;
+  result.exit_criteria_met = outcome->exit_criteria_met;
+  return result;
 }
 
 GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {

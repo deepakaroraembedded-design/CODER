@@ -56,7 +56,7 @@ class FakeDriver final : public MilestoneDriver {
     if (on_turn) {
       return on_turn(phase, id);
     }
-    return TurnResult{true, "ok", "", false, false, false, false, false};
+    return TurnResult{true, "ok", "", false, false, false, false, false, ""};
   }
 
   GateOutcome run_gates(std::string_view milestone_id) override {
@@ -75,7 +75,7 @@ class FakeDriver final : public MilestoneDriver {
 
 TurnResult successful_turn(MilestonePhase phase, const std::string& milestone_id) {
   (void)milestone_id;
-  TurnResult result{true, "ok", "", false, false, false, false, false};
+  TurnResult result{true, "ok", "", false, false, false, false, false, ""};
   if (phase == MilestonePhase::Validate) {
     result.exit_criteria_met = true;
   }
@@ -285,7 +285,7 @@ TEST_F(OrchestratorTest, EscalatedMilestoneDoesNotBlockOthers) {
   FakeDriver driver;
   driver.on_turn = [](MilestonePhase phase, const std::string& milestone_id) {
     if (milestone_id == "M1") {
-      return TurnResult{false, "", "always fails", false, false, false, false, false};
+      return TurnResult{false, "", "always fails", false, false, false, false, false, ""};
     }
     return successful_turn(phase, milestone_id);
   };

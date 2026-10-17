@@ -4,10 +4,12 @@
 #include <atomic>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
 #include <unistd.h>
 
 #include "cf/orch/milestone_loop.hpp"
@@ -25,6 +27,7 @@ using cf::orch::MilestonePhase;
 using cf::orch::MilestoneState;
 using cf::orch::StateMachine;
 using cf::orch::TurnResult;
+using cf::store::DefectRecord;
 using cf::store::RunRecord;
 using cf::store::RunStore;
 
@@ -42,11 +45,28 @@ class FakeDriver final : public MilestoneDriver {
   TurnResult run(MilestonePhase phase, std::string_view milestone_id) override {
     (void)milestone_id;
     phases.push_back(phase);
+    if (on_run) {
+      on_run(phase);
+    }
     if (scripts.empty()) {
       return completed_turn();
     }
     const TurnResult result = scripts.front();
     scripts.pop_front();
+    if (!result.disputed_test_id.empty() && on_dispute) {
+      on_dispute(result.disputed_test_id);
+    }
+    return result;
+  }
+
+  TurnResult run_test_dispute(std::string_view milestone_id) override {
+    (void)milestone_id;
+    ++dispute_decisions;
+    if (dispute_scripts.empty()) {
+      return completed_turn();
+    }
+    const TurnResult result = dispute_scripts.front();
+    dispute_scripts.pop_front();
     return result;
   }
 
@@ -61,9 +81,9 @@ class FakeDriver final : public MilestoneDriver {
     return outcome;
   }
 
-  static TurnResult completed_turn() { return TurnResult{true, "ok", "", false, false, false, false, false}; }
+  static TurnResult completed_turn() { return TurnResult{true, "ok", "", false, false, false, false, false, ""}; }
   static TurnResult failed_turn(const std::string& detail) {
-    return TurnResult{false, "", detail, false, false, false, false, false};
+    return TurnResult{false, "", detail, false, false, false, false, false, ""};
   }
   static TurnResult changes_requested() {
     TurnResult result = completed_turn();
@@ -82,6 +102,11 @@ class FakeDriver final : public MilestoneDriver {
     return result;
   }
   static TurnResult rebase_conflict() { return completed_turn(); }
+  static TurnResult disputed_turn(const std::string& test_id) {
+    TurnResult result = completed_turn();
+    result.disputed_test_id = test_id;
+    return result;
+  }
 
   static GateOutcome gates_pass(bool first_gate_run = false,
                                 std::vector<FileChange> changes = {},
@@ -110,8 +135,12 @@ class FakeDriver final : public MilestoneDriver {
 
   std::deque<TurnResult> scripts;
   std::deque<GateOutcome> gate_scripts;
+  std::deque<TurnResult> dispute_scripts;
+  std::function<void(const std::string& test_id)> on_dispute;
+  std::function<void(MilestonePhase)> on_run;
   std::vector<MilestonePhase> phases;
   int gate_runs = 0;
+  int dispute_decisions = 0;
 };
 
 FileChange code_change(uint32_t added = 10, uint32_t removed = 2) {
@@ -256,6 +285,94 @@ TEST_F(MilestoneLoopTest, DefectsFiledLeadToFix) {
       MilestonePhase::Validate,    MilestonePhase::Fix,      MilestonePhase::Review,
       MilestonePhase::Validate,    MilestonePhase::Integrate};
   EXPECT_EQ(driver.phases, expected);
+}
+
+TEST_F(MilestoneLoopTest, OpenDefectsBlockExitCriteria) {
+  // QA claims the exit criteria are met while a blocker is still open: the
+  // milestone goes back to fixing until the defect is verified (11.1).
+  DefectRecord defect;
+  defect.id = "D-9";
+  defect.run_id = "R12";
+  defect.milestone_id = "M3";
+  defect.status = "OPEN";
+  defect.severity = "blocker";
+  defect.body_json = "{}";
+  ASSERT_TRUE(store_->upsert_defect(defect).has_value());
+
+  FakeDriver driver;
+  driver.scripts = {FakeDriver::completed_turn(),     // author tests
+                    FakeDriver::completed_turn(),     // code
+                    FakeDriver::completed_turn(),     // review: approved
+                    FakeDriver::exit_criteria_met(),  // validate: claims pass
+                    FakeDriver::completed_turn(),     // fix
+                    FakeDriver::completed_turn(),     // review: approved
+                    FakeDriver::exit_criteria_met(),  // validate: defect verified
+                    FakeDriver::merged()};            // integrate
+  driver.gate_scripts = {FakeDriver::gates_pass(true, {code_change()}),
+                         FakeDriver::gates_pass(false, {code_change(5, 1)})};
+  int validates = 0;
+  driver.on_run = [this, &validates](MilestonePhase phase) {
+    if (phase == MilestonePhase::Validate && ++validates == 2) {
+      (void)store_->set_defect_status("D-9", "VERIFIED", 0);
+    }
+  };
+
+  EXPECT_EQ(drive(driver), MilestoneState::Done);
+  const std::vector<MilestonePhase> expected = {
+      MilestonePhase::AuthorTests, MilestonePhase::Code,   MilestonePhase::Review,
+      MilestonePhase::Validate,    MilestonePhase::Fix,    MilestonePhase::Review,
+      MilestonePhase::Validate,    MilestonePhase::Integrate};
+  EXPECT_EQ(driver.phases, expected);
+}
+
+TEST_F(MilestoneLoopTest, TestDisputeIsDecidedByQaBeforeGating) {
+  FakeDriver driver;
+  driver.scripts = {FakeDriver::completed_turn(),  // author tests
+                    FakeDriver::disputed_turn("tests/rb_interface.cpp"),  // code
+                    FakeDriver::completed_turn(),     // review: approved
+                    FakeDriver::exit_criteria_met(),  // validate
+                    FakeDriver::merged()};            // integrate
+  driver.gate_scripts = {FakeDriver::gates_pass(true, {code_change()})};
+
+  EXPECT_EQ(drive(driver), MilestoneState::Done);
+  // The dispute did not reach the gates: QA decided first (design section 12),
+  // and the submission that came with it proceeded to gating.
+  EXPECT_EQ(driver.dispute_decisions, 1);
+  const std::vector<MilestonePhase> expected = {
+      MilestonePhase::AuthorTests, MilestonePhase::Code,     MilestonePhase::Review,
+      MilestonePhase::Validate,    MilestonePhase::Integrate};
+  EXPECT_EQ(driver.phases, expected);
+  EXPECT_EQ(driver.gate_runs, 1);
+}
+
+TEST_F(MilestoneLoopTest, DisputingTheSameTestAgainEscalates) {
+  FakeDriver driver;
+  driver.scripts = {FakeDriver::completed_turn(),  // author tests
+                    FakeDriver::disputed_turn("tests/rb_interface.cpp"),  // code
+                    FakeDriver::disputed_turn("tests/rb_interface.cpp")}; // fix
+  driver.gate_scripts = {FakeDriver::gates_fail("compile error")};
+  // The dispute tool records the defect and counts repeats; QA rejects the
+  // first dispute (the defect stays DISPUTED), so the second one escalates.
+  driver.on_dispute = [this](const std::string& test_id) {
+    const std::string fingerprint = "test-dispute:" + test_id;
+    const auto existing =
+        store_->find_defect_by_fingerprint("R12", fingerprint);
+    const int disputes = existing.has_value() ? 2 : 1;
+    DefectRecord record;
+    record.id = "D-1";
+    record.run_id = "R12";
+    record.milestone_id = "M3";
+    record.status = "DISPUTED";
+    record.severity = "high";
+    record.fingerprint = fingerprint;
+    record.body_json =
+        nlohmann::json{{"disputes", disputes}, {"test_id", test_id}}.dump();
+    ASSERT_TRUE(store_->upsert_defect(record).has_value());
+  };
+
+  EXPECT_EQ(drive(driver), MilestoneState::Escalated);
+  EXPECT_EQ(driver.dispute_decisions, 1);  // only the first dispute is decided
+  EXPECT_NE(last_reason_.find("again after QA rejected"), std::string::npos);
 }
 
 TEST_F(MilestoneLoopTest, ReviewSkippedWhenOnlyTestsChanged) {

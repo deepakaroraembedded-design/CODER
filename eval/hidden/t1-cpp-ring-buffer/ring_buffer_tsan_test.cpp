@@ -1,6 +1,10 @@
 // Hidden acceptance test: concurrency safety under TSan (design section
 // 17.2). Built with -fsanitize=thread; any reported race fails the step
 // before the counts line is printed, so the harness counts it as failed.
+//
+// The buffer is sized to hold every item so overwrite-on-full (M1 semantics)
+// never kicks in: the consumer sees exactly the producer's sequence, so both
+// ordering and race freedom are checked in one bounded run.
 #include <atomic>
 #include <cstdio>
 #include <thread>
@@ -9,10 +13,10 @@
 
 int main() {
   constexpr int kItems = 20000;
-  cf_golden::RingBuffer<int, 64> buffer;
+  cf_golden::RingBuffer<int, kItems> buffer;
   std::atomic<bool> done{false};
-  int consumed = 0;
   int mismatches = 0;
+  int consumed = 0;
 
   std::thread producer([&buffer, &done]() {
     for (int i = 0; i < kItems; ++i) {
@@ -22,11 +26,11 @@ int main() {
   });
   std::thread consumer([&buffer, &done, &consumed, &mismatches]() {
     int expected = 0;
-    while (consumed < kItems) {
+    while (expected < kItems) {
       auto value = buffer.pop();
       if (!value.has_value()) {
-        if (done.load(std::memory_order_acquire)) {
-          continue;  // drain the last elements
+        if (done.load(std::memory_order_acquire) && buffer.empty()) {
+          break;  // the producer finished and nothing is left to drain
         }
         continue;
       }
@@ -40,7 +44,8 @@ int main() {
   producer.join();
   consumer.join();
 
-  const int passed = mismatches == 0 ? 1 : 0;
+  const bool ok = mismatches == 0 && consumed == kItems;
+  const int passed = ok ? 1 : 0;
   std::printf("{\"tests\": 1, \"passed\": %d}\n", passed);
   return passed == 1 ? 0 : 1;
 }

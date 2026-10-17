@@ -41,6 +41,7 @@ TEST(PromptLibraryTest, EmbeddedDefaultsRender) {
   values["requirements"] = "REQ-010";
   values["brief"] = "Implement the registry";
   values["submission_tools"] = "submit_work";
+  values["commands"] = "cmake, ninja, ctest";
   auto rendered = library.render("coder", values);
   ASSERT_TRUE(rendered.has_value()) << rendered.error().message;
   EXPECT_NE(rendered->find("Coder agent"), std::string::npos);
@@ -50,6 +51,7 @@ TEST(PromptLibraryTest, EmbeddedDefaultsRender) {
   EXPECT_NE(rendered->find("Implement the registry"), std::string::npos);
   EXPECT_NE(rendered->find("submit_work"), std::string::npos);
   EXPECT_NE(rendered->find("Do not ask questions"), std::string::npos);
+  EXPECT_NE(rendered->find("cmake, ninja, ctest"), std::string::npos);
 }
 
 TEST(PromptLibraryTest, EmptyValuesDropTheirLines) {

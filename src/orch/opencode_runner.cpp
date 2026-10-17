@@ -16,7 +16,9 @@ bool accepts_submission(MilestonePhase phase, const std::string& tool) {
       return tool == "submit_tests";
     case MilestonePhase::Code:
     case MilestonePhase::Fix:
-      return tool == "submit_work";
+      // dispute_test ends the turn too: a protected test that cannot pass is
+      // decided by QA before the coder keeps going (design sections 6.9, 12).
+      return tool == "submit_work" || tool == "dispute_test";
     case MilestonePhase::Review:
       return tool == "submit_review";
     case MilestonePhase::Validate:
@@ -39,13 +41,34 @@ std::string join(const std::vector<std::string>& values) {
   return out;
 }
 
+// The shell commands the role's static config actually allows (design
+// section 6.6.1 layer 1), so the prompt matches the policy.
+std::string commands_for(const OpencodeRunnerOptions& options,
+                         const std::string& role) {
+  if (role == "reviewer") {
+    return "git status, git diff, git log, grep, cat, head";
+  }
+  std::string commands = options.allowed_commands;
+  if (role == "coder") {
+    if (!commands.empty()) {
+      commands += ", ";
+    }
+    commands += "git status, git diff, git log";
+  }
+  if (commands.empty()) {
+    return "the toolchain's build and test commands";
+  }
+  return commands;
+}
+
 std::string submission_tools_for(MilestonePhase phase) {
   switch (phase) {
     case MilestonePhase::AuthorTests:
       return "submit_tests";
     case MilestonePhase::Code:
     case MilestonePhase::Fix:
-      return "submit_work";
+      return "submit_work, or dispute_test when a protected test under tests/ "
+             "cannot compile or contradicts the interface";
     case MilestonePhase::Review:
       return "submit_review";
     case MilestonePhase::Validate:
@@ -99,6 +122,7 @@ std::string OpencodeAgentRunner::build_prompt(const AgentTurnRequest& request,
                         ? "Run the full system validation suite on the merged result"
                         : request.brief;
   values["submission_tools"] = submission_tools_for(request.phase);
+  values["commands"] = commands_for(options_, request.role);
   auto rendered = options_.prompts.render(request.role, values);
   if (!rendered) {
     // Fall back to the embedded defaults rather than failing the turn.
@@ -162,6 +186,9 @@ Result<AgentTurnOutcome> OpencodeAgentRunner::outcome_from_submission(
     const Json verdict = arguments.value("verdict_json", Json::object());
     outcome.summary = verdict.value("summary", "review submitted");
     outcome.changes_requested = verdict.value("verdict", "") == "CHANGES_REQUESTED";
+  } else if (tool == "dispute_test") {
+    outcome.disputed_test_id = arguments.value("test_id", "");
+    outcome.summary = "disputed test " + outcome.disputed_test_id;
   } else if (tool == "file_defect") {
     const Json defect = arguments.value("defect_json", Json::object());
     outcome.summary = defect.value("summary", "defect filed");
@@ -198,7 +225,8 @@ Result<AgentTurnOutcome> OpencodeAgentRunner::drive(const AgentTurnRequest& requ
     if (!sent) {
       return tl::make_unexpected(sent.error());
     }
-    auto idle = driver_.wait_idle(*session, options_.turn_timeout);
+    auto idle = driver_.wait_idle(*session, options_.turn_timeout,
+                                  options_.stall_timeout);
     if (!idle) {
       (void)driver_.abort(*session);
       return fail(error_codes::kTurnTimeout,
@@ -209,7 +237,21 @@ Result<AgentTurnOutcome> OpencodeAgentRunner::drive(const AgentTurnRequest& requ
     if (!calls) {
       return tl::make_unexpected(calls.error());
     }
-    // The last accepted submission of this turn wins.
+    // A test dispute takes precedence over a work submission: the coder
+    // cannot change a protected test itself, so QA decides before the next
+    // gate run even when the same turn also submitted work (design section
+    // 12). Otherwise the last accepted submission of the turn wins.
+    for (auto it = calls->rbegin(); it != calls->rend(); ++it) {
+      if (it->value("tool", "") != "dispute_test" ||
+          !accepts_submission(request.phase, "dispute_test")) {
+        continue;
+      }
+      auto outcome = outcome_from_submission(request, *it);
+      if (outcome.has_value()) {
+        record_usage(request, *session);
+      }
+      return outcome;
+    }
     for (auto it = calls->rbegin(); it != calls->rend(); ++it) {
       const std::string tool = it->value("tool", "");
       if (!accepts_submission(request.phase, tool)) {

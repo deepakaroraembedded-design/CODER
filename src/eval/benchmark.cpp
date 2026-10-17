@@ -15,6 +15,43 @@ namespace {
 
 using Json = nlohmann::json;
 
+// Converts a YAML node (the candidate 'options' block) to JSON, which is the
+// shape opencode's model options take in the role config.
+Json yaml_to_json(const YAML::Node& node) {
+  switch (node.Type()) {
+    case YAML::NodeType::Null:
+      return Json();
+    case YAML::NodeType::Scalar: {
+      bool boolean = false;
+      if (YAML::convert<bool>::decode(node, boolean)) {
+        return boolean;
+      }
+      double number = 0.0;
+      if (YAML::convert<double>::decode(node, number)) {
+        return number;
+      }
+      return node.as<std::string>("");
+    }
+    case YAML::NodeType::Sequence: {
+      Json array = Json::array();
+      for (const auto& item : node) {
+        array.push_back(yaml_to_json(item));
+      }
+      return array;
+    }
+    case YAML::NodeType::Map: {
+      Json object = Json::object();
+      for (const auto& entry : node) {
+        object[entry.first.as<std::string>("")] = yaml_to_json(entry.second);
+      }
+      return object;
+    }
+    case YAML::NodeType::Undefined:
+      break;
+  }
+  return Json();
+}
+
 Result<BenchmarkConfig> validate(BenchmarkConfig config) {
   if (config.benchmark_id.empty()) {
     return fail(error_codes::kBenchmarkInvalid, "benchmark id is required");
@@ -42,6 +79,18 @@ Result<BenchmarkConfig> validate(BenchmarkConfig config) {
       if (model.empty()) {
         return fail(error_codes::kBenchmarkInvalid,
                     "candidate '" + candidate.name + "' has an empty model for role '" +
+                        role + "'");
+      }
+    }
+    for (const auto& [role, options] : candidate.role_options) {
+      if (!candidate.role_models.count(role)) {
+        return fail(error_codes::kBenchmarkInvalid,
+                    "candidate '" + candidate.name + "' has options for role '" + role +
+                        "' but no model for it");
+      }
+      if (!options.is_object() || options.empty()) {
+        return fail(error_codes::kBenchmarkInvalid,
+                    "candidate '" + candidate.name + "' has empty options for role '" +
                         role + "'");
       }
     }
@@ -112,6 +161,17 @@ Result<BenchmarkConfig> parse_benchmark_config(std::string_view yaml,
       for (const auto& entry : roles) {
         candidate.role_models[entry.first.as<std::string>("")] =
             entry.second.as<std::string>("");
+      }
+    }
+    const auto options = node["options"];
+    if (options) {
+      if (!options.IsMap()) {
+        return fail(error_codes::kBenchmarkParseFailed,
+                    "candidate '" + candidate.name + "': 'options' must be a mapping");
+      }
+      for (const auto& entry : options) {
+        candidate.role_options[entry.first.as<std::string>("")] =
+            yaml_to_json(entry.second);
       }
     }
     config.candidates.push_back(std::move(candidate));

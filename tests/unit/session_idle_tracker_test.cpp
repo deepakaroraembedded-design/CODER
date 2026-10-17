@@ -45,22 +45,54 @@ OpencodeEvent idle_event(const std::string& session_id) {
 TEST(SessionIdleTrackerTest, CountsIdleEventsPerSession) {
   SessionIdleTracker tracker;
   EXPECT_EQ(tracker.idle_count("ses_a"), 0u);
+  EXPECT_FALSE(tracker.last_activity("ses_a").has_value());
 
   OpencodeEvent other;
   other.type = "message.updated";
   other.properties = cf::agents::Json{{"sessionID", "ses_a"}};
   EXPECT_FALSE(tracker.record(other));
+  // Any session event counts as activity, not only idle ones (it drives the
+  // no-events stall watchdog, design section 6.6.1 layer 3).
+  ASSERT_TRUE(tracker.last_activity("ses_a").has_value());
 
   EXPECT_TRUE(tracker.record(idle_event("ses_a")));
   EXPECT_TRUE(tracker.record(idle_event("ses_a")));
   EXPECT_TRUE(tracker.record(idle_event("ses_b")));
   EXPECT_EQ(tracker.idle_count("ses_a"), 2u);
   EXPECT_EQ(tracker.idle_count("ses_b"), 1u);
+  EXPECT_FALSE(tracker.last_activity("ses_c").has_value());
 
   // An event without a session id is ignored.
   OpencodeEvent unnamed;
   unnamed.type = "session.idle";
   EXPECT_FALSE(tracker.record(unnamed));
+}
+
+TEST(SessionIdleTrackerTest, TracksRunningToolCalls) {
+  SessionIdleTracker tracker;
+  OpencodeEvent start;
+  start.type = "message.part.updated";
+  start.properties = cf::agents::Json{
+      {"sessionID", "ses_a"},
+      {"part", cf::agents::Json{{"type", "tool"},
+                                {"state", cf::agents::Json{{"status", "running"}}}}}};
+  EXPECT_FALSE(tracker.record(start));
+  EXPECT_TRUE(tracker.in_tool("ses_a"));
+  EXPECT_FALSE(tracker.in_tool("ses_b"));
+
+  OpencodeEvent finish = start;
+  finish.properties["part"]["state"]["status"] = "completed";
+  EXPECT_FALSE(tracker.record(finish));
+  EXPECT_FALSE(tracker.in_tool("ses_a"));
+
+  // Other event types leave the tool state alone (deltas can arrive while a
+  // tool runs in parallel).
+  (void)tracker.record(start);
+  OpencodeEvent delta;
+  delta.type = "message.part.delta";
+  delta.properties = cf::agents::Json{{"sessionID", "ses_a"}, {"delta", "x"}};
+  EXPECT_FALSE(tracker.record(delta));
+  EXPECT_TRUE(tracker.in_tool("ses_a"));
 }
 
 TEST(SessionIdleTrackerTest, WaitReturnsWhenTheCountAdvances) {
@@ -163,6 +195,51 @@ std::filesystem::path make_temp_dir() {
   return dir;
 }
 
+// A stream that reports itself running; the test drives the tracker directly.
+class FakeStream final : public cf::agents::EventStream {
+ public:
+  void set_callback(Callback) override {}
+  void set_disconnect_callback(DisconnectCallback) override {}
+  void stop() override {}
+  bool running() const override { return true; }
+  bool wait_running(std::chrono::milliseconds) override { return true; }
+};
+
+TEST(OpencodeSessionDriverTest, RunningToolCallIsNotAStall) {
+#ifdef CF_TSAN_NO_COND_CLOCKWAIT
+  GTEST_SKIP() << "GCC libtsan does not intercept pthread_cond_clockwait";
+#endif
+  FakeStream stream;
+  SessionIdleTracker tracker;
+  cf::agents::OpencodeClientOptions client_options;
+  cf::agents::OpencodeClient client(client_options);
+  OpencodeSessionDriver driver(client, &tracker, &stream);
+
+  // The coder's long build: the tool starts mid-wait, then emits nothing.
+  OpencodeEvent tool_start;
+  tool_start.type = "message.part.updated";
+  tool_start.properties = cf::agents::Json{
+      {"sessionID", "ses_a"},
+      {"part", cf::agents::Json{{"type", "tool"},
+                                {"state", cf::agents::Json{{"status", "running"}}}}}};
+  std::thread recorder([&] {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    (void)tracker.record(tool_start);
+  });
+
+  const auto started = std::chrono::steady_clock::now();
+  const auto status = driver.wait_idle("ses_a", std::chrono::milliseconds(400),
+                                       std::chrono::milliseconds(100));
+  recorder.join();
+  EXPECT_FALSE(status.has_value());
+  // The overall deadline ended the wait, not the stall watchdog: a running
+  // tool is not a stalled provider stream.
+  EXPECT_EQ(status.error().code, cf::agents::error_codes::kTimeout);
+  EXPECT_EQ(status.error().message.find("stall watchdog"), std::string::npos);
+  EXPECT_GE(std::chrono::steady_clock::now() - started,
+            std::chrono::milliseconds(350));
+}
+
 TEST(OpencodeSessionDriverTest, WaitsForTheIdleEventNotTheStatusEndpoint) {
 #ifdef CF_TSAN_NO_COND_CLOCKWAIT
   GTEST_SKIP() << "GCC libtsan does not intercept pthread_cond_clockwait";
@@ -211,15 +288,28 @@ TEST(OpencodeSessionDriverTest, WaitsForTheIdleEventNotTheStatusEndpoint) {
   // The first turn's idle event arrives before wait_idle runs; the baseline
   // captured at send_prompt makes it count for this turn.
   ASSERT_TRUE(driver.send_prompt(*session, "do the work").has_value());
-  EXPECT_TRUE(driver.wait_idle(*session, std::chrono::milliseconds(2000)).has_value());
+  EXPECT_TRUE(driver.wait_idle(*session, std::chrono::milliseconds(2000),
+                               std::chrono::milliseconds(120000))
+                  .has_value());
 
-  // No new idle event: the second turn times out even though the fake status
-  // endpoint always says "busy" (polling is not consulted while the stream is
-  // healthy).
+  // No new idle event: with the stall watchdog on, the wait fails as soon as
+  // the session has been quiet for the stall timeout, not at the overall
+  // deadline (design section 6.6.1 layer 3: no events for 120 s).
   ASSERT_TRUE(driver.send_prompt(*session, "again").has_value());
-  const auto timed_out = driver.wait_idle(*session, std::chrono::milliseconds(300));
+  const auto stalled = driver.wait_idle(*session, std::chrono::milliseconds(5000),
+                                        std::chrono::milliseconds(100));
+  EXPECT_FALSE(stalled.has_value());
+  EXPECT_EQ(stalled.error().code, cf::agents::error_codes::kTimeout);
+  EXPECT_NE(stalled.error().message.find("stall watchdog"), std::string::npos);
+
+  // With the watchdog disabled the same wait runs to its deadline, even
+  // though the fake status endpoint always says "busy" (polling is not
+  // consulted while the stream is healthy).
+  const auto timed_out = driver.wait_idle(*session, std::chrono::milliseconds(300),
+                                          std::chrono::milliseconds(0));
   EXPECT_FALSE(timed_out.has_value());
   EXPECT_EQ(timed_out.error().code, cf::agents::error_codes::kTimeout);
+  EXPECT_EQ(timed_out.error().message.find("stall watchdog"), std::string::npos);
 
   stream->stop();
   (*server)->stop();

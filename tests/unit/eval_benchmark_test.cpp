@@ -40,6 +40,8 @@ candidates:
       coder: accounts/fireworks/models/deepseek-v4p1-flash
       reviewer: accounts/fireworks/models/kimi-k3
       qa: accounts/fireworks/models/glm-5p3-flash
+    options:
+      qa: {reasoningEffort: low}
 prices:
   accounts/fireworks/models/deepseek-v4p1-flash:
     in: 0.15
@@ -121,6 +123,9 @@ TEST(EvalBenchmarkTest, ParsesAValidConfig) {
             "accounts/fireworks/models/glm-5p3");
   EXPECT_EQ(config->candidates[1].role_models.at("qa"),
             "accounts/fireworks/models/glm-5p3-flash");
+  // Per-role model options are parsed and kept as JSON.
+  EXPECT_TRUE(config->candidates[0].role_options.empty());
+  EXPECT_EQ(config->candidates[1].role_options.at("qa")["reasoningEffort"], "low");
   EXPECT_DOUBLE_EQ(config->prices.at("accounts/fireworks/models/deepseek-v4p1-flash")
                        .usd_per_mtok_in,
                    0.15);
@@ -151,6 +156,25 @@ candidates:
 
   auto not_a_map = cf::eval::parse_benchmark_config("- 1\n- 2\n");
   EXPECT_FALSE(not_a_map.has_value());
+
+  // Options must name a role that has a model, and must not be empty.
+  auto unknown_role = cf::eval::parse_benchmark_config(R"yaml(
+benchmark: b
+candidates:
+  - name: x
+    roles: {coder: m}
+    options: {qa: {reasoningEffort: low}}
+)yaml");
+  EXPECT_FALSE(unknown_role.has_value());
+
+  auto empty_options = cf::eval::parse_benchmark_config(R"yaml(
+benchmark: b
+candidates:
+  - name: x
+    roles: {coder: m}
+    options: {coder: {}}
+)yaml");
+  EXPECT_FALSE(empty_options.has_value());
 }
 
 TEST(EvalBenchmarkTest, RestrictsTheSuiteToTheBenchmarkPlans) {

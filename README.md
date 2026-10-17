@@ -28,11 +28,11 @@ is still missing.
 | opencode-backed `AgentRunner` | Implemented end to end: turn driving with event-driven (`session.idle`) turn completion, permission broker, event routing, role configs, versioned prompt templates, RAG-backed question answering, server spawning, `RunProcess` and `cf run --execute` |
 | GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences), dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment`), `GithubFlow` (milestone pushes, draft PR open/update/ready, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
 | CLI (`cf check/run/status/resume/escalations/report`) | Implemented and tested |
-| Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them |
+| Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the first full benchmark (3 candidates × 3 plans) is complete and confirms the pinned models |
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **502 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **514 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -293,7 +293,8 @@ cf-mcp --role coder --run R12 --milestone M3 \
 | `get_gate_results`, `list_defects` | all | Read from the run store |
 | `file_defect`, `verify_defect` | qa | Fingerprint de-duplication; recurring defects are marked `REOPENED` |
 | `submit_work` / `submit_review` / `submit_tests` | coder / reviewer / qa | Structured turn endings |
-| `get_context`, `find_symbol`, `get_callers`, `run_checks`, `dispute_test` | – | Return `TOOL_UNAVAILABLE` until cf-codeintel/gates/sandbox land |
+| `dispute_test` | coder | Records a `DISPUTED` defect against a protected test and ends the turn; QA decides immediately (fix or reject), a second dispute of the same test escalates (design §6.9, §12) |
+| `get_context`, `find_symbol`, `get_callers`, `run_checks` | – | Return `TOOL_UNAVAILABLE` until cf-codeintel/gates/sandbox land |
 
 Arguments are validated against JSON schemas; failures return structured errors
 (`TOOL_INVALID_ARGUMENTS`, `TOOL_DENIED`, `TOOL_NOT_FOUND`, `TOOL_UNAVAILABLE`).
@@ -322,7 +323,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 502 unit tests
+ctest --test-dir build/debug --output-on-failure     # 514 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -382,16 +383,22 @@ hidden-test pass rate and lower cost:
 cf-eval bench --suite eval/suite.yaml \
               --benchmark eval/benchmarks/fireworks.yaml \
               --workspace bench-work --out bench-out \
-              --mcp build/debug/cf-mcp \
+              --mcp build/debug/cf-mcp --profiles eval/profiles \
               [--candidate fireworks-default] [--plan t1-cpp-ring-buffer] \
               [--dry-run] [--drop-scratch]
 ```
+
+`eval/profiles/` is the bare-host variant of the toolchain profiles: only
+build and test steps, because the full `profiles/c-cpp.yaml` format, guardrail
+and analysis steps need the `cf-toolchain-c-cpp` sandbox image. Use the full
+profiles when the bench runs against that image.
 
 Each candidate writes `<name>-outcomes.json` and `<name>-report.{json,md}` into
 `--out`, plus the combined `benchmark.{json,md}`; the run's scratch tree (plan
 repositories, run stores, worktrees) is kept under `--workspace` unless
 `--drop-scratch` is given. It needs `FIREWORKS_API_KEY` and the pinned opencode
-binary.
+binary. Plans with TSan tests need ASLR entropy lowered: run the bench under
+`setarch $(uname -m) -R` (or apply the `vm.mmap_rnd_bits` sysctl from §4).
 
 **RAG evaluation sets** (design §6.3) live in `eval/rag/`: a collection, a
 cutoff `k`, a docs directory and queries with known relevant chunks
@@ -492,10 +499,12 @@ opencode version.
   candidates in `eval/benchmarks/fireworks.yaml` run through the real pipeline on
   the evaluation plans, with hidden acceptance tests and scored reports under
   `bench-out/`; it needs `FIREWORKS_API_KEY` and the pinned opencode. The first
-  smoke runs reach the pipeline end to end but currently escalate on agent turns
-  that end without a structured submission; turn-completion tuning is ongoing.
-  Remaining: widen to every candidate and pin the winning model versions in
-  `third_party/VERSIONS`.
+  full benchmark (3 candidates × 3 plans) completed: the pinned candidate won
+  every plan with all hidden tests green and no escalations at the lowest cost
+  per milestone; the pins in `third_party/VERSIONS` carry the provenance note.
+  TSan-involving plans need `setarch $(uname -m) -R` on hosts with high ASLR
+  entropy (same note as §4). Remaining: grow the suite (more plans per tier,
+  reliability and governance scenarios) and re-run the benchmark as it grows.
 - **RAG production index.** The vector index is exact brute-force; hnswlib/FAISS
   swap in behind `VectorIndex`. PDF/DOCX ingestion and the adversarial conflict set
   are pending; the labeled retrieval evaluation set is started (`eval/rag/`) and
@@ -516,13 +525,15 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (502)
+tests/unit/                 # GoogleTest unit tests (514)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)
 reference-docs/manifest.yaml
 prompts/                    # versioned role prompt templates
 profiles/                   # toolchain profiles (YAML)
+scripts/                    # dev helpers (e.g. safe cleanup of leaked servers)
+AGENTS.md                   # agent guardrails (process safety, conventions)
 ```
 
 ---

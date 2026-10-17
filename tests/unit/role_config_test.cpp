@@ -30,6 +30,8 @@ TEST(RoleConfigTest, CoderConfigAllowsEditsAndProfileCommands) {
   const Json config = build_role_config(base_spec("coder"));
   EXPECT_EQ(config["$schema"], "https://opencode.ai/config.json");
   EXPECT_EQ(config["model"], "fireworks/coder-a");
+  // Title/summary requests must not inherit the user's global small_model.
+  EXPECT_EQ(config["small_model"], "fireworks/coder-a");
   EXPECT_EQ(config["provider"]["fireworks"]["options"]["baseURL"],
             "https://api.fireworks.ai/inference/v1");
   EXPECT_EQ(config["provider"]["fireworks"]["options"]["apiKey"],
@@ -81,6 +83,19 @@ TEST(RoleConfigTest, QaConfigAllowsEditsAndAsksForTheRest) {
   EXPECT_EQ(config["permission"]["bash"]["pytest *"], "allow");
   EXPECT_EQ(config["permission"]["bash"]["git push*"], "deny");
   EXPECT_EQ(config["permission"]["bash"]["*"], "ask");
+}
+
+TEST(RoleConfigTest, ProviderOptionsAreWrittenVerbatim) {
+  RoleConfigSpec spec = base_spec("qa");
+  spec.provider_options = Json{{"reasoningEffort", "low"}};
+  const Json config = build_role_config(spec);
+  EXPECT_EQ(config["provider"]["fireworks"]["models"]["qa-c"]["options"]
+                  ["reasoningEffort"],
+            "low");
+
+  // Without options the block is omitted entirely.
+  const Json plain = build_role_config(base_spec("qa"));
+  EXPECT_FALSE(plain["provider"]["fireworks"]["models"]["qa-c"].contains("options"));
 }
 
 TEST(RoleConfigTest, OptionalSectionsAreOmitted) {

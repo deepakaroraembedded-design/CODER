@@ -31,6 +31,8 @@ struct OpencodeFactoryConfig {
   std::string provider_base_url = "https://api.fireworks.ai/inference/v1";
   std::string api_key_env = "FIREWORKS_API_KEY";
   std::map<std::string, std::string, std::less<>> role_models;
+  // Extra opencode model options per role (see RoleConfigSpec).
+  std::map<std::string, nlohmann::json, std::less<>> role_options;
   std::string mcp_command;  // path to the cf-mcp binary
   std::string db_path;      // run store
   std::string docs_dir;

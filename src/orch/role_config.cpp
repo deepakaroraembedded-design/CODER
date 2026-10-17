@@ -27,7 +27,14 @@ nlohmann::json build_role_config(const RoleConfigSpec& spec) {
   config["provider"]["fireworks"]["options"]["apiKey"] =
       "{env:" + spec.api_key_env + "}";
   config["provider"]["fireworks"]["models"][alias]["id"] = spec.provider_model_id;
+  if (!spec.provider_options.empty()) {
+    config["provider"]["fireworks"]["models"][alias]["options"] = spec.provider_options;
+  }
   config["model"] = "fireworks/" + alias;
+  // Title and summary requests must not inherit a `small_model` from the
+  // user's global opencode config (it may point at a provider this machine
+  // cannot reach, which stalls every session behind a failing request).
+  config["small_model"] = "fireworks/" + alias;
 
   // Permission block (design section 6.6.1 layer 1): almost everything is
   // decided in advance, so the broker only sees the remainder.

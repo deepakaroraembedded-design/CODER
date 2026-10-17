@@ -8,8 +8,10 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 
 #include <signal.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include "cf/orch/opencode_server.hpp"
@@ -153,6 +155,59 @@ TEST_F(OpencodeServerTest, HealthTimeoutKillsTheProcess) {
   auto started = OpencodeServerProcess::start(options, client);
   ASSERT_FALSE(started.has_value());
   EXPECT_EQ(started.error().code, "ORCH_SERVER_START_TIMEOUT");
+}
+
+// Guardrail: a server whose owning process dies must not survive as an
+// orphan. An orphaned `opencode serve` used to be cleaned up by name, and
+// that also matches the user's own session (both are named `opencode`).
+TEST_F(OpencodeServerTest, ServerDiesWithItsParentProcess) {
+  const uint16_t port = find_free_port();
+  const auto pid_file = dir_ / "parent-death.pid";
+  const pid_t parent = ::fork();
+  ASSERT_GE(parent, 0);
+  if (parent == 0) {
+    // Child: spawn the server and exit without stopping it, so only the
+    // kernel's parent-death signal can take it down.
+    auto client = make_client(port);
+    OpencodeServerOptions options;
+    options.binary = fake_binary_.string();
+    options.port = port;
+    options.log_path = dir_ / "parent-death.log";
+    options.start_timeout = std::chrono::seconds(10);
+    auto started = OpencodeServerProcess::start(options, client);
+    if (!started) {
+      ::_exit(2);
+    }
+    std::ofstream out(pid_file);
+    out << (*started)->pid();
+    out.close();
+    ::_exit(0);  // no destructor runs, so stop() is never called
+  }
+
+  int status = 0;
+  ASSERT_EQ(::waitpid(parent, &status, 0), parent);
+
+  pid_t server = 0;
+  for (int i = 0; i < 100 && server == 0; ++i) {
+    std::ifstream in(pid_file);
+    if (in) {
+      in >> server;
+    }
+    if (server == 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  ASSERT_GT(server, 0);
+
+  bool gone = false;
+  for (int i = 0; i < 200 && !gone; ++i) {
+    if (::kill(server, 0) != 0 && errno == ESRCH) {
+      gone = true;
+    } else {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  EXPECT_TRUE(gone) << "opencode server " << server << " survived its parent";
 }
 
 TEST_F(OpencodeServerTest, DestructorStopsTheServer) {

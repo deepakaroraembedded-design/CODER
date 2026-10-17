@@ -2,14 +2,34 @@
   "benchmark": "cf-bench-phase0b",
   "candidates": [
     {
+      "config": "fireworks-default",
+      "cost_per_milestone_usd": 0.17147545,
+      "escalation_rate": 0.0,
+      "hidden_test_pass": 1.0,
+      "milestone_completion": 1.0,
+      "name": "fireworks-default",
+      "run_completion": 1.0,
+      "runs": 3
+    },
+    {
       "config": "qa-glm-flash",
-      "cost_per_milestone_usd": 0.0,
-      "escalation_rate": 1.0,
-      "hidden_test_pass": 0.0,
-      "milestone_completion": 0.0,
+      "cost_per_milestone_usd": 0.0588338875,
+      "escalation_rate": 0.3333333333333333,
+      "hidden_test_pass": 0.5555555555555555,
+      "milestone_completion": 0.6666666666666666,
       "name": "qa-glm-flash",
-      "run_completion": 0.0,
-      "runs": 1
+      "run_completion": 0.6666666666666666,
+      "runs": 3
+    },
+    {
+      "config": "reviewer-kimi-fast",
+      "cost_per_milestone_usd": 0.2359628,
+      "escalation_rate": 0.0,
+      "hidden_test_pass": 1.0,
+      "milestone_completion": 1.0,
+      "name": "reviewer-kimi-fast",
+      "run_completion": 1.0,
+      "runs": 3
     }
   ],
   "plans": [
@@ -18,5 +38,5 @@
     "sec-injection-comments"
   ],
   "provider_base_url": "https://api.fireworks.ai/inference/v1",
-  "recommended": "qa-glm-flash"
+  "recommended": "fireworks-default"
 }

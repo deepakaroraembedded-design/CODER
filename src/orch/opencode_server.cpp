@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -72,6 +73,7 @@ Result<std::unique_ptr<OpencodeServerProcess>> OpencodeServerProcess::spawn(
     return fail("ORCH_INVALID_PORT", "opencode server needs an explicit port");
   }
 
+  const pid_t parent = ::getpid();
   const pid_t pid = ::fork();
   if (pid < 0) {
     return fail("ORCH_SERVER_SPAWN_FAILED",
@@ -79,6 +81,19 @@ Result<std::unique_ptr<OpencodeServerProcess>> OpencodeServerProcess::spawn(
   }
   if (pid == 0) {
     ::setsid();
+    // Guardrail: the run process is the server's only intended owner. If it
+    // dies - even by SIGKILL - the kernel must take the server down with it,
+    // so no orphan `opencode serve` survives to be cleaned up by hand: the
+    // user's own session is also named `opencode`, and a name-based kill
+    // (`pkill opencode`, `kill $(pgrep -x opencode)`) would kill it too.
+    // Skipped when a launcher (docker) owns the process: there the container,
+    // not this pid, is the server.
+    if (options.launcher.empty()) {
+      (void)::prctl(PR_SET_PDEATHSIG, SIGTERM);
+      if (::getppid() != parent) {
+        ::_exit(127);  // the parent died between fork and prctl
+      }
+    }
     if (!options.log_path.empty()) {
       const int fd = ::open(options.log_path.c_str(), O_CREAT | O_WRONLY | O_APPEND,
                             0644);

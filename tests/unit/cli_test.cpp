@@ -317,9 +317,11 @@ class ScriptedDriver final : public cf::orch::SessionDriver {
   }
 
   cf::Status wait_idle(std::string_view session_id,
-                       std::chrono::milliseconds timeout) override {
+                       std::chrono::milliseconds timeout,
+                       std::chrono::milliseconds stall_timeout) override {
     (void)session_id;
     (void)timeout;
+    (void)stall_timeout;
     return {};
   }
 

@@ -51,6 +51,8 @@ class FakeAgentRunner final : public AgentRunner {
 
   cf::Result<AgentTurnOutcome> run_turn(const AgentTurnRequest& request) override {
     phases.push_back(request.phase);
+    briefs.push_back(request.brief);
+    worktrees.push_back(request.worktree);
     if (on_turn) {
       return on_turn(request);
     }
@@ -73,6 +75,8 @@ class FakeAgentRunner final : public AgentRunner {
   TurnFn on_turn;
   TurnFn on_system;
   std::vector<MilestonePhase> phases;
+  std::vector<std::string> briefs;
+  std::vector<std::string> worktrees;
 };
 
 const char* kPassingProfile = R"yaml(
@@ -409,6 +413,66 @@ TEST_F(DriverTest, OpenDefectsArePassedToTheAgent) {
   const TurnResult result = driver.run(MilestonePhase::Code, "M3");
   EXPECT_TRUE(result.completed) << result.detail;
   EXPECT_EQ(seen_defects, (std::vector<std::string>{"D-1"}));
+}
+
+TEST_F(DriverTest, TestDisputeDecisionRunsQaInTheCoderWorktree) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    if (request.phase == MilestonePhase::AuthorTests) {
+      write_file(std::filesystem::path(request.worktree) / "tests" / "m3_test.cpp",
+                 "broken test\n");
+    } else if (request.phase == MilestonePhase::Validate) {
+      // QA decides the dispute by fixing the protected test in place.
+      write_file(std::filesystem::path(request.worktree) / "tests" / "m3_test.cpp",
+                 "fixed test\n");
+      outcome.exit_criteria_met = true;
+    }
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  ASSERT_TRUE(driver.run(MilestonePhase::AuthorTests, "M3").completed);
+
+  // The dispute tool records the DISPUTED defect the decision turn reads.
+  cf::store::DefectRecord dispute;
+  dispute.id = "D-1";
+  dispute.run_id = "R12";
+  dispute.milestone_id = "M3";
+  dispute.status = "DISPUTED";
+  dispute.severity = "high";
+  dispute.fingerprint = "test-dispute:tests/m3_test.cpp";
+  dispute.body_json =
+      R"({"test_id": "tests/m3_test.cpp", "rationale": "cannot compile", "disputes": 1})";
+  ASSERT_TRUE(store_->upsert_defect(dispute).has_value());
+
+  const std::filesystem::path coder_worktree = driver.worktree_for("M3", "coder");
+
+  const TurnResult result = driver.run_test_dispute("M3");
+  ASSERT_TRUE(result.completed) << result.detail;
+
+  // The QA turn ran in the coder's worktree (so the next gate build sees the
+  // fix), its brief carried the dispute, and the fix was committed there.
+  ASSERT_EQ(runner.worktrees.back(), coder_worktree.string());
+  EXPECT_NE(runner.briefs.back().find("tests/m3_test.cpp"), std::string::npos);
+  EXPECT_NE(runner.briefs.back().find("cannot compile"), std::string::npos);
+  const auto after = repository_->head_sha(coder_worktree);
+  ASSERT_TRUE(after.has_value());
+  const auto message = repository_->commit_message(*after);
+  ASSERT_TRUE(message.has_value());
+  EXPECT_NE(message->find("dispute decision"), std::string::npos);
+  const auto committed = repository_->file_content(*after, "tests/m3_test.cpp");
+  ASSERT_TRUE(committed.has_value());
+  EXPECT_EQ(*committed, "fixed test\n");
+  const auto dirty = repository_->is_dirty(coder_worktree);
+  ASSERT_TRUE(dirty.has_value());
+  EXPECT_FALSE(*dirty);
+
+  // The test change resolved the dispute: the defect is no longer open.
+  const auto resolved = store_->get_defect("D-1");
+  ASSERT_TRUE(resolved.has_value());
+  EXPECT_EQ(resolved->status, "VERIFIED");
 }
 
 TEST_F(DriverTest, WorktreeLayoutFollowsTheDesign) {

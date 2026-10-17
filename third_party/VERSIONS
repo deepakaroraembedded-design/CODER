@@ -17,6 +17,10 @@ gcc_min: 11       # framework builds with GCC 11+
 clang_min: 17     # framework builds with Clang 17+
 
 models:
+  # Confirmed by the Phase 0b benchmark (eval/benchmarks/fireworks.yaml,
+  # benchmark cf-bench-phase0b, 2026-10-16): this candidate completed every
+  # plan with all hidden tests green and no escalations at the lowest cost
+  # per milestone of the perfect candidates (bench-out/).
   coder:    accounts/fireworks/models/deepseek-v4p1-flash
   reviewer: accounts/fireworks/models/kimi-k3
   qa:       accounts/fireworks/models/glm-5p3

@@ -20,3 +20,4 @@ bench-work/
 # Local scratch
 .cache/
 compile_commands.json
+.opencode/node_modules/

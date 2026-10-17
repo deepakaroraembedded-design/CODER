@@ -8,12 +8,23 @@
 #   cf-eval bench --suite eval/suite.yaml \
 #                 --benchmark eval/benchmarks/fireworks.yaml \
 #                 --workspace bench-work --out bench-out \
-#                 --mcp build/debug/cf-mcp \
+#                 --mcp build/debug/cf-mcp --profiles eval/profiles \
 #                 --candidate fireworks-default --plan t1-cpp-ring-buffer
 #
-# Prices are intentionally absent: opencode reports the provider cost per
-# session, which the run process records in usage-<role>.jsonl. Add a price
-# entry only when a model's cost must be estimated instead.
+# --profiles eval/profiles keeps only host-runnable gate steps (build/tests);
+# the full profiles/c-cpp.yaml format, guardrail and analysis steps need the
+# cf-toolchain-c-cpp sandbox image. Use the full profile when the bench runs
+# against that image.
+#
+# Prices are per million tokens, from the opencode models catalog. opencode
+# reports cost 0 for these custom provider model entries, so the benchmark
+# estimates cost from this table (usage-<role>.jsonl carries the token
+# counts).
+#
+# `options` are opencode model options written verbatim into the role's config
+# (camelCase, as opencode expects). reasoningEffort: low keeps the reasoning
+# models from spending a whole turn thinking without acting; the benchmark can
+# compare efforts the same way it compares model ids.
 benchmark: cf-bench-phase0b
 provider_base_url: https://api.fireworks.ai/inference/v1
 api_key_env: FIREWORKS_API_KEY
@@ -25,13 +36,31 @@ candidates:
       coder: accounts/fireworks/models/deepseek-v4p1-flash
       reviewer: accounts/fireworks/models/kimi-k3
       qa: accounts/fireworks/models/glm-5p3
+    options:
+      coder: {reasoningEffort: low}
+      reviewer: {reasoningEffort: low}
+      qa: {reasoningEffort: low}
   - name: qa-glm-flash
     roles:
       coder: accounts/fireworks/models/deepseek-v4p1-flash
       reviewer: accounts/fireworks/models/kimi-k3
       qa: accounts/fireworks/models/glm-5p3-flash
+    options:
+      coder: {reasoningEffort: low}
+      reviewer: {reasoningEffort: low}
+      qa: {reasoningEffort: low}
   - name: reviewer-kimi-fast
     roles:
       coder: accounts/fireworks/models/deepseek-v4p1-flash
       reviewer: accounts/fireworks/routers/kimi-k3-fast
       qa: accounts/fireworks/models/glm-5p3
+    options:
+      coder: {reasoningEffort: low}
+      reviewer: {reasoningEffort: low}
+      qa: {reasoningEffort: low}
+prices:
+  accounts/fireworks/models/deepseek-v4p1-flash: {in: 0.3, out: 1.2}
+  accounts/fireworks/models/kimi-k3: {in: 3.0, out: 15.0}
+  accounts/fireworks/models/glm-5p3: {in: 1.4, out: 4.4}
+  accounts/fireworks/models/glm-5p3-flash: {in: 0.15, out: 0.5}
+  accounts/fireworks/routers/kimi-k3-fast: {in: 4.5, out: 22.5}

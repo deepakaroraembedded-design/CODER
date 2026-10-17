@@ -39,6 +39,9 @@ struct TurnResult {
   // Integrate: a public interface changed; the orchestrator moves every
   // milestone that uses it (including Done ones) to Revalidating (6.13.3).
   bool interface_changed = false;
+  // Code/Fix: the coder ended the turn with dispute_test; the loop asks QA
+  // to decide before the next gate run (design sections 6.9, 12).
+  std::string disputed_test_id;
 };
 
 struct GateOutcome {
@@ -66,6 +69,15 @@ class MilestoneDriver {
 
   virtual TurnResult run(MilestonePhase phase, std::string_view milestone_id) = 0;
   virtual GateOutcome run_gates(std::string_view milestone_id) = 0;
+
+  // Decides an open test dispute: QA either fixes the protected test or
+  // rejects the dispute (design sections 6.9, 12). The default reports that
+  // the driver cannot decide disputes.
+  virtual TurnResult run_test_dispute(std::string_view milestone_id) {
+    (void)milestone_id;
+    return TurnResult{false, "", "test disputes are not supported by this driver",
+                      false, false, false, false, false, ""};
+  }
 
   // Run-level hook: runs the full system validation suite on the merged
   // result (design section 11.2). The default reports "not completed".

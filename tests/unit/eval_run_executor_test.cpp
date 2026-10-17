@@ -230,6 +230,7 @@ plans:
   options.role_models = {{"coder", "test/coder"},
                          {"reviewer", "test/reviewer"},
                          {"qa", "test/qa"}};
+  options.role_options = {{"qa", nlohmann::json{{"reasoningEffort", "low"}}}};
   options.environment = {{"CF_FAKE_SCRIPT", script_path.string()}};
   options.turn_timeout = std::chrono::seconds(30);
   options.step_timeout = std::chrono::seconds(30);
@@ -254,6 +255,23 @@ plans:
   EXPECT_TRUE(std::filesystem::exists(scratch / "repo" / "README.md"));
   EXPECT_TRUE(std::filesystem::exists(scratch / "wt" / run_id / "integration" /
                                       "include" / "answer.hpp"));
+
+  // The plan is written as a requirements document and the role configs point
+  // the MCP server at it, so the retrieval tools answer instead of failing.
+  const auto read_text = [](const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+  };
+  const std::string requirements =
+      read_text(scratch / "docs" / "requirements.md");
+  EXPECT_NE(requirements.find("REQ-A-1"), std::string::npos);
+  const std::string qa_config =
+      read_text(scratch / "runs" / run_id / "opencode-qa.json");
+  EXPECT_NE(qa_config.find("--docs="), std::string::npos);
+  // Per-role model options from the benchmark candidate reach the config.
+  EXPECT_NE(qa_config.find("\"reasoningEffort\""), std::string::npos);
+  EXPECT_NE(qa_config.find("\"low\""), std::string::npos);
 
   // A second repeat gets its own scratch directory and run id.
   EXPECT_EQ(cf::eval::RunProcessExecutor::run_id_for("answer", 1),

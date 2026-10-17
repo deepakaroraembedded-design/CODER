@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "bash": {
+      "*": "allow",
+      "*pkill*": "deny",
+      "*killall*": "deny",
+      "*kill $*": "deny",
+      "*kill \"$*": "deny",
+      "*kill '$*": "deny",
+      "*kill -*$*": "deny"
+    }
+  }
+}

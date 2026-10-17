@@ -300,6 +300,7 @@ Result<PlanOutcome> RunProcessExecutor::run(const PlanEntry& plan_entry, int rep
   config.provider_base_url = options_.provider_base_url;
   config.api_key_env = options_.api_key_env;
   config.role_models = options_.role_models;
+  config.role_options = options_.role_options;
   config.mcp_command = options_.mcp_binary;
   config.docs_dir = docs_dir.string();
   config.environment = options_.environment;

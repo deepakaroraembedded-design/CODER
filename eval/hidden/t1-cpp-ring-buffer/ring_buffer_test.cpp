@@ -73,7 +73,7 @@ int main() {
     buffer.push(std::make_unique<int>(7));
     buffer.push(std::make_unique<int>(8));
     auto first = buffer.pop();
-    check(first.has_value() && first->has_value() && **first == 7);
+    check(first.has_value() && *first != nullptr && **first == 7);
   }
 
   // Pop on an empty buffer returns nullopt.

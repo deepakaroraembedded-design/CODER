@@ -40,6 +40,8 @@ struct RunExecutorOptions {
   std::string api_key_env = "FIREWORKS_API_KEY";
   std::string base_branch = "main";
   std::map<std::string, std::string, std::less<>> role_models;
+  // Extra opencode model options per role (see RoleConfigSpec).
+  std::map<std::string, nlohmann::json, std::less<>> role_options;
   std::map<std::string, ModelPrice, std::less<>> prices;
   std::vector<std::pair<std::string, std::string>> environment;
   std::chrono::milliseconds turn_timeout{1800000};

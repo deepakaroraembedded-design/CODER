@@ -1,0 +1,43 @@
+# C/C++ toolchain profile for the golden benchmark on a bare host.
+#
+# Same shape as profiles/c-cpp.yaml, but only steps whose tools are part of a
+# plain build host: cmake, ninja, ctest, g++. The full profile's format
+# (clang-format), guardrails (clang-tidy with the cf-swt checks, design
+# section 6.5) and analysis (cppcheck) steps need the cf-toolchain-c-cpp
+# sandbox image; running them on a host without those tools would fail every
+# milestone on the environment, not on the code. Point `cf-eval bench` at
+# this directory (`--profiles eval/profiles`) for host runs, and keep the
+# full profile for sandboxed runs.
+id: c-cpp-bench
+image: cf-toolchain-c-cpp:2026.10
+codeintel_backend: clang
+
+languages:
+  cpp:
+    standard_var: CMAKE_CXX_STANDARD
+  c:
+    standard_var: CMAKE_C_STANDARD
+
+build_systems:
+  cmake:
+    steps:
+      - [cmake, -S, "{src_dir}", -B, "{build_dir}", "-D{standard_var}={standard_number}", -DCMAKE_EXPORT_COMPILE_COMMANDS=ON]
+      - [cmake, --build, "{build_dir}"]
+    agent_commands: [cmake, ninja, ctest]
+  meson:
+    steps:
+      - [meson, setup, "{build_dir}", "{src_dir}", "-D{lang}_std={standard}"]
+      - [meson, compile, -C, "{build_dir}"]
+    agent_commands: [meson, ninja]
+  make:
+    steps:
+      - [make, -C, "{src_dir}", "O={build_dir}", "CFLAGS={standard_flag} -Wall -Wextra -Werror"]
+    agent_commands: [make]
+
+test_frameworks:
+  gtest:  { steps: [[ctest, --test-dir, "{build_dir}", --output-on-failure]], report: junit, languages: [cpp] }
+  catch2: { steps: [[ctest, --test-dir, "{build_dir}", --output-on-failure]], report: junit, languages: [cpp] }
+  unity:  { steps: [["{build_dir}/run_tests", --junit]], report: junit, languages: [c] }
+  cmocka: { steps: [[ctest, --test-dir, "{build_dir}", --output-on-failure]], report: junit, languages: [c] }
+
+exec_from_source: []

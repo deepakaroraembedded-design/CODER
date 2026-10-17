@@ -2,6 +2,7 @@
 
 #include <utility>
 
+#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
 #include "cf/common/hash.hpp"
@@ -27,6 +28,16 @@ std::string failure_fingerprint(const cf::gates::GateReport& report) {
     }
   }
   return cf::sha256_hex(canonical);
+}
+
+// How many times the coder has disputed a test, from the dispute defect's
+// body (written by the cf-mcp dispute_test tool).
+int dispute_count(const std::string& body_json) {
+  const nlohmann::json body = nlohmann::json::parse(body_json, nullptr, false);
+  if (!body.is_object()) {
+    return 1;
+  }
+  return body.value("disputes", 1);
 }
 
 }  // namespace
@@ -114,6 +125,11 @@ Result<MilestoneState> MilestoneLoop::drive(std::string_view milestone_id,
             return tl::make_unexpected(defects.error());
           }
           for (const auto& defect : *defects) {
+            // A disputed test is not a code defect: it is counted by the
+            // dispute rule below, not by fix attempts (design section 12).
+            if (defect.status == "DISPUTED") {
+              continue;
+            }
             if (defect.attempts >= limits_.max_attempts_per_defect) {
               return escalate(milestone_id,
                               "defect " + defect.id + " reached " +
@@ -142,6 +158,34 @@ Result<MilestoneState> MilestoneLoop::drive(std::string_view milestone_id,
                             now);
           }
           continue;
+        }
+        if (!result.disputed_test_id.empty()) {
+          // The coder proposed a change to a protected test: QA decides
+          // immediately (design section 12). Disputing the same test again
+          // after a rejection escalates instead of looping.
+          const std::string fingerprint = "test-dispute:" + result.disputed_test_id;
+          const auto dispute = store_.find_defect_by_fingerprint(machine_.run_id(),
+                                                                 fingerprint);
+          if (dispute.has_value() && dispute_count(dispute->body_json) >= 2) {
+            return escalate(milestone_id,
+                            "the coder disputed test " + result.disputed_test_id +
+                                " again after QA rejected it",
+                            now);
+          }
+          const TurnResult decision = driver_.run_test_dispute(id);
+          if (!decision.completed) {
+            ++consecutive_turn_failures;
+            if (consecutive_turn_failures >= limits_.max_consecutive_turn_failures) {
+              return escalate(milestone_id,
+                              "the test dispute decision failed " +
+                                  std::to_string(consecutive_turn_failures) +
+                                  " times in a row: " + decision.detail,
+                              now);
+            }
+            continue;
+          }
+          // The decision counts as the coder's submission: the work that came
+          // with the dispute goes to the gates with the corrected test.
         }
         consecutive_turn_failures = 0;
         const auto applied =
@@ -247,10 +291,21 @@ Result<MilestoneState> MilestoneLoop::drive(std::string_view milestone_id,
           continue;
         }
         consecutive_turn_failures = 0;
+        // Exit criteria are objective (design section 11.1): a milestone is
+        // not done while open defects remain, whatever the agent submitted.
+        // QA has to verify or close them (for example a stale defect).
+        bool exit_met = result.exit_criteria_met;
+        if (exit_met) {
+          auto open = store_.list_defects(machine_.run_id(), id,
+                                          store::open_defect_statuses());
+          if (!open) {
+            return tl::make_unexpected(open.error());
+          }
+          exit_met = open->empty();
+        }
         const auto applied = machine_.apply(
             milestone_id,
-            result.exit_criteria_met ? MilestoneEvent::ExitCriteriaMet
-                                     : MilestoneEvent::DefectsFiled,
+            exit_met ? MilestoneEvent::ExitCriteriaMet : MilestoneEvent::DefectsFiled,
             now);
         if (!applied) {
           return tl::make_unexpected(applied.error());

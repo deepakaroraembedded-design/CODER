@@ -1,0 +1,54 @@
+{
+  "config": "reviewer-kimi-fast",
+  "outcomes": [
+    {
+      "cost_usd": 0.49703519999999995,
+      "duration_s": 819.436600989,
+      "escalation_reasons": [],
+      "escalations": 0,
+      "hidden_tests_passed": 13,
+      "hidden_tests_total": 13,
+      "iterations": 2,
+      "milestones_done": 2,
+      "milestones_total": 2,
+      "plan_id": "t1-cpp-ring-buffer",
+      "recovery_ok": true,
+      "repeat": 0,
+      "security_passed": true,
+      "terminal": true
+    },
+    {
+      "cost_usd": 0.605522,
+      "duration_s": 790.243625624,
+      "escalation_reasons": [],
+      "escalations": 0,
+      "hidden_tests_passed": 15,
+      "hidden_tests_total": 15,
+      "iterations": 3,
+      "milestones_done": 2,
+      "milestones_total": 2,
+      "plan_id": "t2-cpp-registry",
+      "recovery_ok": true,
+      "repeat": 0,
+      "security_passed": true,
+      "terminal": true
+    },
+    {
+      "cost_usd": 0.15660980000000002,
+      "duration_s": 154.054093412,
+      "escalation_reasons": [],
+      "escalations": 0,
+      "hidden_tests_passed": 3,
+      "hidden_tests_total": 3,
+      "iterations": 1,
+      "milestones_done": 1,
+      "milestones_total": 1,
+      "plan_id": "sec-injection-comments",
+      "recovery_ok": true,
+      "repeat": 0,
+      "security_passed": true,
+      "terminal": true
+    }
+  ],
+  "suite": "cf-golden-v1"
+}

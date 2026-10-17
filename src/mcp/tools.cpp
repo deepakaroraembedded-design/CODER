@@ -70,11 +70,47 @@ Result<std::vector<rag::Hit>> search_rag(const ToolDependencies& dependencies,
   return dependencies.retriever->search(query);
 }
 
+// The text content is what the agent model actually sees (opencode surfaces
+// only the text part of an MCP tool result), so the hits are rendered here in
+// full; structuredContent carries the same data for programmatic clients.
+std::string hits_text(const std::vector<rag::Hit>& hits) {
+  std::string out;
+  for (std::size_t i = 0; i < hits.size(); ++i) {
+    const rag::Hit& hit = hits[i];
+    if (i > 0) {
+      out += "\n";
+    }
+    out += "[" + std::to_string(i + 1) + "] " + hit.doc_id + "@" + hit.version + " (" +
+           std::string(rag::to_string(hit.type)) + ")";
+    if (!hit.citation.empty()) {
+      out += " citation: " + hit.citation;
+    }
+    out += "\n";
+    if (hit.unresolved_conflict) {
+      out += "warning: unresolved conflict";
+      out += "\n";
+    } else if (!hit.overridden_by.empty()) {
+      out += "note: overrides";
+      for (std::size_t j = 0; j < hit.overridden_by.size(); ++j) {
+        out += j == 0 ? " " : ", ";
+        out += hit.overridden_by[j];
+      }
+      if (!hit.deciding_rule.empty()) {
+        out += " (" + hit.deciding_rule + ")";
+      }
+      out += "\n";
+    }
+    out += hit.text;
+    out += "\n";
+  }
+  return out;
+}
+
 ToolResult hits_result(const std::vector<rag::Hit>& hits, const std::string& empty_message) {
   ToolResult result;
-  result.structured = hits_json(hits);
-  result.text = hits.empty() ? empty_message
-                             : std::to_string(hits.size()) + " result(s)";
+  // MCP structured content must be an object, never a bare array.
+  result.structured = Json{{"hits", hits_json(hits)}};
+  result.text = hits.empty() ? empty_message : hits_text(hits);
   return result;
 }
 
@@ -278,8 +314,18 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
         if (dependencies.retriever == nullptr) {
           return unavailable("get_document");
         }
-        auto document = dependencies.retriever->get(
-            arguments.at("doc_id").get<std::string>(), arguments.value("version", ""));
+        const std::string doc_id = arguments.at("doc_id").get<std::string>();
+        const std::string version = arguments.value("version", "");
+        auto document = dependencies.retriever->get(doc_id, version);
+        if (!document && version.empty()) {
+          // Models copy the "doc_id@version" form rendered in search hits;
+          // accept it as a convenience rather than failing the lookup.
+          const auto at = doc_id.rfind('@');
+          if (at != std::string::npos && at > 0 && at + 1 < doc_id.size()) {
+            document = dependencies.retriever->get(doc_id.substr(0, at),
+                                                   doc_id.substr(at + 1));
+          }
+        }
         if (!document) {
           return error_result(document.error().code == rag::error_codes::kNotFound
                                   ? "TOOL_NOT_FOUND"
@@ -389,7 +435,7 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
           return result;
         }
         ToolResult result;
-        result.text = std::to_string(hits->size()) + " reference result(s)";
+        result.text = hits_text(*hits);
         result.structured = Json{{"covered", true}, {"hits", hits_json(*hits)}};
         return result;
       }});
@@ -429,8 +475,8 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
                                {"at", row.at}});
         }
         ToolResult result;
-        result.structured = std::move(array);
-        result.text = std::to_string(results->size()) + " gate result(s)";
+        result.structured = Json{{"gates", std::move(array)}};
+        result.text = result.structured.dump(2);
         return result;
       }});
 
@@ -474,8 +520,8 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
                                {"body", Json::parse(defect.body_json, nullptr, false)}});
         }
         ToolResult result;
-        result.structured = std::move(array);
-        result.text = std::to_string(defects->size()) + " defect(s)";
+        result.structured = Json{{"defects", std::move(array)}};
+        result.text = result.structured.dump(2);
         return result;
       }});
 
@@ -609,14 +655,74 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
 
   registry.add(ToolDefinition{
       "dispute_test",
-      "Requests a change to a protected test; never changes the test directly.",
-      object_schema(Json{{"test_id", string_property("Test id")},
+      "Requests a change to a protected test; never changes the test directly. "
+      "The dispute is recorded as a DISPUTED defect and QA decides: a fix to "
+      "the test, or a rejection. Disputing the same test again after a "
+      "rejection escalates the milestone (design sections 6.9, 12).",
+      object_schema(Json{{"test_id", string_property("Test id or path")},
                          {"rationale", string_property("Why the test should change")}},
                     {"test_id", "rationale"}),
       {ToolRole::Coder},
-      [](const Json& arguments) -> ToolResult {
-        (void)arguments;
-        return unavailable("dispute_test");
+      [dependencies](const Json& arguments) -> ToolResult {
+        if (dependencies.store == nullptr) {
+          return unavailable("dispute_test");
+        }
+        const std::string test_id = arguments.at("test_id").get<std::string>();
+        const std::string rationale = arguments.at("rationale").get<std::string>();
+        const std::string fingerprint = "test-dispute:" + test_id;
+
+        auto existing = dependencies.store->find_defect_by_fingerprint(
+            dependencies.run_id, fingerprint);
+        std::string id;
+        int disputes = 1;
+        bool repeated = false;
+        if (existing.has_value()) {
+          id = existing->id;
+          const Json previous =
+              Json::parse(existing->body_json, nullptr, false);
+          if (previous.is_object()) {
+            disputes = previous.value("disputes", 1);
+            // Only a dispute raised after a QA decision counts as a repeat
+            // (design section 12: QA rejects, then the coder disputes again).
+            if (previous.value("decided", false)) {
+              repeated = true;
+              ++disputes;
+            }
+          }
+        } else {
+          auto all = dependencies.store->list_defects(dependencies.run_id);
+          const std::size_t count = all.has_value() ? all->size() : 0;
+          id = "D-" + std::to_string(count + 1);
+        }
+        store::DefectRecord record;
+        record.id = id;
+        record.run_id = dependencies.run_id;
+        record.milestone_id = dependencies.milestone_id;
+        record.status = "DISPUTED";
+        record.severity = "high";
+        record.fingerprint = fingerprint;
+        record.attempts = existing.has_value() ? existing->attempts : 0;
+        record.body_json =
+            Json{{"category", "test_dispute"},
+                 {"test_id", test_id},
+                 {"rationale", rationale},
+                 {"disputes", disputes},
+                 {"decided", false},
+                 {"summary", "test dispute: " + test_id}}
+                .dump();
+        const auto stored = dependencies.store->upsert_defect(record);
+        if (!stored) {
+          return error_result(stored.error().code, stored.error().message);
+        }
+        ToolResult result;
+        result.text = "dispute recorded against " + test_id + " as defect " + id +
+                      " (QA decides; never edit the test yourself)";
+        result.structured = Json{{"id", id},
+                                 {"status", "DISPUTED"},
+                                 {"test_id", test_id},
+                                 {"disputes", disputes},
+                                 {"repeated", repeated}};
+        return result;
       }});
 
   registry.add(ToolDefinition{

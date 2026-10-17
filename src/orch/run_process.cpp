@@ -1,5 +1,6 @@
 #include "cf/orch/run_process.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <system_error>
 #include <utility>
@@ -37,6 +38,38 @@ void anchor_binary(std::string& binary) {
   std::filesystem::path path = binary;
   anchor_path(path);
   binary = path.string();
+}
+
+// The profile's agent commands (build system plus test framework), as the
+// comma-separated list the role prompts show.
+std::string agent_command_summary(const gates::Profile& profile,
+                                  const std::string& build_system,
+                                  const std::string& test_framework) {
+  std::vector<std::string> commands;
+  const auto build = profile.build_systems.find(build_system);
+  if (build != profile.build_systems.end()) {
+    commands = build->second.agent_commands;
+  }
+  const auto tests = profile.test_frameworks.find(test_framework);
+  if (tests != profile.test_frameworks.end()) {
+    for (const auto& step : tests->second.steps) {
+      if (step.argv.empty()) {
+        continue;
+      }
+      const std::string& program = step.argv.front();
+      if (std::find(commands.begin(), commands.end(), program) == commands.end()) {
+        commands.push_back(program);
+      }
+    }
+  }
+  std::string out;
+  for (const auto& command : commands) {
+    if (!out.empty()) {
+      out += ", ";
+    }
+    out += command;
+  }
+  return out;
 }
 
 RunProcessConfig anchor_config(RunProcessConfig config) {
@@ -101,6 +134,7 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     factory_config.provider_base_url = config_.provider_base_url;
     factory_config.api_key_env = config_.api_key_env;
     factory_config.role_models = config_.role_models;
+    factory_config.role_options = config_.role_options;
     factory_config.mcp_command = config_.mcp_command;
     factory_config.db_path = (run_dir / "run.db").string();
     factory_config.docs_dir = config_.docs_dir;
@@ -140,6 +174,8 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   runner_options.turn_timeout = config_.turn_timeout;
   runner_options.target_language = plan_.target.language;
   runner_options.target_standard = plan_.target.standard;
+  runner_options.allowed_commands = agent_command_summary(
+      config_.profile, config_.profile_build_system, config_.profile_test_framework);
   SessionAgentRunner agent_runner(driver_factory, run_dir, runner_options);
 
   DriverConfig driver_config;
@@ -255,7 +291,22 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
       return state;
     }
     if (state == RunState::SystemValidation && previous == RunState::SystemValidation) {
-      return state;  // validation has not completed yet
+      // The validation attempt did not complete (a stalled or failed agent
+      // turn): retry a bounded number of times, then escalate instead of
+      // stopping the run in a non-terminal state.
+      if (++validation_failures > config_.max_system_validation_attempts) {
+        const auto applied = machine.apply(RunEvent::NoProgress, {}, now);
+        if (!applied) {
+          return tl::make_unexpected(applied.error());
+        }
+        if (!config_.orchestrator.escalation_dir.empty()) {
+          (void)write_escalation_bundle(store_, config_.run_id,
+                                        config_.orchestrator.escalation_dir,
+                                        "system validation failed repeatedly", now);
+        }
+        return *applied;
+      }
+      continue;
     }
     if (state == RunState::Executing && previous == RunState::SystemValidation) {
       if (++validation_failures > config_.max_system_validation_attempts) {

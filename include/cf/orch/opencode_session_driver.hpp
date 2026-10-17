@@ -27,7 +27,8 @@ class OpencodeSessionDriver final : public SessionDriver {
   Result<std::string> create_session() override;
   Status send_prompt(std::string_view session_id, std::string_view text) override;
   Status wait_idle(std::string_view session_id,
-                   std::chrono::milliseconds timeout) override;
+                   std::chrono::milliseconds timeout,
+                   std::chrono::milliseconds stall_timeout) override;
   Status abort(std::string_view session_id) override;
   Result<agents::Json> session_usage(std::string_view session_id) override;
 

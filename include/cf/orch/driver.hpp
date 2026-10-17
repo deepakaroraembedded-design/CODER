@@ -56,6 +56,7 @@ class WorkspaceDriver final : public MilestoneDriver {
 
   TurnResult run(MilestonePhase phase, std::string_view milestone_id) override;
   GateOutcome run_gates(std::string_view milestone_id) override;
+  TurnResult run_test_dispute(std::string_view milestone_id) override;
   SystemValidationResult validate_system() override;
 
   // Worktree layout helpers (also used by recovery and tests).

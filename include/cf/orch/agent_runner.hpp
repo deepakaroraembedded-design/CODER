@@ -30,6 +30,9 @@ struct AgentTurnOutcome {
   std::string detail;
   bool changes_requested = false;  // Review: verdict CHANGES_REQUESTED
   bool exit_criteria_met = false;  // Validate: all tests pass, criteria met
+  // Code/Fix: the turn ended with dispute_test; the orchestrator routes the
+  // dispute to QA before the next gate run (design sections 6.9, 12).
+  std::string disputed_test_id;
 };
 
 class AgentRunner {
@@ -44,7 +47,7 @@ class AgentRunner {
       const AgentTurnRequest& request) {
     (void)request;
     return AgentTurnOutcome{false, "", "system validation is not supported by this runner",
-                            false, false};
+                            false, false, ""};
   }
 };
 
