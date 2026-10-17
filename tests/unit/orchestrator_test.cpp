@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -70,7 +71,19 @@ class FakeDriver final : public MilestoneDriver {
     return outcome;
   }
 
+  std::vector<std::string> integration_interfaces(std::string_view milestone_id) override {
+    const auto it = interfaces.find(std::string(milestone_id));
+    return it == interfaces.end() ? std::vector<std::string>{} : it->second;
+  }
+
+  void mark_revalidating(std::string_view milestone_id) override {
+    revalidated.push_back(std::string(milestone_id));
+  }
+
   SystemValidationResult validate_system() override { return system_result; }
+
+  std::map<std::string, std::vector<std::string>, std::less<>> interfaces;
+  std::vector<std::string> revalidated;
 };
 
 TurnResult successful_turn(MilestonePhase phase, const std::string& milestone_id) {
@@ -177,6 +190,39 @@ TEST_F(OrchestratorTest, RunReachesDoneThroughMilestones) {
   state = orchestrator.step(now_);
   ASSERT_TRUE(state.has_value()) << state.error().message;
   EXPECT_EQ(*state, RunState::Done);
+}
+
+TEST_F(OrchestratorTest, AChangedInterfaceRevalidatesDoneDependents) {
+  create_run();
+  MilestoneSpec api = milestone("M2", {"M1"});
+  api.uses = {"include/core.hpp"};
+  Plan plan = make_plan({milestone("M1"), api, milestone("M3", {"M2"})});
+
+  FakeDriver driver;
+  driver.on_turn = successful_turn;
+  driver.on_gates = full_review_gates;
+  // M3's merge changes the interface M2 uses.
+  driver.interfaces["M3"] = {"include/core.hpp"};
+  driver.system_result = SystemValidationResult{true, true, ""};
+
+  RunOrchestrator orchestrator(*store_, "R12", plan, driver);
+  auto state = orchestrator.step(now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, RunState::SystemValidation);
+
+  // M2 was Done when M3 changed the interface it uses: it revalidated (gates
+  // ran again) before the run could finish (design section 6.13.3).
+  EXPECT_EQ(driver.revalidated, (std::vector<std::string>{"M2"}));
+  int m2_gates = 0;
+  for (const auto& entry : driver.log) {
+    if (entry == "gates:M2") {
+      ++m2_gates;
+    }
+  }
+  EXPECT_EQ(m2_gates, 2);
+  const auto m2 = store_->get_milestone("R12", "M2");
+  ASSERT_TRUE(m2.has_value());
+  EXPECT_EQ(m2->state, "Done");
 }
 
 TEST_F(OrchestratorTest, IndependentMilestonesBothComplete) {

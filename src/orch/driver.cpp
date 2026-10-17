@@ -227,20 +227,28 @@ AgentTurnRequest WorkspaceDriver::make_request(MilestonePhase phase,
   return request;
 }
 
+Result<std::filesystem::path> WorkspaceDriver::ensure_integration_worktree() {
+  const std::filesystem::path path = integration_worktree();
+  std::error_code ec;
+  if (!std::filesystem::is_directory(path, ec)) {
+    auto created = repository_.create_worktree(path, config_.integration_branch,
+                                               config_.base_branch);
+    if (!created) {
+      return tl::make_unexpected(created.error());
+    }
+  }
+  return path;
+}
+
 TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone_id) {
   if (phase == MilestonePhase::Integrate) {
     // The integration worktree lives under wt/<run>/integration.
-    const std::filesystem::path path = integration_worktree();
-    std::error_code ec;
-    if (!std::filesystem::is_directory(path, ec)) {
-      auto created = repository_.create_worktree(path, config_.integration_branch,
-                                                 config_.base_branch);
-      if (!created) {
-        return TurnResult{false, "", created.error().message, false, false, false, false,
-                          false, ""};
-      }
+    auto path = ensure_integration_worktree();
+    if (!path) {
+      return TurnResult{false, "", path.error().message, false, false, false, false,
+                        false, ""};
     }
-    auto before = repository_.head_sha(path);
+    auto before = repository_.head_sha(*path);
     if (!before) {
       return TurnResult{false, "", before.error().message, false, false, false, false,
                         false, ""};
@@ -252,13 +260,13 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
     trailers.milestone_id = std::string(milestone_id);
     trailers.op_id = store::new_op_id();
     trailers.squashed_from = branch;
-    auto merged = repository_.merge_squash(path, branch,
+    auto merged = repository_.merge_squash(*path, branch,
                                            "feat(" + std::string(milestone_id) + "): " +
                                                std::string(milestone_id),
                                            trailers);
     if (!merged) {
       if (merged.error().code == git::error_codes::kMergeConflict) {
-        (void)repository_.abort_merge(path);
+        (void)repository_.abort_merge(*path);
         TurnResult conflict;
         conflict.completed = true;
         conflict.merged = false;
@@ -266,21 +274,37 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
         conflict.detail = merged.error().message;
         return conflict;
       }
+      // A milestone whose work is already merged has nothing new to
+      // integrate: that is the normal end of a revalidation cycle (design
+      // section 6.13.3), not a failure.
+      if (merged.error().code == git::error_codes::kNoChanges &&
+          integrated_.count(std::string(milestone_id)) > 0) {
+        revalidating_.erase(std::string(milestone_id));
+        TurnResult done;
+        done.completed = true;
+        done.merged = true;
+        done.summary = "already integrated";
+        return done;
+      }
       return TurnResult{false, "", merged.error().message, false, false, false, false,
                         false, ""};
     }
+    integrated_.insert(std::string(milestone_id));
+    revalidating_.erase(std::string(milestone_id));
     auto changes = repository_.diff(*before, *merged);
-    bool interface_changed = false;
+    std::vector<std::string> changed_interfaces;
     if (changes.has_value()) {
-      interface_changed = std::any_of(changes->begin(), changes->end(),
-                                      [](const git::FileChange& change) {
-                                        return is_public_interface_path(change.path);
-                                      });
+      for (const auto& change : *changes) {
+        if (is_public_interface_path(change.path)) {
+          changed_interfaces.push_back(change.path);
+        }
+      }
     }
+    changed_interfaces_[std::string(milestone_id)] = changed_interfaces;
     TurnResult result;
     result.completed = true;
     result.merged = true;
-    result.interface_changed = interface_changed;
+    result.interface_changed = !changed_interfaces.empty();
     result.summary = "merged " + branch;
     return result;
   }
@@ -293,10 +317,15 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
                                              : "coder");
   // QA validation checks the coder's committed work, so it runs in the
   // coder's worktree: the QA worktree never received the implementation.
-  // Test authoring stays in the QA worktree (design sections 6.9, 7.3).
-  const std::string worktree_role =
-      phase == MilestonePhase::Validate ? "coder" : role;
-  auto worktree = ensure_worktree(milestone_id, worktree_role);
+  // Test authoring stays in the QA worktree (design sections 6.9, 7.3). A
+  // revalidating milestone is already merged, so its review and validation
+  // run against the integration worktree (design section 6.13.3).
+  const bool revalidating = revalidating_.count(std::string(milestone_id)) > 0;
+  Result<std::filesystem::path> worktree =
+      (revalidating && phase != MilestonePhase::AuthorTests)
+          ? ensure_integration_worktree()
+          : ensure_worktree(milestone_id,
+                            phase == MilestonePhase::Validate ? "coder" : role);
   if (!worktree) {
     return TurnResult{false, "", worktree.error().message, false, false, false, false,
                       false, ""};
@@ -385,6 +414,10 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
         return TurnResult{false, "", stored.error().message, false, false, false, false,
                           false, ""};
       }
+      // New work means the milestone is back to its normal cycle: the next
+      // gate run targets its own branch, not the integration (design section
+      // 6.13.3).
+      revalidating_.erase(std::string(milestone_id));
       TurnResult result;
       result.completed = true;
       result.summary = outcome->summary;
@@ -525,7 +558,12 @@ TurnResult WorkspaceDriver::run_test_dispute(std::string_view milestone_id) {
 
 GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
   GateOutcome outcome;
-  auto worktree = ensure_worktree(milestone_id, "coder");
+  // A revalidating milestone is already merged: its gates run against the
+  // integration head, and the review is re-run in full (design sections
+  // 6.13.3, 7.4).
+  const bool revalidating = revalidating_.count(std::string(milestone_id)) > 0;
+  auto worktree = revalidating ? ensure_integration_worktree()
+                               : ensure_worktree(milestone_id, "coder");
   if (!worktree) {
     cf::gates::GateResult result;
     result.gate = "build";
@@ -566,6 +604,7 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
   }
   outcome.review_context.first_gate_run = gated_once_.emplace(milestone_id, true).second;
   outcome.review_context.full_review_threshold = 400;
+  outcome.review_context.dependency_interface_changed = revalidating;
 
   auto plan = gates::build_gate_plan(config_.profile, config_.profile_language,
                                      config_.profile_build_system,
@@ -657,6 +696,16 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     }
   }
   return outcome;
+}
+
+std::vector<std::string> WorkspaceDriver::integration_interfaces(
+    std::string_view milestone_id) {
+  const auto it = changed_interfaces_.find(std::string(milestone_id));
+  return it == changed_interfaces_.end() ? std::vector<std::string>{} : it->second;
+}
+
+void WorkspaceDriver::mark_revalidating(std::string_view milestone_id) {
+  revalidating_.insert(std::string(milestone_id));
 }
 
 SystemValidationResult WorkspaceDriver::validate_system() {

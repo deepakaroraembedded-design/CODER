@@ -530,6 +530,45 @@ TEST_F(DriverTest, ChangesInsideTheDeclaredWriteSetCommit) {
   EXPECT_NE(message->find("feat(M3)"), std::string::npos);
 }
 
+TEST_F(DriverTest, RevalidationGatesTheIntegrationAndReintegratingIsANoOp) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "include" / "core.hpp",
+                 "// core\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "implemented";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+  const TurnResult integrated = driver.run(MilestonePhase::Integrate, "M3");
+  ASSERT_TRUE(integrated.completed) << integrated.detail;
+  EXPECT_TRUE(integrated.interface_changed);
+  EXPECT_EQ(driver.integration_interfaces("M3"),
+            (std::vector<std::string>{"include/core.hpp"}));
+
+  // A dependent's revalidation gates the integration head, not the (stale)
+  // milestone worktree, and forces a full review (design section 6.13.3).
+  driver.mark_revalidating("M3");
+  const GateOutcome gates = driver.run_gates("M3");
+  EXPECT_TRUE(gates.passed);
+  EXPECT_TRUE(gates.review_context.dependency_interface_changed);
+  const auto integration_head = repository_->head_sha(driver.integration_worktree());
+  ASSERT_TRUE(integration_head.has_value());
+  EXPECT_EQ(gates.commit_sha, *integration_head);
+
+  // Re-integrating an already-merged milestone is the end of the
+  // revalidation cycle, not a failure.
+  const TurnResult again = driver.run(MilestonePhase::Integrate, "M3");
+  ASSERT_TRUE(again.completed) << again.detail;
+  EXPECT_TRUE(again.merged);
+}
+
 TEST_F(DriverTest, WorktreeLayoutFollowsTheDesign) {
   FakeAgentRunner runner;
   WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,

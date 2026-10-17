@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <set>
 #include <string>
 #include <string_view>
 
@@ -57,6 +58,9 @@ class WorkspaceDriver final : public MilestoneDriver {
   TurnResult run(MilestonePhase phase, std::string_view milestone_id) override;
   GateOutcome run_gates(std::string_view milestone_id) override;
   TurnResult run_test_dispute(std::string_view milestone_id) override;
+  std::vector<std::string> integration_interfaces(
+      std::string_view milestone_id) override;
+  void mark_revalidating(std::string_view milestone_id) override;
   SystemValidationResult validate_system() override;
 
   // Worktree layout helpers (also used by recovery and tests).
@@ -67,6 +71,7 @@ class WorkspaceDriver final : public MilestoneDriver {
  private:
   Result<std::filesystem::path> ensure_worktree(std::string_view milestone_id,
                                                 std::string_view role);
+  Result<std::filesystem::path> ensure_integration_worktree();
   Status snapshot(std::string_view milestone_id, std::string_view role,
                   const std::vector<std::string>& paths, const std::string& message,
                   const std::string& op_id);
@@ -84,6 +89,14 @@ class WorkspaceDriver final : public MilestoneDriver {
   std::map<std::string, std::string, std::less<>> base_sha_;
   // Milestones whose first gate run has already happened.
   std::map<std::string, bool, std::less<>> gated_once_;
+  // Public interface paths changed by each milestone's integration (design
+  // section 6.13.3).
+  std::map<std::string, std::vector<std::string>, std::less<>> changed_interfaces_;
+  // Milestones whose work is already merged into the integration branch.
+  std::set<std::string> integrated_;
+  // Done milestones being revalidated against a changed interface: their
+  // gates, review and QA run against the integration worktree.
+  std::set<std::string> revalidating_;
 };
 
 }  // namespace cf::orch

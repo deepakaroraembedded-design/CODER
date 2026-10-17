@@ -5,6 +5,35 @@
 #include "cf/orch/escalation.hpp"
 
 namespace cf::orch {
+namespace {
+
+// True when a declared use entry names the changed interface (an exact path
+// or one containing the other as a directory prefix).
+bool names_interface(std::string_view entry, std::string_view path) {
+  if (entry == path) {
+    return true;
+  }
+  const auto is_prefix = [](std::string_view longer, std::string_view shorter) {
+    return longer.size() > shorter.size() &&
+           longer.compare(0, shorter.size(), shorter) == 0 &&
+           longer[shorter.size()] == '/';
+  };
+  return is_prefix(path, entry) || is_prefix(entry, path);
+}
+
+bool uses_any_interface(const std::vector<std::string>& uses,
+                        const std::vector<std::string>& changed) {
+  for (const auto& entry : uses) {
+    for (const auto& path : changed) {
+      if (names_interface(entry, path)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+}  // namespace
 
 RunOrchestrator::RunOrchestrator(store::RunStore& store, std::string run_id,
                                  const plan::Plan& plan, MilestoneDriver& driver,
@@ -187,6 +216,35 @@ Result<RunState> RunOrchestrator::step(store::UnixTime now) {
       }
       if (*after != before) {
         progressed = true;
+      }
+
+      // A merge that changed a public interface revalidates every milestone
+      // that uses it, including Done ones (design section 6.13.3): their
+      // gates, review and QA run against the new integration head.
+      if (*after == MilestoneState::Done) {
+        const auto changed = driver_.integration_interfaces(spec.id);
+        if (!changed.empty()) {
+          for (const auto& dependent : plan_.milestones) {
+            if (dependent.id == spec.id || dependent.uses.empty() ||
+                !uses_any_interface(dependent.uses, changed)) {
+              continue;
+            }
+            const auto dependent_state = machine_.current(dependent.id);
+            if (!dependent_state) {
+              return tl::make_unexpected(dependent_state.error());
+            }
+            if (*dependent_state != MilestoneState::Done) {
+              continue;  // active milestones pick the change up on integration
+            }
+            driver_.mark_revalidating(dependent.id);
+            const auto applied = machine_.apply(
+                dependent.id, MilestoneEvent::InterfaceChanged, now);
+            if (!applied) {
+              return tl::make_unexpected(applied.error());
+            }
+            progressed = true;
+          }
+        }
       }
 
       exceeded = budget_exceeded();

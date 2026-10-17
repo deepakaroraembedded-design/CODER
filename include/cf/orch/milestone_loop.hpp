@@ -79,6 +79,21 @@ class MilestoneDriver {
                       false, false, false, false, false, ""};
   }
 
+  // The public interface paths the milestone's integration changed, for the
+  // revalidation of milestones that use them (design section 6.13.3). Empty
+  // when nothing integrated or no public interface changed.
+  virtual std::vector<std::string> integration_interfaces(
+      std::string_view milestone_id) {
+    (void)milestone_id;
+    return {};
+  }
+
+  // Marks a Done milestone for revalidation: its gates, review and QA run
+  // against the new integration head (design section 6.13.3).
+  virtual void mark_revalidating(std::string_view milestone_id) {
+    (void)milestone_id;
+  }
+
   // Run-level hook: runs the full system validation suite on the merged
   // result (design section 11.2). The default reports "not completed".
   virtual SystemValidationResult validate_system() { return {}; }
