@@ -477,6 +477,46 @@ Result<bool> Repository::is_dirty(const std::filesystem::path& worktree) const {
   return !trim(status.stdout_text).empty();
 }
 
+Result<std::vector<std::string>> Repository::worktree_changes(
+    const std::filesystem::path& worktree) const {
+  // -uall: list every untracked file, not the directory summary, so the
+  // write-set check sees the real paths.
+  const process::ProcessResult status =
+      run_raw({"status", "--porcelain", "-uall"}, worktree);
+  if (!status.launched) {
+    return fail(error_codes::kCommandFailed, "cannot run git: " + status.error);
+  }
+  if (status.exit_code != 0) {
+    return fail(error_codes::kCommandFailed, trim(status.stderr_text));
+  }
+  std::vector<std::string> paths;
+  std::istringstream lines(status.stdout_text);
+  std::string line;
+  while (std::getline(lines, line)) {
+    if (line.size() < 4 || line[2] != ' ') {
+      continue;
+    }
+    std::string path = line.substr(3);
+    const auto arrow = path.find(" -> ");
+    if (arrow != std::string::npos) {
+      // A rename changes both the old and the new path.
+      std::string old_path = path.substr(0, arrow);
+      path = path.substr(arrow + 4);
+      if (!old_path.empty() && old_path.front() == '"' && old_path.back() == '"') {
+        old_path = old_path.substr(1, old_path.size() - 2);
+      }
+      paths.push_back(std::move(old_path));
+    }
+    if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
+      path = path.substr(1, path.size() - 2);
+    }
+    if (!path.empty()) {
+      paths.push_back(std::move(path));
+    }
+  }
+  return paths;
+}
+
 Status Repository::abort_merge(const std::filesystem::path& worktree) const {
   // A squash merge leaves no MERGE_HEAD, so `merge --abort` refuses; fall
   // back to a hard reset, which restores the worktree either way.

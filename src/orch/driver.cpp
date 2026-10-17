@@ -31,6 +31,21 @@ bool is_qa_owned_path(std::string_view path) {
   return starts_with(path, "tests/") || starts_with(path, "qa/");
 }
 
+// True when a changed path is inside the milestone's declared write set
+// (design section 6.13.2): an exact entry or a path below a directory entry.
+bool within_write_set(const std::vector<std::string>& writes, std::string_view path) {
+  for (const auto& entry : writes) {
+    if (path == entry) {
+      return true;
+    }
+    if (path.size() > entry.size() && path.compare(0, entry.size(), entry) == 0 &&
+        path[entry.size()] == '/') {
+      return true;
+    }
+  }
+  return false;
+}
+
 }  // namespace
 
 WorkspaceDriver::WorkspaceDriver(plan::Plan plan, DriverConfig config,
@@ -191,6 +206,13 @@ AgentTurnRequest WorkspaceDriver::make_request(MilestonePhase phase,
     if (!plan_.forbidden.empty()) {
       request.brief += ". Forbidden: " + join(plan_.forbidden);
     }
+    // The coder must stay inside the milestone's declared write set (design
+    // section 6.13.2); the snapshot rejects anything outside it.
+    if ((phase == MilestonePhase::Code || phase == MilestonePhase::Fix) &&
+        !spec->writes.empty()) {
+      request.brief += ". Write set (only these paths may change): " +
+                       join(spec->writes);
+    }
   }
   // Validation decides the milestone's exit criteria (design section 11.1):
   // every open defect must be re-tested and verified or the milestone cannot
@@ -310,8 +332,50 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
     }
     case MilestonePhase::Code:
     case MilestonePhase::Fix: {
+      // Write-set enforcement (design section 6.13.2): a change outside the
+      // milestone's declared write set is rejected before it is committed, so
+      // the scheduler's parallel-safety guarantees hold. Plans without
+      // declared write sets (no refinement) are not restricted, and the
+      // snapshot commits exactly the declared set.
+      std::vector<std::string> snapshot_paths = {"src", "include"};
+      if (const plan::MilestoneSpec* spec = plan_.find_milestone(milestone_id)) {
+        if (!spec->writes.empty()) {
+          snapshot_paths = spec->writes;
+          auto changes = repository_.worktree_changes(*worktree);
+          if (!changes) {
+            return TurnResult{false, "", changes.error().message, false, false, false,
+                              false, false, ""};
+          }
+          std::vector<std::string> outside;
+          for (const auto& path : *changes) {
+            if (!within_write_set(spec->writes, path)) {
+              outside.push_back(path);
+            }
+          }
+          if (!outside.empty()) {
+            const auto join_paths = [](const std::vector<std::string>& values) {
+              std::string joined;
+              for (const auto& value : values) {
+                if (!joined.empty()) {
+                  joined += ", ";
+                }
+                joined += value;
+              }
+              return joined;
+            };
+            return TurnResult{false, "",
+                              "changes outside the declared write set for " +
+                                  std::string(milestone_id) + ": " +
+                                  join_paths(outside) + " (declared: " +
+                                  join_paths(spec->writes) +
+                                  "); move them inside the declared set and "
+                                  "submit again",
+                              false, false, false, false, false, ""};
+          }
+        }
+      }
       const std::string prefix = phase == MilestonePhase::Code ? "feat" : "fix";
-      auto stored = snapshot(milestone_id, role, {"src", "include"},
+      auto stored = snapshot(milestone_id, role, snapshot_paths,
                              prefix + "(" + std::string(milestone_id) + "): " +
                                  outcome->summary,
                              store::new_op_id());

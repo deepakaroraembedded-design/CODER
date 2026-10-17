@@ -134,6 +134,33 @@ TEST_F(GitTest, CommitWithNoChangesFails) {
   EXPECT_EQ(again.error().code, cf::git::error_codes::kNoChanges);
 }
 
+TEST_F(GitTest, WorktreeChangesListsUncommittedPaths) {
+  EXPECT_TRUE(repo_->worktree_changes(dir_ / "repo")->empty());
+
+  write_file(dir_ / "repo" / "src" / "new.cpp", "new\n");
+  write_file(dir_ / "repo" / "README.md", "changed\n");
+  auto changes = repo_->worktree_changes(dir_ / "repo");
+  ASSERT_TRUE(changes.has_value()) << changes.error().message;
+  ASSERT_EQ(changes->size(), 2u);
+  EXPECT_EQ((*changes)[0], "README.md");
+  EXPECT_EQ((*changes)[1], "src/new.cpp");
+
+  // A rename contributes both the old and the new path.
+  ASSERT_TRUE(repo_
+                  ->command({"add", "-A"})
+                  .has_value());
+  ASSERT_TRUE(repo_
+                  ->command({"-c", "user.name=cf", "-c", "user.email=cf@test",
+                             "commit", "-m", "tmp"})
+                  .has_value());
+  ASSERT_TRUE(repo_->command({"mv", "README.md", "GUIDE.md"}).has_value());
+  changes = repo_->worktree_changes(dir_ / "repo");
+  ASSERT_TRUE(changes.has_value());
+  ASSERT_EQ(changes->size(), 2u);
+  EXPECT_EQ((*changes)[0], "README.md");
+  EXPECT_EQ((*changes)[1], "GUIDE.md");
+}
+
 TEST_F(GitTest, WorktreeCreateCommitAndRemove) {
   const auto worktree = dir_ / "wt" / "coder";
   ASSERT_TRUE(repo_->create_worktree(worktree, "cf-local/R12/M3/coder").has_value());

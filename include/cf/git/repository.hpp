@@ -127,6 +127,12 @@ class Repository {
   // True when the worktree has staged or unstaged changes.
   Result<bool> is_dirty(const std::filesystem::path& worktree) const;
 
+  // Paths with uncommitted changes in the worktree (added, modified,
+  // deleted, untracked; a rename contributes both paths). Used by the
+  // write-set enforcement (design section 6.13.2).
+  Result<std::vector<std::string>> worktree_changes(
+      const std::filesystem::path& worktree) const;
+
   // --- integration (design sections 6.13.3, 10.4.5) ------------------------
   // Squash-merges branch into the worktree's checked-out branch and commits
   // with the trailers. On conflict returns GIT_MERGE_CONFLICT and leaves the

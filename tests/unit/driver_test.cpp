@@ -475,6 +475,61 @@ TEST_F(DriverTest, TestDisputeDecisionRunsQaInTheCoderWorktree) {
   EXPECT_EQ(resolved->status, "VERIFIED");
 }
 
+TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
+  plan_.milestones[0].writes = {"src/registry"};
+
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    write_file(std::filesystem::path(request.worktree) / "src" / "registry" / "ok.cpp",
+               "ok\n");
+    write_file(std::filesystem::path(request.worktree) / "src" / "elsewhere" / "bad.cpp",
+               "bad\n");
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+
+  const TurnResult result = driver.run(MilestonePhase::Code, "M3");
+  EXPECT_FALSE(result.completed);
+  EXPECT_NE(result.detail.find("outside the declared write set"), std::string::npos);
+  EXPECT_NE(result.detail.find("src/elsewhere/bad.cpp"), std::string::npos);
+
+  // Nothing was committed.
+  const auto coder_worktree = driver.worktree_for("M3", "coder");
+  const auto head = repository_->head_sha(coder_worktree);
+  ASSERT_TRUE(head.has_value());
+  const auto message = repository_->commit_message(*head);
+  ASSERT_TRUE(message.has_value());
+  EXPECT_EQ(message->find("feat(M3)"), std::string::npos);
+}
+
+TEST_F(DriverTest, ChangesInsideTheDeclaredWriteSetCommit) {
+  plan_.milestones[0].writes = {"src/registry"};
+
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    write_file(std::filesystem::path(request.worktree) / "src" / "registry" / "ok.cpp",
+               "ok\n");
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "implemented";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+
+  const TurnResult result = driver.run(MilestonePhase::Code, "M3");
+  EXPECT_TRUE(result.completed) << result.detail;
+  const auto coder_worktree = driver.worktree_for("M3", "coder");
+  const auto head = repository_->head_sha(coder_worktree);
+  ASSERT_TRUE(head.has_value());
+  const auto message = repository_->commit_message(*head);
+  ASSERT_TRUE(message.has_value());
+  EXPECT_NE(message->find("feat(M3)"), std::string::npos);
+}
+
 TEST_F(DriverTest, WorktreeLayoutFollowsTheDesign) {
   FakeAgentRunner runner;
   WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
