@@ -1,0 +1,28 @@
+# Go toolchain profile for the golden benchmark on a bare host.
+#
+# Same shape as profiles/go.yaml, but only steps whose tools are part of a
+# plain host: go, gofmt, go vet, go test. The full profile's guardrail
+# (semgrep) and analysis (staticcheck, golangci-lint) steps need the
+# cf-toolchain-go sandbox image.
+id: go-bench
+image: cf-toolchain-go:2026.10
+codeintel_backend: tree-sitter
+
+languages:
+  go:
+    standard_var: GO_VERSION
+    format:
+      steps:
+        - [sh, -c, "test -z \"$(gofmt -l .)\""]
+
+build_systems:
+  go:
+    steps:
+      - [go, build, ./...]
+      - [go, vet, ./...]
+    agent_commands: [go, gofmt]
+
+test_frameworks:
+  gotest: { steps: [[go, test, ./...]], languages: [go] }
+
+exec_from_source: []

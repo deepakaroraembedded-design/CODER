@@ -1,0 +1,44 @@
+# Go toolchain profile (design section 6.7.1 and 6.7.2).
+#
+# Trusted commands only: each step is an argument list executed with no shell
+# (the gofmt check needs `sh -c` because gofmt has no failing check mode).
+# Placeholders: {src_dir}, {build_dir}, {standard}, {standard_number},
+# {standard_var} and {changed_files...} (expanded one argument per file).
+#
+# The guardrail and analysis tools (semgrep, staticcheck, golangci-lint) live
+# in the cf-toolchain-go sandbox image; the bare-host variant used by the
+# golden benchmark is eval/profiles/go.yaml.
+id: go
+image: cf-toolchain-go:2026.10
+codeintel_backend: tree-sitter
+
+languages:
+  go:
+    standard_var: GO_VERSION
+    guardrails:
+      steps:
+        - [semgrep, --config, rules/semgrep/go.yaml, --error, "{changed_files...}"]
+    format:
+      steps:
+        - [sh, -c, "test -z \"$(gofmt -l .)\""]
+
+build_systems:
+  go:
+    steps:
+      - [go, build, ./...]
+      - [go, vet, ./...]
+    agent_commands: [go, gofmt]
+
+test_frameworks:
+  gotest: { steps: [[go, test, ./...]], languages: [go] }
+
+common:
+  analysis:
+    steps:
+      - [staticcheck, ./...]
+      - [golangci-lint, run]
+  runtime: { presets: [race] }
+  coverage: { tool: go-cover, line: 0.85, branch: 0.0 }
+  mutation: { tool: gremlins, min_score: 0.60 }
+
+exec_from_source: []

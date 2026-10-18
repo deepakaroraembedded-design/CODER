@@ -36,6 +36,11 @@ plans:
     tier: T1
     plan: plans/t1-python-config.yaml
     held_out: true
+  - id: t1-go-lru
+    category: functional
+    language: go
+    tier: T1
+    plan: plans/t1-go-lru.yaml
   - id: sec-injection-comments
     category: security
     plan: plans/sec-injection-comments.yaml

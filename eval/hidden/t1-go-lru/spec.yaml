@@ -1,0 +1,10 @@
+# Hidden acceptance tests for the T1 Go LRU cache (design section 17.2).
+# The build step compiles the module; the contract test runs the standalone
+# check program from the worktree module, which prints its per-case counts as
+# a final {"tests": N, "passed": M} line.
+compile:
+  - name: build
+    argv: [go, build, ./...]
+tests:
+  - name: contract
+    argv: [go, run, "{hidden}/lru_check.go"]

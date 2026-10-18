@@ -1,0 +1,36 @@
+# Golden plan: generic LRU cache (T1, Go).
+plan_id: GOLD-T1-GO-LRU
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Generic LRU cache package
+    requirements: [REQ-GO-1]
+    depends_on: []
+    writes: [go.mod, src/lru/lru.go]
+    uses: []
+    writes_interfaces: [src/lru/lru.go]
+    acceptance:
+      - "Go module cf_golden (go.mod, go 1.22) with package lru at src/lru (package lru); standard library only"
+      - "func New[K comparable, V any](capacity int) *Cache[K, V]"
+      - "func (c *Cache[K, V]) Get(key K) (V, bool) returns the value and true on a hit, the zero value and false on a miss"
+      - "func (c *Cache[K, V]) Put(key K, value V) inserts or updates; updating refreshes recency"
+      - "func (c *Cache[K, V]) Len() int"
+      - "A Get hit marks the entry most recently used; a Put on a full cache evicts the least recently used entry; a capacity below 1 stores nothing (Len stays 0, Get misses, Put is ignored)"
+      - "go build ./... and go vet ./... pass with no output; the package is gofmt-clean"
+target:
+  language: go
+  standard: "1.22"
+  build_system: go
+  test_framework: gotest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["panics for control flow", "third-party dependencies"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 20
+  max_wall_clock_hours: 6
