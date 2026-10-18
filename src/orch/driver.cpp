@@ -304,6 +304,37 @@ AgentTurnRequest WorkspaceDriver::make_request(MilestonePhase phase,
   return request;
 }
 
+void WorkspaceDriver::record_checkpoint(std::string_view milestone_id) {
+  if (store_ == nullptr) {
+    return;
+  }
+  nlohmann::json heads = nlohmann::json::object();
+  for (const char* role : {"coder", "qa", "reviewer"}) {
+    const std::filesystem::path path = worktree_for(milestone_id, role);
+    std::error_code ec;
+    if (!std::filesystem::is_directory(path, ec)) {
+      continue;
+    }
+    auto head = repository_.head_sha(path);
+    if (head.has_value()) {
+      heads[role] = *head;
+    }
+  }
+  store::CheckpointRecord checkpoint;
+  checkpoint.run_id = config_.run_id;
+  checkpoint.milestone_id = std::string(milestone_id);
+  checkpoint.worktree_heads_json = heads.dump();
+  checkpoint.sessions_json = "[]";  // sessions are abandoned on recovery
+  const auto milestone = store_->get_milestone(config_.run_id, milestone_id);
+  checkpoint.milestone_state = milestone.has_value() ? milestone->state : "";
+  checkpoint.at = store::unix_now();
+  const auto saved = store_->save_checkpoint(checkpoint);
+  if (!saved.has_value()) {
+    spdlog::warn("cannot record the checkpoint for {}: {}", milestone_id,
+                 saved.error().message);
+  }
+}
+
 Result<std::filesystem::path> WorkspaceDriver::ensure_integration_worktree() {
   const std::filesystem::path path = integration_worktree();
   std::error_code ec;
@@ -434,6 +465,11 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
     }
   }
 
+  // The pre-turn checkpoint (design section 6.12.3): a crash during the turn
+  // resets the worktrees to this commit instead of trying to continue a
+  // half-finished model turn.
+  record_checkpoint(milestone_id);
+
   AgentTurnRequest request = make_request(phase, milestone_id, role);
   request.worktree = worktree->string();
   auto outcome = agent_runner_.run_turn(request);
@@ -563,6 +599,7 @@ TurnResult WorkspaceDriver::run_test_dispute(std::string_view milestone_id) {
     return TurnResult{false, "", worktree.error().message, false, false, false, false,
                       false, ""};
   }
+  record_checkpoint(milestone_id);
 
   std::string brief =
       "Decide the open test dispute(s) for milestone " + id +

@@ -72,6 +72,10 @@ class WorkspaceDriver final : public MilestoneDriver {
   Result<std::filesystem::path> ensure_worktree(std::string_view milestone_id,
                                                 std::string_view role);
   Result<std::filesystem::path> ensure_integration_worktree();
+  // Records the pre-turn checkpoint (design section 6.12.3): the head of
+  // every existing role worktree of the milestone and its stored state, so
+  // recovery can reset a half-finished turn.
+  void record_checkpoint(std::string_view milestone_id);
   Status snapshot(std::string_view milestone_id, std::string_view role,
                   const std::vector<std::string>& paths, const std::string& message,
                   const std::string& op_id);

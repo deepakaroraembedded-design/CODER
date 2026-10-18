@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
 #include <unistd.h>
 
 #include "cf/orch/driver.hpp"
@@ -644,6 +645,39 @@ TEST_F(DriverTest, RevalidationGatesTheIntegrationAndReintegratingIsANoOp) {
   const TurnResult again = driver.run(MilestonePhase::Integrate, "M3");
   ASSERT_TRUE(again.completed) << again.detail;
   EXPECT_TRUE(again.merged);
+}
+
+TEST_F(DriverTest, RecordsAPreTurnCheckpoint) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp", "code\n");
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  cf::orch::StateMachine machine(*store_, "R12");
+  ASSERT_TRUE(machine.register_milestone("M3").has_value());
+  ASSERT_TRUE(machine.apply("M3", cf::orch::MilestoneEvent::Start, now_).has_value());
+  ASSERT_TRUE(machine
+                  .apply("M3", cf::orch::MilestoneEvent::TestsCommitted, now_)
+                  .has_value());
+
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+
+  // The checkpoint records the worktree heads and the milestone state before
+  // the turn (design section 6.12.3); recovery resets to it.
+  const auto checkpoint = store_->latest_checkpoint("R12", "M3");
+  ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().message;
+  const auto heads = nlohmann::json::parse(checkpoint->worktree_heads_json);
+  ASSERT_TRUE(heads.is_object());
+  ASSERT_TRUE(heads.contains("coder"));
+  const auto coder_head = repository_->head_sha(driver.worktree_for("M3", "coder"));
+  ASSERT_TRUE(coder_head.has_value());
+  EXPECT_NE(heads["coder"].get<std::string>(), *coder_head);  // pre-turn commit
+  EXPECT_EQ(checkpoint->milestone_state, "Coding");
 }
 
 TEST_F(DriverTest, TheFixBriefCarriesTheFailingGateFindings) {

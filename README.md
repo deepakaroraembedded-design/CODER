@@ -33,7 +33,7 @@ is still missing.
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **544 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **545 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -334,7 +334,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 544 unit tests
+ctest --test-dir build/debug --output-on-failure     # 545 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -523,11 +523,14 @@ opencode version.
   TSan-involving plans need `setarch $(uname -m) -R` on hosts with high ASLR
   entropy (same note as §4). Remaining: grow the suite (more plans per tier,
   reliability and governance scenarios) and re-run the benchmark as it grows.
-- **Reliability fault injection.** The bench kills the run process at a
-  milestone boundary and resumes it (`rel-orchestrator-crash`); the full
-  §6.12.5 matrix (a kill at every protocol step for every operation kind,
-  SIGSTOP takeover with a live GitHub request, sandbox kills) is still to be
-  built.
+- **Reliability fault injection.** The driver records a checkpoint before
+  every agent turn (design section 6.12.3), and the bench kills the run
+  process at a milestone boundary, resumes it (lease takeover, stale locks,
+  in-flight operations, worktree reset to the checkpoint) and continues;
+  `rel-orchestrator-crash` verifies the run still reaches Done with no
+  duplicated commits or operations. The full §6.12.5 matrix (a kill at
+  every protocol step for every operation kind, SIGSTOP takeover with a live
+  GitHub request, sandbox kills) is still to be built.
 - **RAG production index.** hnswlib is the default vector index (brute force
   stays behind the same `VectorIndex` interface as the parity reference); FAISS
   (IVF-PQ for collections over 5M chunks) is still pending. PDF/DOCX ingestion
@@ -550,7 +553,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (544)
+tests/unit/                 # GoogleTest unit tests (545)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)
