@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstddef>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -40,6 +41,30 @@ class BruteForceVectorIndex final : public VectorIndex {
  private:
   std::size_t dimension_ = 0;
   std::vector<std::pair<std::string, std::vector<float>>> entries_;
+};
+
+// Approximate nearest-neighbour index (design section 6.3: hnswlib is the
+// default; brute force is the fallback and the parity reference). Vectors are
+// normalized on insert, so inner product equals cosine similarity. The index
+// grows on demand and concurrent searches are safe once ingestion finished.
+class HnswVectorIndex final : public VectorIndex {
+ public:
+  HnswVectorIndex();
+  ~HnswVectorIndex() override;
+  HnswVectorIndex(const HnswVectorIndex&) = delete;
+  HnswVectorIndex& operator=(const HnswVectorIndex&) = delete;
+
+  Status add(std::string_view chunk_id, std::vector<float> vector) override;
+
+  std::vector<std::pair<std::string, float>> search(
+      const std::vector<float>& query, std::size_t limit) const override;
+
+  std::size_t size() const;
+  std::size_t dimension() const;
+
+ private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
 };
 
 }  // namespace cf::rag

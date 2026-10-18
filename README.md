@@ -33,7 +33,7 @@ is still missing.
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **541 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **544 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -50,7 +50,7 @@ The design's module map and the implemented directories:
 | cf-plan | `include/cf/plan`, `src/plan` | 6.2, 8.1 | Implementation plan parser (YAML or Markdown front matter), schema + DAG validation, FR-18 toolchain check |
 | cf-eval | `include/cf/eval`, `src/eval` | 17.2, 18.2 | Golden evaluation suite harness: stratified manifest, outcome records, scoring with confidence intervals, held-out split, target checks, JSON/Markdown reports; hidden acceptance tests; Phase 0b model benchmark (`cf-eval bench`) that drives candidates through the real run pipeline |
 | cf-gates | `include/cf/gates`, `src/gates` | 6.7 | Toolchain profiles (YAML), staged gate runner (prerequisites → cheap → expensive), gate plan builder, trusted step expansion |
-| cf-rag | `include/cf/rag`, `src/rag` | 6.3 | Tokenizer, structure-aware chunking, BM25, vector index, embeddings, front-matter loader, HTML cleaner, injection scanner, hybrid retriever with applicability and precedence, labeled retrieval evaluation (recall@k, MRR) |
+| cf-rag | `include/cf/rag`, `src/rag` | 6.3 | Tokenizer, structure-aware chunking, BM25, hnswlib vector index (brute-force fallback behind the same interface), embeddings, front-matter loader, HTML cleaner, injection scanner, hybrid retriever with applicability and precedence, labeled retrieval evaluation (recall@k, MRR) |
 | cf-refmirror | `include/cf/refmirror`, `src/refmirror` | 6.3.1 | Approved-documentation manifest, fetch + checksum + clean + scan + publish pipeline |
 | cf-git | `include/cf/git`, `src/git` | 6.8.3, 10.4.5 | Worktrees, snapshot commits with CF trailers, diffs, file hashes, trailer recovery, squash merges |
 | cf-sandbox | `include/cf/sandbox`, `src/sandbox` | 6.8 | Sandbox executors behind `ProcessExecutor`: Docker (gate jobs + opencode servers, internal-network egress) and daemon-free namespaces (user/mount/net/UTS/IPC/PID namespaces, Landlock, seccomp, cgroups) |
@@ -168,7 +168,9 @@ Presets (`CMakePresets.json`): `debug`, `release`, `asan` (ASan+UBSan),
 GCC's libtsan before GCC 13 does not intercept `pthread_cond_clockwait`, so the
 two cross-thread idle-tracker tests skip under that runtime (Clang TSan and
 GCC 13+ run them); the namespace-sandbox tests skip under any TSan runtime, as
-noted in §9.
+noted in §9; the large hnswlib parity test skips under ASan and TSan because
+hnswlib's prefetch over-read and per-element lock order trip those runtimes
+and GCC 11's cannot suppress them (the small HNSW tests still run).
 
 **Binaries** land in `build/<preset>/`:
 
@@ -332,7 +334,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 541 unit tests
+ctest --test-dir build/debug --output-on-failure     # 544 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -516,10 +518,12 @@ opencode version.
   `setarch $(uname -m) -R` on hosts with high ASLR entropy (same note as §4).
   Remaining: grow the suite (more plans per tier, reliability and governance
   scenarios) and re-run the benchmark as it grows.
-- **RAG production index.** The vector index is exact brute-force; hnswlib/FAISS
-  swap in behind `VectorIndex`. PDF/DOCX ingestion and the adversarial conflict set
-  are pending; the labeled retrieval evaluation set is started (`eval/rag/`) and
-  grows to 200 queries per collection.
+- **RAG production index.** hnswlib is the default vector index (brute force
+  stays behind the same `VectorIndex` interface as the parity reference); FAISS
+  (IVF-PQ for collections over 5M chunks) is still pending. PDF/DOCX ingestion
+  and the adversarial conflict set are pending; the labeled retrieval
+  evaluation set is started (`eval/rag/`) and grows to 200 queries per
+  collection.
 - **System-level validation loop.** `WorkspaceDriver::validate_system` delegates to
   the agent runner; the full QA system suite comes with the real runner.
 
@@ -536,7 +540,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (541)
+tests/unit/                 # GoogleTest unit tests (544)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

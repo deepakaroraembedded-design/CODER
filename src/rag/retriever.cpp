@@ -65,7 +65,10 @@ InMemoryRetriever::InMemoryRetriever(RetrieverOptions options)
 void InMemoryRetriever::set_embedder(std::shared_ptr<Embedder> embedder) {
   embedder_ = std::move(embedder);
   if (embedder_ && vector_index_ == nullptr) {
-    vector_index_ = std::make_unique<BruteForceVectorIndex>();
+    vector_index_ = options_.hnsw ? std::unique_ptr<VectorIndex>(
+                                        std::make_unique<HnswVectorIndex>())
+                                  : std::unique_ptr<VectorIndex>(
+                                        std::make_unique<BruteForceVectorIndex>());
   }
 }
 

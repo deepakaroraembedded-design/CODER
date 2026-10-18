@@ -31,6 +31,9 @@ struct RetrieverOptions {
   double bm25_b = 0.75;
   std::size_t rrf_k = 60;               // Reciprocal Rank Fusion constant
   std::size_t candidate_multiplier = 3; // candidates per ranking list
+  // hnswlib is the default vector index (design section 6.3); false uses the
+  // exact brute-force index (the parity reference and small collections).
+  bool hnsw = true;
 };
 
 class Retriever {

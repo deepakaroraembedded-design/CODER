@@ -26,6 +26,7 @@ find_package(OpenSSL REQUIRED)
 find_package(SQLiteCpp CONFIG REQUIRED)
 find_package(cpr CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
+find_package(hnswlib CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
 # Warnings apply to framework code only, never to third-party headers.
@@ -187,6 +188,7 @@ add_library(cf_rag STATIC
 target_link_libraries(cf_rag PUBLIC
   cf_common
   cf_llm
+  hnswlib::hnswlib
   yaml-cpp::yaml-cpp)
 
 # cf-git: repository layer (design sections 6.8.3, 10.4.5)
