@@ -646,6 +646,35 @@ TEST_F(DriverTest, RevalidationGatesTheIntegrationAndReintegratingIsANoOp) {
   EXPECT_TRUE(again.merged);
 }
 
+TEST_F(DriverTest, TheFixBriefCarriesTheFailingGateFindings) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      // The build gate asserts this file does not exist (kFailingBuildProfile).
+      write_file(std::filesystem::path(request.worktree) / "src" / "bad.cpp", "bad\n");
+    }
+    if (request.phase == MilestonePhase::Fix) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "fix.cpp", "fix\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kFailingBuildProfile), *repository_,
+                         executor_, runner, store_.get());
+
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+  const GateOutcome gates = driver.run_gates("M3");
+  EXPECT_FALSE(gates.passed);
+
+  ASSERT_TRUE(driver.run(MilestonePhase::Fix, "M3").completed);
+  ASSERT_FALSE(runner.briefs.empty());
+  EXPECT_NE(runner.briefs.back().find("Failing gates from the last run"),
+            std::string::npos);
+  EXPECT_NE(runner.briefs.back().find("build"), std::string::npos);
+}
+
 TEST_F(DriverTest, RevalidationFixStartsFromTheIntegrationHead) {
   FakeAgentRunner runner;
   runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {

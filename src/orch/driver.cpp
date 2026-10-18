@@ -31,6 +31,57 @@ bool is_qa_owned_path(std::string_view path) {
   return starts_with(path, "tests/") || starts_with(path, "qa/");
 }
 
+// The failing gates of the milestone's latest gate run with their first
+// finding, so the fix brief carries the actual failure instead of making the
+// agent dig it out (design section 7.3).
+std::string failing_gate_summary(const store::RunStore& store,
+                                 const std::string& run_id,
+                                 const std::string& milestone_id) {
+  auto rows = store.latest_gate_results(run_id, milestone_id);
+  if (!rows.has_value()) {
+    return {};
+  }
+  std::string out;
+  for (const auto& row : *rows) {
+    if (row.passed) {
+      continue;
+    }
+    std::string message;
+    std::ifstream in(row.report_ref, std::ios::binary);
+    if (in) {
+      const std::string text((std::istreambuf_iterator<char>(in)),
+                             std::istreambuf_iterator<char>());
+      const auto report = nlohmann::json::parse(text, nullptr, false);
+      if (report.is_object()) {
+        for (const auto& result :
+             report.value("results", nlohmann::json::array())) {
+          if (result.value("gate", "") != row.gate ||
+              result.value("passed", true)) {
+            continue;
+          }
+          for (const auto& finding :
+               result.value("findings", nlohmann::json::array())) {
+            message = finding.value("message", "");
+            break;
+          }
+          break;
+        }
+      }
+    }
+    if (message.empty()) {
+      message = "failed (see get_gate_results)";
+    }
+    if (message.size() > 300) {
+      message.resize(300);
+    }
+    if (!out.empty()) {
+      out += "; ";
+    }
+    out += row.gate + ": " + message;
+  }
+  return out;
+}
+
 // Build and cache directories an agent may create while working; they are
 // never committed by the snapshot, so they do not count as out-of-scope
 // changes (design section 6.13.2).
@@ -229,6 +280,15 @@ AgentTurnRequest WorkspaceDriver::make_request(MilestonePhase phase,
         !spec->writes.empty()) {
       request.brief += ". Write set (only these paths may change): " +
                        join(spec->writes);
+    }
+  }
+  // The fix brief carries the failing gates so the agent works from the
+  // failure instead of rediscovering it (design section 7.3).
+  if (phase == MilestonePhase::Fix && store_ != nullptr) {
+    const std::string failures =
+        failing_gate_summary(*store_, config_.run_id, std::string(milestone_id));
+    if (!failures.empty()) {
+      request.brief += ". Failing gates from the last run: " + failures;
     }
   }
   // Validation decides the milestone's exit criteria (design section 11.1):
