@@ -78,6 +78,11 @@ Result<HiddenTestSpec> parse_hidden_test_spec(std::string_view yaml,
   spec.base_dir = base_dir;
   spec.security = root["security"].as<bool>(false);
   spec.recovery = root["recovery"].as<bool>(false);
+  spec.crash_after_milestone = root["crash_after_milestone"].as<std::string>("");
+  spec.crash_after_seconds = root["crash_after_seconds"].as<int>(0);
+  if (spec.crash_after_seconds < 0) {
+    return fail("EVAL_HIDDEN_INVALID", "crash_after_seconds cannot be negative");
+  }
 
   auto compile = parse_steps(root["compile"], "compile");
   if (!compile.has_value()) {
@@ -110,7 +115,8 @@ Result<HiddenTestSpec> load_hidden_test_spec(const std::filesystem::path& path) 
 std::vector<std::string> expand_hidden_argv(const std::vector<std::string>& argv,
                                             const std::filesystem::path& worktree,
                                             const std::filesystem::path& hidden_dir,
-                                            const std::filesystem::path& build_dir) {
+                                            const std::filesystem::path& build_dir,
+                                            const std::filesystem::path& run_dir) {
   std::vector<std::string> expanded;
   expanded.reserve(argv.size());
   for (const auto& element : argv) {
@@ -126,6 +132,7 @@ std::vector<std::string> expand_hidden_argv(const std::vector<std::string>& argv
     replace_all("{worktree}", worktree.string());
     replace_all("{hidden}", hidden_dir.string());
     replace_all("{build}", build_dir.string());
+    replace_all("{run_dir}", run_dir.string());
     expanded.push_back(std::move(value));
   }
   return expanded;
@@ -165,7 +172,8 @@ HiddenTestResult run_hidden_tests(const HiddenTestSpec& spec,
                                   const std::filesystem::path& worktree,
                                   const std::filesystem::path& build_dir,
                                   process::ProcessExecutor& executor,
-                                  std::chrono::milliseconds timeout) {
+                                  std::chrono::milliseconds timeout,
+                                  const std::filesystem::path& run_dir) {
   HiddenTestResult result;
   std::error_code ec;
   std::filesystem::create_directories(build_dir, ec);
@@ -177,7 +185,8 @@ HiddenTestResult run_hidden_tests(const HiddenTestSpec& spec,
 
   for (const auto& step : spec.compile) {
     process::ProcessRequest request;
-    request.argv = expand_hidden_argv(step.argv, worktree, spec.base_dir, build_dir);
+    request.argv =
+        expand_hidden_argv(step.argv, worktree, spec.base_dir, build_dir, run_dir);
     request.working_directory = worktree.string();
     request.timeout = timeout;
     const process::ProcessResult run = executor.run(request);
@@ -199,7 +208,8 @@ HiddenTestResult run_hidden_tests(const HiddenTestSpec& spec,
 
   for (const auto& step : spec.tests) {
     process::ProcessRequest request;
-    request.argv = expand_hidden_argv(step.argv, worktree, spec.base_dir, build_dir);
+    request.argv =
+        expand_hidden_argv(step.argv, worktree, spec.base_dir, build_dir, run_dir);
     request.working_directory = worktree.string();
     request.timeout = timeout;
     const process::ProcessResult run = executor.run(request);

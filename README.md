@@ -29,7 +29,7 @@ is still missing.
 | GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences), dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment`), `GithubFlow` (milestone pushes, draft PR open/update/ready, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
 | CLI (`cf check/run/status/resume/escalations/report`) | Implemented and tested |
 | Design refinement (Phase 4) | Implemented and verified with the real planner model: the refiner turns the plan into a design package (`runs/<run>/design.{json,md}` — component design, refined milestone DAG with write sets/uses/interfaces for the scheduler, ADRs), self-critiques and revises once, stops at the human approval gate, and the approved package drives execution. Approving publishes the design as a product-scoped RAG design document (`<workspace>/designs/`, status `approved`; an earlier design for the same plan becomes `superseded` and is no longer retrieved), and the run's MCP servers and question policy carry the product/language applicability context. The curated pattern catalog (`catalog/patterns/`, six entries) is loaded by `cf-mcp --patterns`, is authoritative for `get_pattern` and is indexed into retrieval; the refiner prompt carries it. Remaining: pattern-conformance checks, adversarial conflict set |
-| Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the suite spans C++, Python and Go, and the first full benchmark (3 candidates × 4 plans) is complete and confirms the pinned models |
+| Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the suite spans C++, Python and Go plus a crash-injection reliability scenario, and the first full benchmark (3 candidates × 4 plans) is complete and confirms the pinned models |
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
@@ -514,10 +514,20 @@ opencode version.
   full benchmark (3 candidates × 4 plans, including the held-out Python plan)
   completed: the pinned candidate won every plan with all hidden tests green and
   no escalations at the lowest cost per milestone; the pins in
-  `third_party/VERSIONS` carry the provenance note. TSan-involving plans need
-  `setarch $(uname -m) -R` on hosts with high ASLR entropy (same note as §4).
-  Remaining: grow the suite (more plans per tier, reliability and governance
-  scenarios) and re-run the benchmark as it grows.
+  `third_party/VERSIONS` carry the provenance note. Reliability scenarios
+  inject a crash: a hidden spec's `crash_after_milestone` (or
+  `crash_after_seconds`) makes the bench SIGKILL the run process mid-run, run
+  `cf resume` (lease takeover, stale locks, in-flight operations, worktree
+  reset) and continue in a second process; `rel-orchestrator-crash` verifies
+  the run still reaches Done with no duplicated commits or operations.
+  TSan-involving plans need `setarch $(uname -m) -R` on hosts with high ASLR
+  entropy (same note as §4). Remaining: grow the suite (more plans per tier,
+  reliability and governance scenarios) and re-run the benchmark as it grows.
+- **Reliability fault injection.** The bench kills the run process at a
+  milestone boundary and resumes it (`rel-orchestrator-crash`); the full
+  §6.12.5 matrix (a kill at every protocol step for every operation kind,
+  SIGSTOP takeover with a live GitHub request, sandbox kills) is still to be
+  built.
 - **RAG production index.** hnswlib is the default vector index (brute force
   stays behind the same `VectorIndex` interface as the parity reference); FAISS
   (IVF-PQ for collections over 5M chunks) is still pending. PDF/DOCX ingestion

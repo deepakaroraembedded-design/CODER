@@ -38,6 +38,11 @@ struct HiddenTestSpec {
   // rather than ordinary functional coverage.
   bool security = false;
   bool recovery = false;
+  // Crash injection (design section 6.12.5): the runner kills the run
+  // process as soon as this milestone is Done (or after this many seconds,
+  // whichever comes first) and then resumes. Zero/empty disables it.
+  std::string crash_after_milestone;
+  int crash_after_seconds = 0;
   std::filesystem::path base_dir;  // directory of the spec file
 };
 
@@ -49,10 +54,12 @@ Result<HiddenTestSpec> load_hidden_test_spec(const std::filesystem::path& path);
 //   {worktree}  the integration worktree under test
 //   {hidden}    the hidden test directory (spec.base_dir)
 //   {build}     a scratch build directory the runner creates
+//   {run_dir}   the run directory (empty when the caller does not pass one)
 std::vector<std::string> expand_hidden_argv(const std::vector<std::string>& argv,
                                             const std::filesystem::path& worktree,
                                             const std::filesystem::path& hidden_dir,
-                                            const std::filesystem::path& build_dir);
+                                            const std::filesystem::path& build_dir,
+                                            const std::filesystem::path& run_dir = {});
 
 struct HiddenTestResult {
   int tests = 0;
@@ -70,7 +77,8 @@ HiddenTestResult run_hidden_tests(const HiddenTestSpec& spec,
                                   const std::filesystem::path& worktree,
                                   const std::filesystem::path& build_dir,
                                   process::ProcessExecutor& executor,
-                                  std::chrono::milliseconds timeout);
+                                  std::chrono::milliseconds timeout,
+                                  const std::filesystem::path& run_dir = {});
 
 // Parses the last `{"tests": N, "passed": M}` line of the output; returns
 // nullopt when the output does not carry one.

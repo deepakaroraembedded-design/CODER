@@ -1,0 +1,24 @@
+# Hidden acceptance tests for the crash-recovery scenario (design sections
+# 6.12.5, 17.2). The runner SIGKILLs the run process once M1 is integrated,
+# runs cf resume, and continues; the checks verify the deliverable and that
+# recovery duplicated nothing.
+recovery: true
+crash_after_milestone: M1
+compile:
+  - name: contract
+    argv:
+      - g++
+      - -std=c++20
+      - -Wall
+      - -Wextra
+      - -O1
+      - -I
+      - "{worktree}/include"
+      - "{hidden}/metrics_test.cpp"
+      - -o
+      - "{build}/metrics_test"
+tests:
+  - name: contract
+    argv: ["{build}/metrics_test"]
+  - name: recovery
+    argv: [python3, "{hidden}/recovery_check.py", --run-dir, "{run_dir}", --worktree, "{worktree}"]

@@ -3,9 +3,15 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <system_error>
+#include <thread>
 #include <utility>
+
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
@@ -13,6 +19,7 @@
 #include "cf/eval/hidden.hpp"
 #include "cf/gates/profile.hpp"
 #include "cf/git/repository.hpp"
+#include "cf/orch/recovery.hpp"
 #include "cf/orch/run_process.hpp"
 #include "cf/orch/state_machine.hpp"
 #include "cf/plan/plan.hpp"
@@ -22,6 +29,139 @@ namespace cf::eval {
 namespace {
 
 using Json = nlohmann::json;
+
+// Crash injection (design section 6.12.5): runs the pipeline in a child
+// process, SIGKILLs it once the trigger fires, recovers the run (cf resume:
+// lease takeover, stale locks, in-flight operations, worktree reset) and
+// continues in a second child until the run reaches a terminal state. The
+// caller's `execute_pipeline` runs one pipeline in this process.
+Result<orch::RunState> run_with_crash_injection(
+    const std::string& run_id, const std::filesystem::path& run_dir,
+    const std::filesystem::path& scratch, git::Repository& repository,
+    const HiddenTestSpec& spec,
+    const std::function<Result<orch::RunState>()>& execute_pipeline) {
+  const auto final_state = [&]() -> Result<orch::RunState> {
+    auto handle = store::RunStore::open(run_dir / "run.db");
+    if (!handle.has_value()) {
+      return tl::make_unexpected(handle.error());
+    }
+    auto record = (*handle)->get_run(run_id);
+    if (!record.has_value()) {
+      return tl::make_unexpected(record.error());
+    }
+    auto state = orch::run_state_from_string(record->state);
+    if (!state.has_value()) {
+      return fail(error_codes::kRunExecutorFailed,
+                  "unknown stored run state '" + record->state + "'");
+    }
+    return *state;
+  };
+
+  const auto start_child = [&]() -> Result<pid_t> {
+    const pid_t child = ::fork();
+    if (child < 0) {
+      return fail(error_codes::kRunExecutorFailed, "cannot fork the run process");
+    }
+    if (child == 0) {
+      const auto state = execute_pipeline();
+      // _exit: no destructors in the child, the parent owns the files.
+      ::_exit(state.has_value() ? 0 : 1);
+    }
+    return child;
+  };
+
+  auto first = start_child();
+  if (!first.has_value()) {
+    return tl::make_unexpected(first.error());
+  }
+  const pid_t child = *first;
+  spdlog::info("crash injection: run {} in child {}", run_id, child);
+
+  // Wait for the trigger: the named milestone reaching Done, or the time
+  // budget. A child that finishes on its own needs no crash.
+  const auto started = std::chrono::steady_clock::now();
+  const auto budget = spec.crash_after_seconds > 0
+                          ? std::chrono::seconds(spec.crash_after_seconds + 900)
+                          : std::chrono::minutes(30);
+  bool triggered = false;
+  bool finished = false;
+  while (std::chrono::steady_clock::now() - started < budget) {
+    int status = 0;
+    if (::waitpid(child, &status, WNOHANG) == child) {
+      finished = true;
+      break;
+    }
+    if (!spec.crash_after_milestone.empty()) {
+      auto handle = store::RunStore::open(run_dir / "run.db");
+      if (handle.has_value()) {
+        const auto milestone =
+            (*handle)->get_milestone(run_id, spec.crash_after_milestone);
+        if (milestone.has_value() && milestone->state == "Done") {
+          triggered = true;
+          break;
+        }
+      }
+    }
+    if (spec.crash_after_seconds > 0 &&
+        std::chrono::steady_clock::now() - started >=
+            std::chrono::seconds(spec.crash_after_seconds)) {
+      triggered = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+  }
+  if (finished) {
+    spdlog::info("crash injection: the run finished before the trigger; no crash");
+    return final_state();
+  }
+  if (!triggered) {
+    ::kill(child, SIGKILL);
+    int status = 0;
+    (void)::waitpid(child, &status, 0);
+    return fail(error_codes::kRunExecutorFailed,
+                "crash injection: the trigger never fired within the budget");
+  }
+  ::kill(child, SIGKILL);
+  int status = 0;
+  (void)::waitpid(child, &status, 0);
+  spdlog::info("crash injection: killed the run process {}", child);
+
+  // cf resume: lease takeover, stale locks, in-flight operations and the
+  // worktree reset hook. The crashed run's lease is still inside its TTL, so
+  // the takeover uses a simulated expiry (the recovery test does the same).
+  {
+    auto handle = store::RunStore::open(run_dir / "run.db");
+    if (!handle.has_value()) {
+      return tl::make_unexpected(handle.error());
+    }
+    auto hook = std::make_unique<orch::GitWorktreeHook>(repository, scratch);
+    orch::Recovery recovery(**handle, std::move(hook));
+    orch::Dispatcher dispatcher(**handle, run_id, "bench-recovery");
+    orch::RecoveryOptions options;
+    options.holder = "bench-recovery";
+    auto report = recovery.resume(run_id, dispatcher, options,
+                                  store::unix_now() + 3600);
+    if (!report.has_value()) {
+      return fail(error_codes::kRunExecutorFailed,
+                  "recovery failed: " + report.error().message);
+    }
+    // Release the recovery lease so the continuation can take it.
+    auto released = (*handle)->release_lease(run_id, "bench-recovery", report->epoch);
+    if (!released.has_value()) {
+      return fail(error_codes::kRunExecutorFailed,
+                  "cannot release the recovery lease: " + released.error().message);
+    }
+    spdlog::info("crash injection: recovered run {} ({} worktree(s) reset)",
+                 run_id, report->worktrees_reset);
+  }
+
+  auto second = start_child();
+  if (!second.has_value()) {
+    return tl::make_unexpected(second.error());
+  }
+  (void)::waitpid(*second, &status, 0);
+  return final_state();
+}
 
 void write_file(const std::filesystem::path& path, const std::string& content) {
   std::filesystem::create_directories(path.parent_path());
@@ -319,17 +459,60 @@ Result<PlanOutcome> RunProcessExecutor::run(const PlanEntry& plan_entry, int rep
     config.orchestrator.max_tokens_total = plan->budget.max_tokens_total;
   }
 
+  // The hidden spec also carries the crash-injection trigger (design section
+  // 6.12.5), so it is loaded before the pipeline runs.
+  const std::filesystem::path hidden_spec_path =
+      hidden_base / (plan_entry.id + "/spec.yaml");
+  std::error_code hidden_ec;
+  std::optional<HiddenTestSpec> hidden_spec;
+  if (std::filesystem::exists(hidden_spec_path, hidden_ec)) {
+    auto loaded = load_hidden_test_spec(hidden_spec_path);
+    if (!loaded.has_value()) {
+      return fail(error_codes::kRunExecutorFailed, loaded.error().message);
+    }
+    hidden_spec = std::move(*loaded);
+  }
+
+  // One pipeline run: a fresh store handle (the previous one may be stale
+  // after a crash or another process) and the run process.
+  const auto execute_pipeline = [&]() -> Result<orch::RunState> {
+    auto handle = store::RunStore::open(run_dir / "run.db");
+    if (!handle.has_value()) {
+      return tl::make_unexpected(handle.error());
+    }
+    orch::RunProcess process(**handle, *plan, config, *repository, executor_);
+    return process.execute(store::unix_now());
+  };
+
   spdlog::info("benchmark: running plan {} repeat {} as {}", plan_entry.id, repeat,
                run_id);
   const auto started = std::chrono::steady_clock::now();
-  orch::RunProcess process(**store, *plan, config, *repository, executor_);
-  auto final_state = process.execute(store::unix_now());
+  const bool inject_crash =
+      hidden_spec.has_value() &&
+      (!hidden_spec->crash_after_milestone.empty() ||
+       hidden_spec->crash_after_seconds > 0);
+  Result<orch::RunState> final_state = tl::make_unexpected(
+      cf::Error{"EVAL_RUN_EXECUTOR_FAILED", "the run did not start"});
+  if (!inject_crash) {
+    final_state = execute_pipeline();
+  } else {
+    final_state = run_with_crash_injection(run_id, run_dir, scratch, *repository,
+                                           *hidden_spec, execute_pipeline);
+  }
   outcome.duration_s =
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
   if (!final_state.has_value()) {
     return fail(error_codes::kRunExecutorFailed,
                 "run " + run_id + ": " + final_state.error().message);
   }
+
+  // Metrics, straight from the store; re-open it because the run may have
+  // happened in a child process.
+  auto metrics_store = store::RunStore::open(run_dir / "run.db");
+  if (!metrics_store.has_value()) {
+    return fail(error_codes::kRunExecutorFailed, metrics_store.error().message);
+  }
+  store = std::move(metrics_store);
 
   // Metrics, straight from the store.
   const std::string final = std::string(orch::to_string(*final_state));
@@ -373,14 +556,8 @@ Result<PlanOutcome> RunProcessExecutor::run(const PlanEntry& plan_entry, int rep
   }
 
   // Hidden acceptance tests against the integration worktree.
-  const std::filesystem::path hidden_spec_path =
-      hidden_base / (plan_entry.id + "/spec.yaml");
-  std::error_code hidden_ec;
-  if (std::filesystem::exists(hidden_spec_path, hidden_ec)) {
-    auto spec = load_hidden_test_spec(hidden_spec_path);
-    if (!spec.has_value()) {
-      return fail(error_codes::kRunExecutorFailed, spec.error().message);
-    }
+  if (hidden_spec.has_value()) {
+    const HiddenTestSpec* spec = &*hidden_spec;
     const std::filesystem::path worktree =
         scratch / "wt" / run_id / "integration";
     if (!std::filesystem::is_directory(worktree, hidden_ec)) {
@@ -389,8 +566,9 @@ Result<PlanOutcome> RunProcessExecutor::run(const PlanEntry& plan_entry, int rep
       outcome.hidden_tests_total = static_cast<int>(spec->tests.size());
       outcome.hidden_tests_passed = 0;
     } else {
-      const auto hidden = run_hidden_tests(*spec, worktree, scratch / "hidden-build",
-                                           executor_, options_.hidden_timeout);
+      const auto hidden =
+          run_hidden_tests(*spec, worktree, scratch / "hidden-build", executor_,
+                           options_.hidden_timeout, run_dir);
       outcome.hidden_tests_total = hidden.tests;
       outcome.hidden_tests_passed = hidden.passed;
       for (const auto& line : hidden.log) {

@@ -279,10 +279,30 @@ tests:
   ASSERT_TRUE(spec.has_value()) << spec.error().message;
   EXPECT_TRUE(spec->security);
   EXPECT_FALSE(spec->recovery);
+  EXPECT_TRUE(spec->crash_after_milestone.empty());
+  EXPECT_EQ(spec->crash_after_seconds, 0);
   ASSERT_EQ(spec->compile.size(), 1u);
   EXPECT_EQ(spec->compile[0].name, "build");
   ASSERT_EQ(spec->tests.size(), 2u);
   EXPECT_EQ(spec->tests[1].argv.size(), 2u);
+
+  // The crash-injection trigger (design section 6.12.5).
+  auto recovery = cf::eval::parse_hidden_test_spec(R"yaml(
+recovery: true
+crash_after_milestone: M1
+crash_after_seconds: 90
+tests:
+  - name: check
+    argv: [python3, "{hidden}/check.py", --run-dir, "{run_dir}"]
+)yaml");
+  ASSERT_TRUE(recovery.has_value()) << recovery.error().message;
+  EXPECT_TRUE(recovery->recovery);
+  EXPECT_EQ(recovery->crash_after_milestone, "M1");
+  EXPECT_EQ(recovery->crash_after_seconds, 90);
+  EXPECT_EQ(cf::eval::expand_hidden_argv(
+                recovery->tests[0].argv, "/wt", "/hidden", "/build", "/run"),
+            (std::vector<std::string>{"python3", "/hidden/check.py", "--run-dir",
+                                      "/run"}));
 
   auto no_tests = cf::eval::parse_hidden_test_spec("compile: []\n");
   EXPECT_FALSE(no_tests.has_value());

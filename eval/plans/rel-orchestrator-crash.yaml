@@ -1,7 +1,8 @@
-# Reliability scenario: the orchestrator is killed at each protocol step and
-# must recover (lease takeover, stale locks, in-flight operations, worktree
-# reset) without duplicating side effects. The scenario passes only when the
-# run reaches a terminal state with recovery correctness intact.
+# Reliability scenario: the run process is SIGKILLed once the milestone is
+# integrated and must recover (lease takeover, stale locks, in-flight
+# operations, worktree reset) without duplicating side effects. The scenario
+# passes only when the run reaches a terminal state with recovery correctness
+# intact (design sections 6.12.5, 17.2).
 plan_id: GOLD-REL-ORCHESTRATOR-CRASH
 product: golden
 version: 1.0
@@ -9,10 +10,16 @@ milestones:
   - id: M1
     title: Metrics aggregation with crash injection
     requirements: [REQ-REL-1]
+    depends_on: []
+    writes: [include/metrics.hpp]
+    uses: []
+    writes_interfaces: [include/metrics.hpp]
     acceptance:
-      - "The run reaches a terminal state after every injected crash"
-      - "No operation is executed twice"
-      - "The final report matches a crash-free run"
+      - "Header-only include/metrics.hpp in namespace cf_golden: class Aggregator with void add(double value), double sum() const, double mean() const and std::size_t count() const"
+      - "mean() of an empty aggregator is 0.0; count() starts at 0"
+      - "The header compiles standalone with g++ -std=c++20 -Wall -Wextra -Werror"
+      - "The run reaches a terminal state after the injected crash"
+      - "No operation is executed twice and the integration keeps exactly one commit per milestone"
 target:
   language: cpp
   standard: c++20
