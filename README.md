@@ -29,7 +29,7 @@ is still missing.
 | GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences), dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment`), `GithubFlow` (milestone pushes, draft PR open/update/ready, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
 | CLI (`cf check/run/status/resume/escalations/report`) | Implemented and tested |
 | Design refinement (Phase 4) | Implemented and verified with the real planner model: the refiner turns the plan into a design package (`runs/<run>/design.{json,md}` — component design, refined milestone DAG with write sets/uses/interfaces for the scheduler, ADRs), self-critiques and revises once, stops at the human approval gate, and the approved package drives execution. Approving publishes the design as a product-scoped RAG design document (`<workspace>/designs/`, status `approved`; an earlier design for the same plan becomes `superseded` and is no longer retrieved), and the run's MCP servers and question policy carry the product/language applicability context. The curated pattern catalog (`catalog/patterns/`, six entries) is loaded by `cf-mcp --patterns`, is authoritative for `get_pattern` and is indexed into retrieval; the refiner prompt carries it. Remaining: pattern-conformance checks, adversarial conflict set |
-| Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the suite spans C++, Python and Go plus a crash-injection reliability scenario, and the first full benchmark (3 candidates × 4 plans) is complete and confirms the pinned models |
+| Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the suite spans C++, Python and Go plus a crash-injection reliability scenario, and the full benchmark (3 candidates × 7 plans) is complete and confirms the pinned models |
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
@@ -516,11 +516,14 @@ opencode version.
 - **Model benchmark (Phase 0b).** `cf-eval bench` implements the benchmark: the
   candidates in `eval/benchmarks/fireworks.yaml` run through the real pipeline on
   the evaluation plans, with hidden acceptance tests and scored reports under
-  `bench-out/`; it needs `FIREWORKS_API_KEY` and the pinned opencode. The first
-  full benchmark (3 candidates × 4 plans, including the held-out Python plan)
-  completed: the pinned candidate won every plan with all hidden tests green and
-  no escalations at the lowest cost per milestone; the pins in
-  `third_party/VERSIONS` carry the provenance note. Reliability scenarios
+  `bench-out/`; it needs `FIREWORKS_API_KEY` and the pinned opencode. The full
+  benchmark (3 candidates × 7 plans, C++ T1/T2/T3, security, Python, Go and
+  crash recovery) completed: the pinned candidate finished 6 of 7 runs Done
+  with every hidden test green (79/79) at $0.16 per milestone, the best
+  completion of the three; the pins in `third_party/VERSIONS` carry the
+  provenance note. The T3 plan escalated for all three candidates even though
+  its hidden acceptance tests pass: the final product is correct, but the
+  revalidation fix turns over the old QA tests do not complete. Reliability scenarios
   inject a crash: a hidden spec's `crash_after_milestone` (or
   `crash_after_seconds`) makes the bench SIGKILL the run process mid-run, run
   `cf resume` (lease takeover, stale locks, in-flight operations, worktree

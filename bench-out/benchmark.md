@@ -2,8 +2,8 @@
 
 | Candidate | Runs | Run completion | Milestone completion | Hidden tests | Escalations | Cost/milestone (USD) |
 |---|---|---|---|---|---|---|
-| fireworks-default | 4 | 1.0000 | 1.0000 | 1.0000 | 0.0000 | 0.1578 |
-| qa-glm-flash | 4 | 0.7500 | 0.7500 | 0.6667 | 0.2500 | 0.0715 |
-| reviewer-kimi-fast | 4 | 1.0000 | 1.0000 | 1.0000 | 0.0000 | 0.1581 |
+| fireworks-default | 7 | 0.8571 | 0.9286 | 1.0000 | 0.1429 | 0.1636 |
+| qa-glm-flash | 7 | 0.7143 | 0.8571 | 1.0000 | 0.2857 | 0.0927 |
+| reviewer-kimi-fast | 7 | 0.7143 | 0.7857 | 0.8571 | 0.2857 | 0.1841 |
 
 Recommended: **fireworks-default** (coder=accounts/fireworks/models/deepseek-v4p1-flash, qa=accounts/fireworks/models/glm-5p3, reviewer=accounts/fireworks/models/kimi-k3).

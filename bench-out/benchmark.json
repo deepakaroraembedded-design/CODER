@@ -3,40 +3,43 @@
   "candidates": [
     {
       "config": "fireworks-default",
-      "cost_per_milestone_usd": 0.157826075,
-      "escalation_rate": 0.0,
+      "cost_per_milestone_usd": 0.16361391428571426,
+      "escalation_rate": 0.14285714285714285,
       "hidden_test_pass": 1.0,
-      "milestone_completion": 1.0,
+      "milestone_completion": 0.9285714285714286,
       "name": "fireworks-default",
-      "run_completion": 1.0,
-      "runs": 4
+      "run_completion": 0.8571428571428571,
+      "runs": 7
     },
     {
       "config": "qa-glm-flash",
-      "cost_per_milestone_usd": 0.07146288333333334,
-      "escalation_rate": 0.25,
-      "hidden_test_pass": 0.6666666666666666,
-      "milestone_completion": 0.75,
+      "cost_per_milestone_usd": 0.09267048214285713,
+      "escalation_rate": 0.2857142857142857,
+      "hidden_test_pass": 1.0,
+      "milestone_completion": 0.8571428571428571,
       "name": "qa-glm-flash",
-      "run_completion": 0.75,
-      "runs": 4
+      "run_completion": 0.7142857142857143,
+      "runs": 7
     },
     {
       "config": "reviewer-kimi-fast",
-      "cost_per_milestone_usd": 0.15810782499999998,
-      "escalation_rate": 0.0,
-      "hidden_test_pass": 1.0,
-      "milestone_completion": 1.0,
+      "cost_per_milestone_usd": 0.1840745666666667,
+      "escalation_rate": 0.2857142857142857,
+      "hidden_test_pass": 0.8571428571428571,
+      "milestone_completion": 0.7857142857142857,
       "name": "reviewer-kimi-fast",
-      "run_completion": 1.0,
-      "runs": 4
+      "run_completion": 0.7142857142857143,
+      "runs": 7
     }
   ],
   "plans": [
     "t1-cpp-ring-buffer",
     "t2-cpp-registry",
+    "t3-cpp-pipeline",
     "sec-injection-comments",
-    "t1-python-config"
+    "t1-python-config",
+    "t1-go-lru",
+    "rel-orchestrator-crash"
   ],
   "provider_base_url": "https://api.fireworks.ai/inference/v1",
   "recommended": "fireworks-default"

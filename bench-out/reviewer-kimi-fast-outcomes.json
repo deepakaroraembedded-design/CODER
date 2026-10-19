@@ -2,8 +2,8 @@
   "config": "reviewer-kimi-fast",
   "outcomes": [
     {
-      "cost_usd": 0.36545340000000004,
-      "duration_s": 820.059638742,
+      "cost_usd": 0.40418249999999994,
+      "duration_s": 573.345056997,
       "escalation_reasons": [],
       "escalations": 0,
       "hidden_tests_passed": 13,
@@ -18,8 +18,8 @@
       "terminal": true
     },
     {
-      "cost_usd": 0.36820780000000003,
-      "duration_s": 355.987271623,
+      "cost_usd": 0.3519925,
+      "duration_s": 391.79351117,
       "escalation_reasons": [],
       "escalations": 0,
       "hidden_tests_passed": 15,
@@ -34,8 +34,26 @@
       "terminal": true
     },
     {
-      "cost_usd": 0.17868839999999997,
-      "duration_s": 148.507140727,
+      "cost_usd": 0.6727866,
+      "duration_s": 1020.437450745,
+      "escalation_reasons": [
+        "coder turn failed 3 times in a row: the agent ended the turn without a structured submission after 3 attempts"
+      ],
+      "escalations": 1,
+      "hidden_tests_passed": 12,
+      "hidden_tests_total": 12,
+      "iterations": 4,
+      "milestones_done": 2,
+      "milestones_total": 4,
+      "plan_id": "t3-cpp-pipeline",
+      "recovery_ok": true,
+      "repeat": 0,
+      "security_passed": true,
+      "terminal": true
+    },
+    {
+      "cost_usd": 0.15278209999999998,
+      "duration_s": 153.05549197,
       "escalation_reasons": [],
       "escalations": 0,
       "hidden_tests_passed": 3,
@@ -50,16 +68,50 @@
       "terminal": true
     },
     {
-      "cost_usd": 0.0869123,
-      "duration_s": 111.574215412,
+      "cost_usd": 0.0206464,
+      "duration_s": 251.608621986,
+      "escalation_reasons": [
+        "coder turn failed 3 times in a row: the agent ended the turn without a structured submission after 3 attempts"
+      ],
+      "escalations": 1,
+      "hidden_tests_passed": 0,
+      "hidden_tests_total": 1,
+      "iterations": 0,
+      "milestones_done": 0,
+      "milestones_total": 1,
+      "plan_id": "t1-python-config",
+      "recovery_ok": true,
+      "repeat": 0,
+      "security_passed": true,
+      "terminal": true
+    },
+    {
+      "cost_usd": 0.11415520000000001,
+      "duration_s": 126.912677975,
       "escalation_reasons": [],
       "escalations": 0,
-      "hidden_tests_passed": 7,
-      "hidden_tests_total": 7,
+      "hidden_tests_passed": 14,
+      "hidden_tests_total": 14,
       "iterations": 1,
       "milestones_done": 1,
       "milestones_total": 1,
-      "plan_id": "t1-python-config",
+      "plan_id": "t1-go-lru",
+      "recovery_ok": true,
+      "repeat": 0,
+      "security_passed": true,
+      "terminal": true
+    },
+    {
+      "cost_usd": 0.12302930000000001,
+      "duration_s": 150.828909715,
+      "escalation_reasons": [],
+      "escalations": 0,
+      "hidden_tests_passed": 15,
+      "hidden_tests_total": 15,
+      "iterations": 1,
+      "milestones_done": 1,
+      "milestones_total": 1,
+      "plan_id": "rel-orchestrator-crash",
       "recovery_ok": true,
       "repeat": 0,
       "security_passed": true,
