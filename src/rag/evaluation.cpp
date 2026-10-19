@@ -24,7 +24,8 @@ Result<RetrievalEvalSet> validate(RetrievalEvalSet set) {
     if (labeled.query.empty()) {
       return fail(error_codes::kEvalSetInvalid, "every query needs text");
     }
-    if (labeled.relevant_chunks.empty() && labeled.relevant_docs.empty()) {
+    if (labeled.relevant_chunks.empty() && labeled.relevant_docs.empty() &&
+        !labeled.expect_conflict && !labeled.expect_unresolved_conflict) {
       return fail(error_codes::kEvalSetInvalid,
                   "query '" + labeled.query + "' has no relevant chunks or documents");
     }
@@ -66,6 +67,9 @@ Result<RetrievalEvalSet> parse_eval_set(std::string_view yaml,
     if (const auto relevant_docs = node["relevant_docs"]) {
       labeled.relevant_docs = relevant_docs.as<std::vector<std::string>>();
     }
+    labeled.expect_conflict = node["expect_conflict"].as<bool>(false);
+    labeled.expect_unresolved_conflict =
+        node["expect_unresolved_conflict"].as<bool>(false);
     labeled.context.product = node["product"].as<std::string>("");
     labeled.context.component = node["component"].as<std::string>("");
     labeled.context.language = node["language"].as<std::string>("");
@@ -111,6 +115,8 @@ Result<RetrievalMetrics> evaluate_retrieval(const Retriever& retriever,
     std::set<std::string> matched_chunks;
     std::set<std::string> matched_docs;
     std::size_t first_rank = 0;
+    bool saw_conflict = false;
+    bool saw_unresolved_conflict = false;
     const std::size_t limit = std::min(hits->size(), set.k);
     for (std::size_t rank = 0; rank < limit; ++rank) {
       const auto& hit = (*hits)[rank];
@@ -125,25 +131,47 @@ Result<RetrievalMetrics> evaluate_retrieval(const Retriever& retriever,
       if (first_rank == 0 && (chunk_hit || doc_hit)) {
         first_rank = rank + 1;
       }
+      saw_conflict = saw_conflict || hit.conflict;
+      saw_unresolved_conflict = saw_unresolved_conflict || hit.unresolved_conflict;
+    }
+    if (labeled.expect_conflict) {
+      ++metrics.conflict_queries;
+      if (!saw_conflict) {
+        ++metrics.conflict_misses;
+      }
+    }
+    if (labeled.expect_unresolved_conflict) {
+      ++metrics.unresolved_conflict_queries;
+      if (!saw_unresolved_conflict) {
+        ++metrics.unresolved_conflict_misses;
+      }
     }
     const double labels = static_cast<double>(chunk_labels.size() + doc_labels.size());
-    recall_sum +=
-        labels > 0.0 ? static_cast<double>(matched_chunks.size() + matched_docs.size()) /
-                           labels
-                     : 0.0;
-    reciprocal_rank_sum += first_rank > 0 ? 1.0 / static_cast<double>(first_rank) : 0.0;
-    if (first_rank == 0) {
-      ++metrics.misses;
+    if (labels > 0.0) {
+      recall_sum +=
+          static_cast<double>(matched_chunks.size() + matched_docs.size()) / labels;
+      reciprocal_rank_sum +=
+          first_rank > 0 ? 1.0 / static_cast<double>(first_rank) : 0.0;
+      if (first_rank == 0) {
+        ++metrics.misses;
+      }
+      ++metrics.scored_queries;
     }
   }
-  const double queries = static_cast<double>(metrics.queries);
+  const double queries = static_cast<double>(metrics.scored_queries);
   metrics.recall = queries > 0.0 ? recall_sum / queries : 0.0;
   metrics.mrr = queries > 0.0 ? reciprocal_rank_sum / queries : 0.0;
   return metrics;
 }
 
 bool meets_retrieval_targets(const RetrievalMetrics& metrics) {
-  return metrics.recall >= kRecallTarget && metrics.mrr >= kMrrTarget;
+  // A conflict-only set has no relevance labels, so the recall/MRR targets do
+  // not apply; the conflict expectations still must all be met.
+  const bool retrieval_ok =
+      metrics.scored_queries == 0 ||
+      (metrics.recall >= kRecallTarget && metrics.mrr >= kMrrTarget);
+  return retrieval_ok && metrics.conflict_misses == 0 &&
+         metrics.unresolved_conflict_misses == 0;
 }
 
 }  // namespace cf::rag

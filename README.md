@@ -33,7 +33,7 @@ is still missing.
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **545 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **547 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -334,7 +334,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 545 unit tests
+ctest --test-dir build/debug --output-on-failure     # 547 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -426,6 +426,12 @@ cf-eval rag --set eval/rag/company.yaml --list-chunks   # labeling aid
 `--warn-only` reports without failing; a miss exits non-zero for CI. The
 starter set is small; the production set grows to the design's minimum of 200
 labeled queries per collection.
+
+The adversarial conflict set (`eval/rag/conflicts.yaml`) scores conflict
+expectations instead of relevance: a resolved conflict must return the winner
+with the overridden chunk named, and an unresolved requirement/policy
+conflict must be flagged for escalation. Its queries carry no relevance
+labels, so recall/MRR do not apply; every expectation must be met.
 
 **CI** (`.github/workflows/ci.yml`): GCC 13 and Clang 18 × debug/release, plus
 ASan/TSan jobs; a manually dispatched harness job runs H1–H15 against a pinned
@@ -534,9 +540,9 @@ opencode version.
 - **RAG production index.** hnswlib is the default vector index (brute force
   stays behind the same `VectorIndex` interface as the parity reference); FAISS
   (IVF-PQ for collections over 5M chunks) is still pending. PDF/DOCX ingestion
-  and the adversarial conflict set are pending; the labeled retrieval
-  evaluation set is started (`eval/rag/`) and grows to 200 queries per
-  collection.
+  is pending; the labeled retrieval evaluation set is started (`eval/rag/`)
+  and grows to 200 queries per collection, and the adversarial conflict set is
+  in place.
 - **System-level validation loop.** `WorkspaceDriver::validate_system` delegates to
   the agent runner; the full QA system suite comes with the real runner.
 
@@ -553,7 +559,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (545)
+tests/unit/                 # GoogleTest unit tests (547)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

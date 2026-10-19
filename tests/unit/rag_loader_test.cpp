@@ -49,8 +49,26 @@ TEST(RagLoaderTest, LoadsFrontMatterDocument) {
   EXPECT_EQ(document->scope_value, "product-y");
   EXPECT_EQ(document->status, "active");
   EXPECT_EQ(document->source, "docs/cg.md");
+  EXPECT_TRUE(document->topic.empty());  // no topic in the front matter
   EXPECT_NE(document->text.find("snake_case"), std::string::npos);
   EXPECT_GT(document->effective_from, 0);
+}
+
+TEST(RagLoaderTest, ParsesTheConflictTopic) {
+  const std::string text = R"yaml(---
+doc_id: REQ-COLOR-A
+version: "1.0"
+type: requirements
+topic: REQ-COLOR
+status: active
+---
+# Colour
+
+The status colour must be green.
+)yaml";
+  auto document = cf::rag::load_document_string(text, "docs/colour.md");
+  ASSERT_TRUE(document.has_value()) << document.error().message;
+  EXPECT_EQ(document->topic, "REQ-COLOR");
 }
 
 TEST(RagLoaderTest, EpochDatesAreAccepted) {

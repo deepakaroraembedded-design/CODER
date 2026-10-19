@@ -146,6 +146,7 @@ Result<Document> load_document_string(std::string_view text,
       document.status = status;
     }
     document.license = optional_string(root, "license");
+    document.topic = optional_string(root, "topic");
     document.source = optional_string(root, "source");
     if (document.source.empty()) {
       document.source = source_path;

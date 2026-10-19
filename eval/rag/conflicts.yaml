@@ -1,0 +1,21 @@
+# RAG evaluation set: adversarial conflicts (design sections 6.3, 17.2).
+#
+# Conflict-only queries carry no relevance labels: they are scored by their
+# conflict expectation (a resolved conflict that names the overridden chunk,
+# or an unresolved conflict that must be escalated), not by recall/MRR.
+collection: conflicts
+k: 5
+docs: conflicts-docs
+queries:
+  # Two requirements on the same topic, same scope and same effective date
+  # can never be resolved automatically.
+  - query: status colour requirement green or red
+    expect_unresolved_conflict: true
+  # A policy and a requirement that contradict each other must be escalated,
+  # not silently resolved by precedence.
+  - query: who may rotate signing keys
+    expect_unresolved_conflict: true
+  # A policy overriding a guideline is a resolvable conflict: the winner is
+  # returned with the overridden chunk named.
+  - query: how short must log lines be
+    expect_conflict: true

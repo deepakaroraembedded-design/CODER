@@ -177,10 +177,25 @@ int run_rag(const std::string& set_path, const std::string& docs_override, bool 
   }
   std::cout << "collection: " << metrics->collection << "\n";
   std::cout << "queries: " << metrics->queries << "  k: " << metrics->k << "\n";
-  std::cout << "recall@" << metrics->k << ": " << metrics->recall << " (target >= "
-            << cf::rag::kRecallTarget << ")\n";
-  std::cout << "mrr: " << metrics->mrr << " (target >= " << cf::rag::kMrrTarget << ")\n";
+  if (metrics->scored_queries == 0) {
+    std::cout << "recall@" << metrics->k << ": n/a (no relevance labels)\n";
+    std::cout << "mrr: n/a\n";
+  } else {
+    std::cout << "recall@" << metrics->k << ": " << metrics->recall
+              << " (target >= " << cf::rag::kRecallTarget << ")\n";
+    std::cout << "mrr: " << metrics->mrr << " (target >= " << cf::rag::kMrrTarget
+              << ")\n";
+  }
   std::cout << "misses: " << metrics->misses << "\n";
+  if (metrics->conflict_queries > 0) {
+    std::cout << "conflict queries: " << metrics->conflict_queries
+              << " (missed: " << metrics->conflict_misses << ")\n";
+  }
+  if (metrics->unresolved_conflict_queries > 0) {
+    std::cout << "unresolved-conflict queries: "
+              << metrics->unresolved_conflict_queries
+              << " (missed: " << metrics->unresolved_conflict_misses << ")\n";
+  }
   const bool met = cf::rag::meets_retrieval_targets(*metrics);
   std::cout << (met ? "targets met" : "TARGETS MISSED") << "\n";
   if (!met && !warn_only) {

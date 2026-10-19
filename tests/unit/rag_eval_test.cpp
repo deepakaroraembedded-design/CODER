@@ -191,6 +191,7 @@ TEST(RagEvalTest, PropagatesRetrieverErrors) {
 
 TEST(RagEvalTest, TargetThresholds) {
   cf::rag::RetrievalMetrics metrics;
+  metrics.scored_queries = 10;
   metrics.recall = 0.85;
   metrics.mrr = 0.60;
   EXPECT_TRUE(cf::rag::meets_retrieval_targets(metrics));
@@ -199,6 +200,63 @@ TEST(RagEvalTest, TargetThresholds) {
   metrics.recall = 0.9;
   metrics.mrr = 0.5999;
   EXPECT_FALSE(cf::rag::meets_retrieval_targets(metrics));
+
+  // A conflict-only set has no relevance labels: the recall/MRR targets do
+  // not apply, but every conflict expectation must be met.
+  cf::rag::RetrievalMetrics conflicts;
+  conflicts.conflict_queries = 2;
+  conflicts.unresolved_conflict_queries = 1;
+  EXPECT_TRUE(cf::rag::meets_retrieval_targets(conflicts));
+  conflicts.conflict_misses = 1;
+  EXPECT_FALSE(cf::rag::meets_retrieval_targets(conflicts));
+  conflicts.conflict_misses = 0;
+  conflicts.unresolved_conflict_misses = 1;
+  EXPECT_FALSE(cf::rag::meets_retrieval_targets(conflicts));
+}
+
+TEST(RagEvalTest, ParsesAndEvaluatesConflictExpectations) {
+  auto set = cf::rag::parse_eval_set(R"yaml(
+collection: conflicts
+queries:
+  - query: status colour
+    expect_unresolved_conflict: true
+  - query: log length
+    expect_conflict: true
+)yaml");
+  ASSERT_TRUE(set.has_value()) << set.error().message;
+  ASSERT_EQ(set->queries.size(), 2u);
+  EXPECT_TRUE(set->queries[0].expect_unresolved_conflict);
+  EXPECT_TRUE(set->queries[1].expect_conflict);
+
+  FakeRetriever retriever;
+  Hit unresolved = make_hit("req-a@1#colour", "req-a");
+  unresolved.conflict = true;
+  unresolved.unresolved_conflict = true;
+  unresolved.overridden_by = {"req-b@1#colour"};
+  retriever.hits["status colour"] = {unresolved};
+  Hit resolved = make_hit("policy@1#log", "policy");
+  resolved.conflict = true;
+  resolved.overridden_by = {"guide@1#log"};
+  retriever.hits["log length"] = {resolved};
+
+  auto metrics = cf::rag::evaluate_retrieval(retriever, *set);
+  ASSERT_TRUE(metrics.has_value()) << metrics.error().message;
+  EXPECT_EQ(metrics->conflict_queries, 1u);
+  EXPECT_EQ(metrics->conflict_misses, 0u);
+  EXPECT_EQ(metrics->unresolved_conflict_queries, 1u);
+  EXPECT_EQ(metrics->unresolved_conflict_misses, 0u);
+  EXPECT_EQ(metrics->scored_queries, 0u);
+  EXPECT_TRUE(cf::rag::meets_retrieval_targets(*metrics));
+
+  // Missing the escalation is a miss.
+  FakeRetriever plain;
+  plain.hits["status colour"] = {make_hit("req-a@1#colour", "req-a")};
+  plain.hits["log length"] = {make_hit("policy@1#log", "policy")};
+  auto missed = cf::rag::evaluate_retrieval(plain, *set);
+  ASSERT_TRUE(missed.has_value());
+  EXPECT_EQ(missed->unresolved_conflict_misses, 1u);
+  EXPECT_EQ(missed->conflict_misses, 1u);
+  EXPECT_FALSE(cf::rag::meets_retrieval_targets(*missed));
 }
 
 TEST(RagEvalCliTest, EvaluatesTheStarterSet) {
@@ -213,6 +271,18 @@ TEST(RagEvalCliTest, EvaluatesTheStarterSet) {
   ASSERT_EQ(result.exit_code, 0) << result.stderr_text;
   EXPECT_NE(result.stdout_text.find("targets met"), std::string::npos);
   EXPECT_NE(result.stdout_text.find("queries: 15"), std::string::npos);
+
+  // The adversarial conflict set scores conflict expectations only.
+  const std::string conflicts =
+      std::string(CF_SOURCE_DIR) + "/eval/rag/conflicts.yaml";
+  cf::process::ProcessRequest conflict_run;
+  conflict_run.argv = {binary, "rag", "--set", conflicts};
+  conflict_run.timeout = std::chrono::seconds(30);
+  const auto conflict_result = executor.run(conflict_run);
+  ASSERT_EQ(conflict_result.exit_code, 0) << conflict_result.stderr_text;
+  EXPECT_NE(conflict_result.stdout_text.find("targets met"), std::string::npos);
+  EXPECT_NE(conflict_result.stdout_text.find("unresolved-conflict queries: 2 (missed: 0)"),
+            std::string::npos);
 
   cf::process::ProcessRequest chunks;
   chunks.argv = {binary, "rag", "--set", set, "--list-chunks"};

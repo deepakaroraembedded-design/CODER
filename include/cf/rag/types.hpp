@@ -59,6 +59,9 @@ struct Document {
   UnixTime effective_from = 0;
   UnixTime effective_to = 0;  // 0 = open-ended
   std::string status = "active";  // active | draft | superseded | withdrawn
+  // Conflict-group key (design section 6.3): chunks that share a topic are
+  // compared by the precedence rules and unresolved conflicts are flagged.
+  std::string topic;
   std::string source;             // citation base, e.g. a repo path or URL
   std::string license;            // e.g. CC-BY-SA-3.0 (reference mirror)
   std::string text;               // full document text

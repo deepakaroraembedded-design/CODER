@@ -180,6 +180,7 @@ Status InMemoryRetriever::add_document(Document document) {
     chunk.effective_from = document.effective_from;
     chunk.effective_to = document.effective_to;
     chunk.status = document.status;
+    chunk.topic = document.topic;
     auto indexed = index_chunk(chunk, embeddings.empty() ? nullptr : &embeddings[i]);
     if (!indexed) {
       return indexed;

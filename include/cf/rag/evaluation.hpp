@@ -27,6 +27,11 @@ struct LabeledQuery {
   std::string query;
   std::vector<std::string> relevant_chunks;  // exact chunk ids
   std::vector<std::string> relevant_docs;    // doc ids: any chunk matches
+  // Adversarial conflict expectations (design sections 6.3, 17.2): the top-k
+  // must contain a hit flagged as a resolved conflict, or as an unresolved
+  // one that must be escalated.
+  bool expect_conflict = false;
+  bool expect_unresolved_conflict = false;
   // Applicability context (design section 6.3 step 1): product/component/
   // language-scoped chunks only apply when the query carries the matching
   // context, exactly as in a real run.
@@ -48,15 +53,25 @@ struct RetrievalMetrics {
   std::string collection;
   std::size_t k = 8;
   std::size_t queries = 0;
+  // Queries with relevance labels; conflict-only queries are scored by their
+  // conflict expectation and not by recall/MRR.
+  std::size_t scored_queries = 0;
   std::size_t misses = 0;  // queries with no relevant hit in the top k
   double recall = 0.0;     // mean matched labels / labels per query
   double mrr = 0.0;        // mean reciprocal rank of the first relevant hit
+  // Adversarial conflict checks (design section 17.2): queries that expected
+  // a conflict/unresolved conflict and did not see one.
+  std::size_t conflict_queries = 0;
+  std::size_t conflict_misses = 0;
+  std::size_t unresolved_conflict_queries = 0;
+  std::size_t unresolved_conflict_misses = 0;
 };
 
 Result<RetrievalMetrics> evaluate_retrieval(const Retriever& retriever,
                                             const RetrievalEvalSet& set);
 
-// Design section 6.3: CI fails if recall@8 < 0.85 or MRR < 0.6.
+// Design section 6.3: CI fails if recall@8 < 0.85 or MRR < 0.6. Conflict
+// expectations must all be met.
 inline constexpr double kRecallTarget = 0.85;
 inline constexpr double kMrrTarget = 0.60;
 bool meets_retrieval_targets(const RetrievalMetrics& metrics);
