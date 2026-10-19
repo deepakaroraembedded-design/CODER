@@ -64,6 +64,11 @@ int report_command(const std::filesystem::path& workspace, const std::string& ru
 int approve_command(const std::filesystem::path& workspace, const std::string& run_id,
                     const std::string& stage, std::ostream& out, std::ostream& err);
 
+// cf abort: a human aborts an escalated run (design section 7.1) and the
+// designs it published are withdrawn from RAG (design section 6.2 step 7).
+int abort_command(const std::filesystem::path& workspace, const std::string& run_id,
+                  const std::string& reason, std::ostream& out, std::ostream& err);
+
 struct IngestOptions {
   std::filesystem::path docs_dir;  // Markdown documents with YAML front matter
   std::filesystem::path out_dir;   // optional: normalized copies for cf-mcp --docs

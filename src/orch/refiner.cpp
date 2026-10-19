@@ -434,6 +434,49 @@ Result<std::filesystem::path> publish_design_package(
   return path;
 }
 
+Result<std::size_t> withdraw_design_package(const std::filesystem::path& workspace,
+                                            const std::string& run_id) {
+  const std::filesystem::path designs = workspace / "designs";
+  std::error_code ec;
+  if (!std::filesystem::is_directory(designs, ec)) {
+    return std::size_t{0};
+  }
+  const std::string source = "cf://runs/" + run_id;
+  std::size_t withdrawn = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(designs, ec)) {
+    if (entry.path().extension() != ".md") {
+      continue;
+    }
+    std::ifstream in(entry.path(), std::ios::binary);
+    std::string text((std::istreambuf_iterator<char>(in)),
+                     std::istreambuf_iterator<char>());
+    const auto end = text.find("\n---", 4);
+    if (end == std::string::npos) {
+      continue;
+    }
+    YAML::Node front;
+    try {
+      front = YAML::Load(text.substr(4, end - 4));
+    } catch (const YAML::Exception&) {
+      continue;
+    }
+    if (!front.IsMap() || front["source"].as<std::string>("") != source ||
+        front["status"].as<std::string>("") != "approved") {
+      continue;
+    }
+    const std::string needle = "\nstatus: approved";
+    const auto at = text.find(needle);
+    if (at == std::string::npos) {
+      continue;
+    }
+    text.replace(at, needle.size(), "\nstatus: withdrawn");
+    std::ofstream out(entry.path(), std::ios::binary | std::ios::trunc);
+    out << text;
+    ++withdrawn;
+  }
+  return withdrawn;
+}
+
 DesignRefiner::DesignRefiner(DesignModel& model, const rag::Retriever* docs,
                              DesignRefinerOptions options,
                              const std::vector<rag::PatternEntry>* catalog)

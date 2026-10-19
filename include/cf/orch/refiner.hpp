@@ -132,4 +132,10 @@ Result<std::filesystem::path> publish_design_package(
     const std::filesystem::path& workspace, const std::string& run_id,
     const DesignPackage& package, int64_t approved_at);
 
+// Withdraws the design documents published by a run (design section 6.2 step
+// 7): an aborted run's designs are marked status=withdrawn and are no longer
+// retrieved. Returns how many documents were withdrawn.
+Result<std::size_t> withdraw_design_package(const std::filesystem::path& workspace,
+                                            const std::string& run_id);
+
 }  // namespace cf::orch

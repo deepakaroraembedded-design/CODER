@@ -283,6 +283,43 @@ TEST(RefinerTest, PublishesApprovedDesignsAndSupersedesOlderOnes) {
   std::filesystem::remove_all(dir, ec);
 }
 
+TEST(RefinerTest, AbortingARunWithdrawsItsDesign) {
+  const auto dir = std::filesystem::temp_directory_path() /
+                   ("cf_refiner_withdraw_" + std::to_string(::getpid()));
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+
+  auto package = cf::orch::parse_design_package(kDesign);
+  ASSERT_TRUE(package.has_value());
+  package->plan_id = "PLAN-X";
+  package->product = "Y";
+  auto other = *package;
+  other.plan_id = "PLAN-Z";
+
+  ASSERT_TRUE(cf::orch::publish_design_package(dir, "R1", *package, 1000).has_value());
+  ASSERT_TRUE(cf::orch::publish_design_package(dir, "R2", other, 2000).has_value());
+
+  // Aborting R1 withdraws only R1's document.
+  auto withdrawn = cf::orch::withdraw_design_package(dir, "R1");
+  ASSERT_TRUE(withdrawn.has_value()) << withdrawn.error().message;
+  EXPECT_EQ(*withdrawn, 1u);
+  const auto load = [&dir](const std::string& run_id) {
+    std::ifstream in(dir / "designs" / ("design-" + std::string("PLAN-") +
+                                        (run_id == "R1" ? "X" : "Z") + "-" + run_id +
+                                        ".md"),
+                     std::ios::binary);
+    return std::string((std::istreambuf_iterator<char>(in)),
+                       std::istreambuf_iterator<char>());
+  };
+  EXPECT_NE(load("R1").find("status: withdrawn"), std::string::npos);
+  EXPECT_NE(load("R2").find("status: approved"), std::string::npos);
+
+  // Withdrawing again is a no-op; an unknown run withdraws nothing.
+  EXPECT_EQ(*cf::orch::withdraw_design_package(dir, "R1"), 0u);
+  EXPECT_EQ(*cf::orch::withdraw_design_package(dir, "R9"), 0u);
+  std::filesystem::remove_all(dir, ec);
+}
+
 TEST(RefinerTest, ToleratesProseAroundTheJson) {
   const std::string text =
       std::string("Here is the design:\n```json\n") + kDesign + "\n```\nDone.";

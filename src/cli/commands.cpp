@@ -774,6 +774,19 @@ int approve_command(const std::filesystem::path& workspace, const std::string& r
       err << package.error().code << ": " << package.error().message << "\n";
       return 1;
     }
+    // The refiner stamps these; a hand-edited package may lack them.
+    if (package->plan_id.empty() || package->product.empty()) {
+      auto stored_plan = plan::parse_plan_file(run_directory(workspace, run_id) /
+                                               "plan.yaml");
+      if (stored_plan) {
+        if (package->plan_id.empty()) {
+          package->plan_id = stored_plan->plan_id;
+        }
+        if (package->product.empty()) {
+          package->product = stored_plan->product;
+        }
+      }
+    }
     auto path = orch::publish_design_package(workspace, run_id, *package, now);
     if (!path) {
       err << path.error().code << ": " << path.error().message << "\n";
@@ -784,6 +797,47 @@ int approve_command(const std::filesystem::path& workspace, const std::string& r
   out << Json{{"run_id", run_id},
               {"state", std::string(orch::to_string(*applied))},
               {"design_document", std::move(published)}}
+             .dump(2)
+      << "\n";
+  return 0;
+}
+
+int abort_command(const std::filesystem::path& workspace, const std::string& run_id,
+                  const std::string& reason, std::ostream& out, std::ostream& err) {
+  auto store = store::RunStore::open(store_path(workspace, run_id));
+  if (!store) {
+    err << store.error().code << ": " << store.error().message << "\n";
+    return 2;
+  }
+  auto run = (*store)->get_run(run_id);
+  if (!run) {
+    err << run.error().code << ": " << run.error().message << "\n";
+    return 1;
+  }
+  if (run->state != "Escalated") {
+    err << "run " << run_id << " is in state " << run->state
+        << "; a human can only abort an escalated run (design section 7.1)\n";
+    return 1;
+  }
+  orch::StateMachine machine(**store, run_id);
+  const auto applied =
+      machine.apply(orch::RunEvent::HumanAborted, {}, store::unix_now());
+  if (!applied) {
+    err << applied.error().code << ": " << applied.error().message << "\n";
+    return 1;
+  }
+
+  // An aborted run's designs are withdrawn from RAG (design section 6.2 step
+  // 7): later runs must not build on a design that was abandoned.
+  auto withdrawn = orch::withdraw_design_package(workspace, run_id);
+  if (!withdrawn) {
+    err << withdrawn.error().code << ": " << withdrawn.error().message << "\n";
+    return 1;
+  }
+  out << Json{{"run_id", run_id},
+              {"state", std::string(orch::to_string(*applied))},
+              {"reason", reason},
+              {"designs_withdrawn", *withdrawn}}
              .dump(2)
       << "\n";
   return 0;

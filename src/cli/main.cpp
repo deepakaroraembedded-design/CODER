@@ -76,6 +76,12 @@ int main(int argc, char** argv) {
   approve->add_option("--workspace", workspace, "Workspace directory");
   approve->add_option("--stage", stage, "Approval stage (design)");
 
+  auto* abort = app.add_subcommand("abort", "Abort an escalated run (human decision)");
+  std::string abort_reason;
+  abort->add_option("--run", run_id, "Run id")->required();
+  abort->add_option("--workspace", workspace, "Workspace directory");
+  abort->add_option("--reason", abort_reason, "Why the run is being aborted");
+
   auto* ingest = app.add_subcommand("ingest", "Ingest company documents into the RAG index");
   std::string docs_input;
   std::string ingest_out;
@@ -153,6 +159,10 @@ int main(int argc, char** argv) {
   }
   if (*approve) {
     return cf::cli::approve_command(workspace, run_id, stage, std::cout, std::cerr);
+  }
+  if (*abort) {
+    return cf::cli::abort_command(workspace, run_id, abort_reason, std::cout,
+                                  std::cerr);
   }
   if (*ingest) {
     cf::cli::IngestOptions options;

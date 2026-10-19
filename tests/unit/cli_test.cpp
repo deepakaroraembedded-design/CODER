@@ -540,6 +540,77 @@ TEST_F(CliTest, ApproveCommandMovesToExecuting) {
   EXPECT_EQ(document["state"], "Executing");
 }
 
+TEST_F(CliTest, AbortWithdrawsThePublishedDesign) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+  const auto run_dir = cf::cli::run_directory(workspace_, "R12");
+
+  // Advance to AwaitingDesignApproval and store a design package.
+  {
+    auto store = cf::store::RunStore::open(run_dir / "run.db");
+    ASSERT_TRUE(store.has_value());
+    cf::orch::StateMachine machine(**store, "R12");
+    for (const auto event : {cf::orch::RunEvent::Start,
+                             cf::orch::RunEvent::IndexReady,
+                             cf::orch::RunEvent::DesignPackageReady}) {
+      ASSERT_TRUE(machine.apply(event, {}, now_).has_value());
+    }
+  }
+  write_file(run_dir / "design.json", R"json({
+      "system_design": "Single core component.",
+      "milestones": [
+        {"id": "M1", "title": "Core", "requirements": ["REQ-001"],
+         "depends_on": [], "acceptance": ["works"],
+         "writes": ["src"], "uses": [],
+         "writes_interfaces": ["include/core.hpp"]}
+      ],
+      "adrs": [{"id": "ADR-001", "title": "Small core",
+                "decision": "Keep it small", "alternatives": ["none"]}]})json");
+  std::ostringstream approve_out;
+  std::ostringstream approve_err;
+  ASSERT_EQ(cf::cli::approve_command(workspace_, "R12", "design", approve_out,
+                                     approve_err),
+            0)
+      << approve_err.str();
+  const auto design_doc = workspace_ / "designs" / "design-PLAN-CLI-R12.md";
+  ASSERT_TRUE(std::filesystem::exists(design_doc));
+
+  // A human can only abort an escalated run.
+  std::ostringstream early_out;
+  std::ostringstream early_err;
+  EXPECT_EQ(cf::cli::abort_command(workspace_, "R12", "stop", early_out, early_err),
+            1);
+  EXPECT_NE(early_err.str().find("escalated"), std::string::npos);
+
+  {
+    auto store = cf::store::RunStore::open(run_dir / "run.db");
+    ASSERT_TRUE(store.has_value());
+    cf::orch::StateMachine machine(**store, "R12");
+    ASSERT_TRUE(
+        machine.apply(cf::orch::RunEvent::BudgetExceeded, {}, now_).has_value());
+    EXPECT_EQ(machine.current(), cf::orch::RunState::Escalated);
+  }
+
+  std::ostringstream abort_out;
+  std::ostringstream abort_err;
+  EXPECT_EQ(cf::cli::abort_command(workspace_, "R12", "not needed", abort_out,
+                                   abort_err),
+            0)
+      << abort_err.str();
+  const auto document = nlohmann::json::parse(abort_out.str());
+  EXPECT_EQ(document["state"], "Aborted");
+  EXPECT_EQ(document["reason"], "not needed");
+  EXPECT_EQ(document["designs_withdrawn"], 1);
+
+  // The abandoned design is withdrawn and no longer retrievable.
+  std::ifstream in(design_doc);
+  const std::string text((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+  EXPECT_NE(text.find("status: withdrawn"), std::string::npos);
+  EXPECT_EQ(text.find("status: approved"), std::string::npos);
+}
+
 TEST_F(CliTest, ExecuteCommandDrivesTheRunToDone) {
   std::ostringstream out;
   std::ostringstream err;
