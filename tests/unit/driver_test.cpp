@@ -310,6 +310,31 @@ TEST_F(DriverTest, SnapshotWithoutChangesFailsTheTurn) {
   EXPECT_FALSE(result.detail.empty());
 }
 
+TEST_F(DriverTest, NoOpFixOnAnIntegratedMilestoneProceedsToTheGates) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "include" / "core.hpp",
+                 "// core\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+  ASSERT_TRUE(driver.run(MilestonePhase::Integrate, "M3").completed);
+
+  // The work is already merged: a fix turn that resolves a dispute or review
+  // comments without touching files is a legitimate submission, not a
+  // failure (it proceeds to the gates).
+  driver.mark_revalidating("M3");
+  const TurnResult no_op = driver.run(MilestonePhase::Fix, "M3");
+  EXPECT_TRUE(no_op.completed) << no_op.detail;
+}
+
 TEST_F(DriverTest, ReviewChangesRequestedPropagates) {
   FakeAgentRunner runner;
   runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
@@ -558,8 +583,10 @@ TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
     write_file(std::filesystem::path(request.worktree) / "src" / "elsewhere" / "bad.cpp",
                "bad\n");
     // Build artifacts are never committed and do not count as out-of-scope
-    // changes (the agent builds inside its worktree).
+    // changes (the agent builds inside its worktree, with any name).
     write_file(std::filesystem::path(request.worktree) / "build" / "artifact.o",
+               "binary\n");
+    write_file(std::filesystem::path(request.worktree) / "build_strict" / "artifact.o",
                "binary\n");
     AgentTurnOutcome outcome;
     outcome.completed = true;
@@ -573,6 +600,7 @@ TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
   EXPECT_NE(result.detail.find("outside the declared write set"), std::string::npos);
   EXPECT_NE(result.detail.find("src/elsewhere/bad.cpp"), std::string::npos);
   EXPECT_EQ(result.detail.find("build/artifact.o"), std::string::npos);
+  EXPECT_EQ(result.detail.find("build_strict/artifact.o"), std::string::npos);
 
   // Nothing was committed.
   const auto coder_worktree = driver.worktree_for("M3", "coder");

@@ -33,7 +33,7 @@ is still missing.
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **550 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **551 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -334,7 +334,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 550 unit tests
+ctest --test-dir build/debug --output-on-failure     # 551 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -521,9 +521,12 @@ opencode version.
   crash recovery) completed: the pinned candidate finished 6 of 7 runs Done
   with every hidden test green (79/79) at $0.16 per milestone, the best
   completion of the three; the pins in `third_party/VERSIONS` carry the
-  provenance note. The T3 plan escalated for all three candidates even though
-  its hidden acceptance tests pass: the final product is correct, but the
-  revalidation fix turns over the old QA tests do not complete. Reliability scenarios
+  provenance note. The T3 plan escalated for every candidate in that run; the
+  fixes it exposed (a separate revalidation build directory, no-op
+  submissions for already-integrated milestones, QA repair of protected tests
+  invalidated by the interface change, and broader build-artifact detection)
+  now let T3 complete end to end with 12/12 hidden tests, so the next full
+  benchmark run should reflect it. Reliability scenarios
   inject a crash: a hidden spec's `crash_after_milestone` (or
   `crash_after_seconds`) makes the bench SIGKILL the run process mid-run, run
   `cf resume` (lease takeover, stale locks, in-flight operations, worktree
@@ -562,7 +565,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (550)
+tests/unit/                 # GoogleTest unit tests (551)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

@@ -96,7 +96,9 @@ bool is_build_artifact(std::string_view path) {
   if (ignored.count(first) > 0) {
     return true;
   }
-  return first.rfind("build-", 0) == 0 || first.rfind("cmake-build-", 0) == 0;
+  // Agents name build trees in many ways: build, build2, build_strict,
+  // build-debug, cmake-build-release.
+  return first.rfind("build", 0) == 0 || first.rfind("cmake-build", 0) == 0;
 }
 
 // True when a changed path is inside the milestone's declared write set
@@ -449,7 +451,7 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
   // integration before the turn (design section 6.13.3). Without this the
   // agent would fix against the pre-change interface.
   if (phase == MilestonePhase::Fix &&
-      revalidating_.count(std::string(milestone_id)) > 0) {
+      integrated_.count(std::string(milestone_id)) > 0) {
     auto integration = ensure_integration_worktree();
     if (integration) {
       auto head = repository_.head_sha(*integration);
@@ -550,11 +552,19 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
                              prefix + "(" + std::string(milestone_id) + "): " +
                                  outcome->summary,
                              store::new_op_id());
-      // A dispute-only turn may have changed nothing; that is not a failure.
-      if (!stored && (outcome->disputed_test_id.empty() ||
-                      stored.error().code != git::error_codes::kNoChanges)) {
-        return TurnResult{false, "", stored.error().message, false, false, false, false,
-                          false, ""};
+      // A dispute-only turn may have changed nothing, and so may a fix on an
+      // already-integrated milestone (the work is merged; the turn resolved a
+      // dispute or reviewed comments). Both proceed to the gates. A no-op
+      // submission for ordinary, unmerged work is still a failed turn.
+      if (!stored) {
+        const bool no_changes = stored.error().code == git::error_codes::kNoChanges;
+        const bool permitted =
+            no_changes && (!outcome->disputed_test_id.empty() ||
+                           integrated_.count(std::string(milestone_id)) > 0);
+        if (!permitted) {
+          return TurnResult{false, "", stored.error().message, false, false, false,
+                            false, false, ""};
+        }
       }
       // New work means the milestone is back to its normal cycle: the next
       // gate run targets its own branch, not the integration (design section
