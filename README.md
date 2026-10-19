@@ -528,21 +528,26 @@ opencode version.
   now let T3 complete end to end with 12/12 hidden tests, so the next full
   benchmark run should reflect it. Reliability scenarios
   inject a crash: a hidden spec's `crash_after_milestone` (or
-  `crash_after_seconds`) makes the bench SIGKILL the run process mid-run, run
-  `cf resume` (lease takeover, stale locks, in-flight operations, worktree
-  reset) and continue in a second process; `rel-orchestrator-crash` verifies
-  the run still reaches Done with no duplicated commits or operations.
+  `crash_after_seconds`, optionally `crash_count` for repeated kills) makes
+  the bench SIGKILL the run process mid-run, run `cf resume` (lease takeover,
+  stale locks, in-flight operations, worktree reset) and continue;
+  `rel-orchestrator-crash` kills at a milestone boundary and
+  `rel-crash-mid-turn` kills twice mid-turn (exercising the checkpoint reset
+  of a dirty worktree). Both verify the run still reaches Done with no
+  duplicated commits or operations.
   TSan-involving plans need `setarch $(uname -m) -R` on hosts with high ASLR
   entropy (same note as §4). Remaining: grow the suite (more plans per tier,
   reliability and governance scenarios) and re-run the benchmark as it grows.
 - **Reliability fault injection.** The driver records a checkpoint before
   every agent turn (design section 6.12.3), and the bench kills the run
-  process at a milestone boundary, resumes it (lease takeover, stale locks,
-  in-flight operations, worktree reset to the checkpoint) and continues;
-  `rel-orchestrator-crash` verifies the run still reaches Done with no
-  duplicated commits or operations. The full §6.12.5 matrix (a kill at
-  every protocol step for every operation kind, SIGSTOP takeover with a live
-  GitHub request, sandbox kills) is still to be built.
+  process at a milestone boundary or mid-turn (repeatedly, with
+  `crash_count`), resumes it (lease takeover, stale locks, in-flight
+  operations, worktree reset to the checkpoint) and continues;
+  `rel-orchestrator-crash` and `rel-crash-mid-turn` verify the run still
+  reaches Done with no duplicated commits or operations. The rest of the
+  §6.12.5 matrix (a kill at every protocol step for every operation kind,
+  SIGSTOP takeover with a live GitHub request, sandbox kills) is still to be
+  built.
 - **RAG production index.** hnswlib is the default vector index (brute force
   stays behind the same `VectorIndex` interface as the parity reference); FAISS
   (IVF-PQ for collections over 5M chunks) is still pending. PDF/DOCX ingestion

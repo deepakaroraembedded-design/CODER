@@ -97,7 +97,7 @@ TEST(EvalManifestTest, ParsesTheStarterSuite) {
   EXPECT_EQ(manifest->suite_id, "cf-golden-v1");
   EXPECT_EQ(manifest->repeats, 3);
   EXPECT_DOUBLE_EQ(manifest->targets.completion, 0.80);
-  ASSERT_EQ(manifest->plans.size(), 7u);
+  ASSERT_EQ(manifest->plans.size(), 8u);
   EXPECT_EQ(manifest->plans[0].id, "t1-cpp-ring-buffer");
   EXPECT_EQ(manifest->plans[0].category, PlanCategory::Functional);
   EXPECT_EQ(manifest->plans[0].tier, "T1");
@@ -108,7 +108,7 @@ TEST(EvalManifestTest, ParsesTheStarterSuite) {
 
   auto plan_ids = cf::eval::validate_suite_plans(*manifest);
   ASSERT_TRUE(plan_ids.has_value()) << plan_ids.error().message;
-  ASSERT_EQ(plan_ids->size(), 7u);
+  ASSERT_EQ(plan_ids->size(), 8u);
   EXPECT_EQ((*plan_ids)[0], "GOLD-T1-CPP-RING-BUFFER");
 }
 

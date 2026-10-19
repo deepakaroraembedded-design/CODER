@@ -40,9 +40,12 @@ struct HiddenTestSpec {
   bool recovery = false;
   // Crash injection (design section 6.12.5): the runner kills the run
   // process as soon as this milestone is Done (or after this many seconds,
-  // whichever comes first) and then resumes. Zero/empty disables it.
+  // whichever comes first) and then resumes. Zero/empty disables it. With
+  // crash_count > 1 the continuations are killed too (time-based, each
+  // measured from its own start), exercising repeated recoveries.
   std::string crash_after_milestone;
   int crash_after_seconds = 0;
+  int crash_count = 1;
   std::filesystem::path base_dir;  // directory of the spec file
 };
 

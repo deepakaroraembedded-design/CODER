@@ -56,7 +56,10 @@ Result<orch::RunState> run_with_crash_injection(
     }
     return *state;
   };
-
+  const auto is_terminal = [](orch::RunState state) {
+    return state == orch::RunState::Done || state == orch::RunState::Escalated ||
+           state == orch::RunState::Aborted;
+  };
   const auto start_child = [&]() -> Result<pid_t> {
     const pid_t child = ::fork();
     if (child < 0) {
@@ -69,67 +72,10 @@ Result<orch::RunState> run_with_crash_injection(
     }
     return child;
   };
-
-  auto first = start_child();
-  if (!first.has_value()) {
-    return tl::make_unexpected(first.error());
-  }
-  const pid_t child = *first;
-  spdlog::info("crash injection: run {} in child {}", run_id, child);
-
-  // Wait for the trigger: the named milestone reaching Done, or the time
-  // budget. A child that finishes on its own needs no crash.
-  const auto started = std::chrono::steady_clock::now();
-  const auto budget = spec.crash_after_seconds > 0
-                          ? std::chrono::seconds(spec.crash_after_seconds + 900)
-                          : std::chrono::minutes(30);
-  bool triggered = false;
-  bool finished = false;
-  while (std::chrono::steady_clock::now() - started < budget) {
-    int status = 0;
-    if (::waitpid(child, &status, WNOHANG) == child) {
-      finished = true;
-      break;
-    }
-    if (!spec.crash_after_milestone.empty()) {
-      auto handle = store::RunStore::open(run_dir / "run.db");
-      if (handle.has_value()) {
-        const auto milestone =
-            (*handle)->get_milestone(run_id, spec.crash_after_milestone);
-        if (milestone.has_value() && milestone->state == "Done") {
-          triggered = true;
-          break;
-        }
-      }
-    }
-    if (spec.crash_after_seconds > 0 &&
-        std::chrono::steady_clock::now() - started >=
-            std::chrono::seconds(spec.crash_after_seconds)) {
-      triggered = true;
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(250));
-  }
-  if (finished) {
-    spdlog::info("crash injection: the run finished before the trigger; no crash");
-    return final_state();
-  }
-  if (!triggered) {
-    ::kill(child, SIGKILL);
-    int status = 0;
-    (void)::waitpid(child, &status, 0);
-    return fail(error_codes::kRunExecutorFailed,
-                "crash injection: the trigger never fired within the budget");
-  }
-  ::kill(child, SIGKILL);
-  int status = 0;
-  (void)::waitpid(child, &status, 0);
-  spdlog::info("crash injection: killed the run process {}", child);
-
   // cf resume: lease takeover, stale locks, in-flight operations and the
   // worktree reset hook. The crashed run's lease is still inside its TTL, so
   // the takeover uses a simulated expiry (the recovery test does the same).
-  {
+  const auto recover = [&]() -> Status {
     auto handle = store::RunStore::open(run_dir / "run.db");
     if (!handle.has_value()) {
       return tl::make_unexpected(handle.error());
@@ -145,7 +91,6 @@ Result<orch::RunState> run_with_crash_injection(
       return fail(error_codes::kRunExecutorFailed,
                   "recovery failed: " + report.error().message);
     }
-    // Release the recovery lease so the continuation can take it.
     auto released = (*handle)->release_lease(run_id, "bench-recovery", report->epoch);
     if (!released.has_value()) {
       return fail(error_codes::kRunExecutorFailed,
@@ -153,13 +98,85 @@ Result<orch::RunState> run_with_crash_injection(
     }
     spdlog::info("crash injection: recovered run {} ({} worktree(s) reset)",
                  run_id, report->worktrees_reset);
+    return {};
+  };
+
+  const int rounds = std::max(1, spec.crash_count);
+  for (int round = 0; round < rounds; ++round) {
+    auto started_child = start_child();
+    if (!started_child.has_value()) {
+      return tl::make_unexpected(started_child.error());
+    }
+    const pid_t child = *started_child;
+    spdlog::info("crash injection: run {} in child {} (round {}/{})", run_id, child,
+                 round + 1, rounds);
+
+    // The milestone trigger belongs to the first round; later rounds are
+    // time-based (the milestone is already Done when they start).
+    const auto started = std::chrono::steady_clock::now();
+    const auto budget = std::chrono::seconds(
+        spec.crash_after_seconds > 0 ? spec.crash_after_seconds + 900 : 1800);
+    bool triggered = false;
+    bool finished = false;
+    while (std::chrono::steady_clock::now() - started < budget) {
+      int status = 0;
+      if (::waitpid(child, &status, WNOHANG) == child) {
+        finished = true;
+        break;
+      }
+      if (round == 0 && !spec.crash_after_milestone.empty()) {
+        auto handle = store::RunStore::open(run_dir / "run.db");
+        if (handle.has_value()) {
+          const auto milestone =
+              (*handle)->get_milestone(run_id, spec.crash_after_milestone);
+          if (milestone.has_value() && milestone->state == "Done") {
+            triggered = true;
+            break;
+          }
+        }
+      }
+      if (spec.crash_after_seconds > 0 &&
+          std::chrono::steady_clock::now() - started >=
+              std::chrono::seconds(spec.crash_after_seconds)) {
+        triggered = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(250));
+    }
+    if (finished) {
+      spdlog::info("crash injection: the run finished before the trigger (round {})",
+                   round + 1);
+      return final_state();
+    }
+    if (!triggered) {
+      ::kill(child, SIGKILL);
+      int status = 0;
+      (void)::waitpid(child, &status, 0);
+      return fail(error_codes::kRunExecutorFailed,
+                  "crash injection: the trigger never fired within the budget");
+    }
+    ::kill(child, SIGKILL);
+    int status = 0;
+    (void)::waitpid(child, &status, 0);
+    spdlog::info("crash injection: killed the run process {}", child);
+
+    auto recovered = recover();
+    if (!recovered.has_value()) {
+      return tl::make_unexpected(recovered.error());
+    }
+    auto state = final_state();
+    if (state.has_value() && is_terminal(*state)) {
+      return state;  // the crashed run had already finished
+    }
   }
 
-  auto second = start_child();
-  if (!second.has_value()) {
-    return tl::make_unexpected(second.error());
+  // The final continuation runs to completion.
+  auto last = start_child();
+  if (!last.has_value()) {
+    return tl::make_unexpected(last.error());
   }
-  (void)::waitpid(*second, &status, 0);
+  int status = 0;
+  (void)::waitpid(*last, &status, 0);
   return final_state();
 }
 

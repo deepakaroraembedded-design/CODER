@@ -47,3 +47,6 @@ plans:
   - id: rel-orchestrator-crash
     category: reliability
     plan: plans/rel-orchestrator-crash.yaml
+  - id: rel-crash-mid-turn
+    category: reliability
+    plan: plans/rel-crash-mid-turn.yaml

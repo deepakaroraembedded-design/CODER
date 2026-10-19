@@ -1,0 +1,35 @@
+# Reliability scenario: the run process is SIGKILLed twice, the first time in
+# the middle of an agent turn, and must recover each time (lease takeover,
+# stale locks, in-flight operations, checkpoint worktree reset) without
+# duplicating side effects (design sections 6.12.3, 6.12.5, 17.2).
+plan_id: GOLD-REL-CRASH-MID-TURN
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Bounded counter with repeated crash injection
+    requirements: [REQ-REL-2]
+    depends_on: []
+    writes: [include/counter.hpp]
+    uses: []
+    writes_interfaces: [include/counter.hpp]
+    acceptance:
+      - "Header-only include/counter.hpp in namespace cf_golden: class Counter with void increment(), void reset() and int value() const"
+      - "value() starts at 0; increment() adds one; reset() returns it to 0"
+      - "The header compiles standalone with g++ -std=c++20 -Wall -Wextra -Werror"
+      - "The run reaches a terminal state after each injected crash"
+      - "No operation is executed twice and the integration keeps exactly one commit per milestone"
+target:
+  language: cpp
+  standard: c++20
+  build_system: cmake
+  test_framework: gtest
+  platforms: [linux-x86_64]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 25
+  max_wall_clock_hours: 8

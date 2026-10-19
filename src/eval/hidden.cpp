@@ -80,8 +80,16 @@ Result<HiddenTestSpec> parse_hidden_test_spec(std::string_view yaml,
   spec.recovery = root["recovery"].as<bool>(false);
   spec.crash_after_milestone = root["crash_after_milestone"].as<std::string>("");
   spec.crash_after_seconds = root["crash_after_seconds"].as<int>(0);
+  spec.crash_count = root["crash_count"].as<int>(1);
   if (spec.crash_after_seconds < 0) {
     return fail("EVAL_HIDDEN_INVALID", "crash_after_seconds cannot be negative");
+  }
+  if (spec.crash_count < 1 || spec.crash_count > 5) {
+    return fail("EVAL_HIDDEN_INVALID", "crash_count must be between 1 and 5");
+  }
+  if (spec.crash_count > 1 && spec.crash_after_seconds <= 0) {
+    return fail("EVAL_HIDDEN_INVALID",
+                "crash_count > 1 needs crash_after_seconds for the later kills");
   }
 
   auto compile = parse_steps(root["compile"], "compile");
