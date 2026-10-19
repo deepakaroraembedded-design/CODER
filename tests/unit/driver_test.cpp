@@ -709,6 +709,48 @@ TEST_F(DriverTest, TheFixBriefCarriesTheFailingGateFindings) {
   EXPECT_NE(runner.briefs.back().find("build"), std::string::npos);
 }
 
+TEST_F(DriverTest, TestRepairRunsQaAgainstTheIntegrationAndCommits) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "include" / "core.hpp",
+                 "// core\n");
+    }
+    if (request.phase == MilestonePhase::Validate) {
+      write_file(std::filesystem::path(request.worktree) / "tests" / "repaired_test.cpp",
+                 "// repaired\n");
+      AgentTurnOutcome outcome;
+      outcome.completed = true;
+      outcome.exit_criteria_met = true;
+      outcome.summary = "tests repaired";
+      return outcome;
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+  ASSERT_TRUE(driver.run(MilestonePhase::Integrate, "M3").completed);
+  const auto before = repository_->head_sha(driver.integration_worktree());
+  ASSERT_TRUE(before.has_value());
+
+  const TurnResult result = driver.run_test_repair("M3");
+  ASSERT_TRUE(result.completed) << result.detail;
+  EXPECT_TRUE(result.exit_criteria_met);
+
+  // The repaired tests are committed on the integration branch.
+  const auto after = repository_->head_sha(driver.integration_worktree());
+  ASSERT_TRUE(after.has_value());
+  EXPECT_NE(*before, *after);
+  const auto content =
+      repository_->file_content(*after, "tests/repaired_test.cpp");
+  ASSERT_TRUE(content.has_value());
+  EXPECT_EQ(*content, "// repaired\n");
+}
+
 TEST_F(DriverTest, RevalidationFixStartsFromTheIntegrationHead) {
   FakeAgentRunner runner;
   runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {

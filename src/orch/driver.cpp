@@ -764,9 +764,15 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
 
   gates::GateRunOptions options;
   options.step_context.src_dir = worktree->string();
-  options.step_context.build_dir =
-      (config_.workspace_root / "build" / config_.run_id / std::string(milestone_id))
-          .string();
+  // A revalidation gates the integration worktree, so it needs its own build
+  // directory: reusing the coder worktree's would trip CMake's source-dir
+  // cache check.
+  std::filesystem::path build_dir = config_.workspace_root / "build" /
+                                    config_.run_id / std::string(milestone_id);
+  if (revalidating) {
+    build_dir /= "revalidation";
+  }
+  options.step_context.build_dir = build_dir.string();
   options.step_context.standard = plan_.target.standard;
   options.step_context.standard_number = gates::standard_number(plan_.target.standard);
   const auto language = config_.profile.languages.find(config_.profile_language);
@@ -839,6 +845,76 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     }
   }
   return outcome;
+}
+
+// Revalidation test repair (design sections 6.9, 6.13.3): an approved
+// interface change can invalidate protected tests. QA owns tests/, so it
+// updates them (or files a defect when the code is actually wrong) against
+// the integration head.
+TurnResult WorkspaceDriver::run_test_repair(std::string_view milestone_id) {
+  const std::string id(milestone_id);
+  auto worktree = ensure_integration_worktree();
+  if (!worktree) {
+    return TurnResult{false, "", worktree.error().message, false, false, false, false,
+                      false, ""};
+  }
+  record_checkpoint(milestone_id);
+
+  std::string brief =
+      "Revalidation test repair for milestone " + id +
+      ". An approved interface change was merged and the gates now fail. The "
+      "tests under tests/ are QA-owned: if a test asserts the old interface, "
+      "update it to the new contract; if the code itself is wrong, file a "
+      "defect instead. Finish by calling the submission tool.";
+  if (store_ != nullptr) {
+    const std::string failures =
+        failing_gate_summary(*store_, config_.run_id, id);
+    if (!failures.empty()) {
+      brief += " Failing gates: " + failures;
+    }
+  }
+
+  AgentTurnRequest request = make_request(MilestonePhase::Validate, milestone_id, "qa");
+  request.worktree = worktree->string();
+  request.brief = std::move(brief);
+  auto outcome = agent_runner_.run_turn(request);
+  if (!outcome) {
+    spdlog::warn("test repair for {} failed: {}", milestone_id,
+                 outcome.error().message);
+    return TurnResult{false, "", outcome.error().message, false, false, false, false,
+                      false, ""};
+  }
+  if (!outcome->completed) {
+    return TurnResult{false, "", outcome->detail, false, false, false, false, false, ""};
+  }
+
+  // Commit the repaired tests on the integration branch; a QA turn that only
+  // filed a defect changes nothing.
+  std::vector<std::string> qa_paths;
+  for (const char* path : {"tests", "qa"}) {
+    std::error_code ec;
+    if (std::filesystem::exists(*worktree / path, ec)) {
+      qa_paths.push_back(path);
+    }
+  }
+  if (!qa_paths.empty()) {
+    git::CommitTrailers trailers;
+    trailers.run_id = config_.run_id;
+    trailers.milestone_id = id;
+    trailers.op_id = store::new_op_id();
+    const auto committed = repository_.commit_paths(
+        *worktree, qa_paths, "test(" + id + "): revalidation repair", trailers);
+    if (!committed && committed.error().code != git::error_codes::kNoChanges) {
+      return TurnResult{false, "", committed.error().message, false, false, false,
+                        false, false, ""};
+    }
+  }
+
+  TurnResult result;
+  result.completed = true;
+  result.summary = outcome->summary;
+  result.exit_criteria_met = outcome->exit_criteria_met;
+  return result;
 }
 
 std::vector<std::string> WorkspaceDriver::integration_interfaces(

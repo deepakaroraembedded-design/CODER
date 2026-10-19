@@ -61,6 +61,7 @@ class WorkspaceDriver final : public MilestoneDriver {
   std::vector<std::string> integration_interfaces(
       std::string_view milestone_id) override;
   void mark_revalidating(std::string_view milestone_id) override;
+  TurnResult run_test_repair(std::string_view milestone_id) override;
   SystemValidationResult validate_system() override;
 
   // Worktree layout helpers (also used by recovery and tests).

@@ -70,6 +70,19 @@ class FakeDriver final : public MilestoneDriver {
     return result;
   }
 
+  TurnResult run_test_repair(std::string_view milestone_id) override {
+    (void)milestone_id;
+    ++test_repairs;
+    if (repair_scripts.empty()) {
+      TurnResult result = completed_turn();
+      result.exit_criteria_met = true;
+      return result;
+    }
+    const TurnResult result = repair_scripts.front();
+    repair_scripts.pop_front();
+    return result;
+  }
+
   GateOutcome run_gates(std::string_view milestone_id) override {
     (void)milestone_id;
     ++gate_runs;
@@ -120,6 +133,18 @@ class FakeDriver final : public MilestoneDriver {
     return outcome;
   }
 
+  static GateOutcome gates_fail_tests(const std::string& message) {
+    GateOutcome outcome;
+    outcome.passed = false;
+    outcome.report.passed = false;
+    cf::gates::GateResult result;
+    result.gate = "tests";
+    result.passed = false;
+    result.findings.push_back(cf::gates::GateFinding{"tests", "error", message});
+    outcome.report.results.push_back(std::move(result));
+    return outcome;
+  }
+
   static GateOutcome gates_fail(const std::string& message, int64_t passing_tests = -1) {
     GateOutcome outcome;
     outcome.passed = false;
@@ -136,11 +161,13 @@ class FakeDriver final : public MilestoneDriver {
   std::deque<TurnResult> scripts;
   std::deque<GateOutcome> gate_scripts;
   std::deque<TurnResult> dispute_scripts;
+  std::deque<TurnResult> repair_scripts;
   std::function<void(const std::string& test_id)> on_dispute;
   std::function<void(MilestonePhase)> on_run;
   std::vector<MilestonePhase> phases;
   int gate_runs = 0;
   int dispute_decisions = 0;
+  int test_repairs = 0;
 };
 
 FileChange code_change(uint32_t added = 10, uint32_t removed = 2) {
@@ -343,6 +370,56 @@ TEST_F(MilestoneLoopTest, TestDisputeIsDecidedByQaBeforeGating) {
       MilestonePhase::Validate,    MilestonePhase::Integrate};
   EXPECT_EQ(driver.phases, expected);
   EXPECT_EQ(driver.gate_runs, 1);
+}
+
+TEST_F(MilestoneLoopTest, RevalidationTestFailureIsRepairedByQa) {
+  // The milestone reaches Done, then a later interface change revalidates it.
+  // The revalidation gate fails only in the test gate: QA repairs its tests
+  // (design sections 6.9, 6.13.3) and the gates run again.
+  FakeDriver driver;
+  driver.scripts = {FakeDriver::completed_turn(),     // author tests
+                    FakeDriver::completed_turn(),     // code
+                    FakeDriver::completed_turn(),     // review: approved
+                    FakeDriver::exit_criteria_met(),  // validate
+                    FakeDriver::merged()};            // integrate
+  driver.gate_scripts = {FakeDriver::gates_pass(true, {code_change()})};
+  EXPECT_EQ(drive(driver), MilestoneState::Done);
+
+  ASSERT_TRUE(machine_->apply("M3", MilestoneEvent::InterfaceChanged, now_).has_value());
+  EXPECT_EQ(machine_->current("M3"), MilestoneState::Revalidating);
+
+  driver.scripts = {FakeDriver::completed_turn(),     // review: approved
+                    FakeDriver::exit_criteria_met(),  // validate
+                    FakeDriver::merged()};            // integrate
+  driver.gate_scripts = {FakeDriver::gates_fail_tests("tests assert the old format"),
+                         FakeDriver::gates_pass(false, {code_change(5, 1)})};
+
+  EXPECT_EQ(drive(driver), MilestoneState::Done);
+  EXPECT_EQ(driver.test_repairs, 1);
+  // Revalidation gated twice (failed, repaired, passed) plus the first run.
+  EXPECT_EQ(driver.gate_runs, 3);
+}
+
+TEST_F(MilestoneLoopTest, RevalidationBuildFailureGoesToTheCoder) {
+  FakeDriver driver;
+  driver.scripts = {FakeDriver::completed_turn(),     // author tests
+                    FakeDriver::completed_turn(),     // code
+                    FakeDriver::completed_turn(),     // review: approved
+                    FakeDriver::exit_criteria_met(),  // validate
+                    FakeDriver::merged()};            // integrate
+  driver.gate_scripts = {FakeDriver::gates_pass(true, {code_change()})};
+  EXPECT_EQ(drive(driver), MilestoneState::Done);
+
+  ASSERT_TRUE(machine_->apply("M3", MilestoneEvent::InterfaceChanged, now_).has_value());
+  driver.scripts = {FakeDriver::completed_turn(),     // fix
+                    FakeDriver::completed_turn(),     // review: approved
+                    FakeDriver::exit_criteria_met(),  // validate
+                    FakeDriver::merged()};            // integrate
+  driver.gate_scripts = {FakeDriver::gates_fail("compile error"),
+                         FakeDriver::gates_pass(false, {code_change(5, 1)})};
+  EXPECT_EQ(drive(driver), MilestoneState::Done);
+  EXPECT_EQ(driver.test_repairs, 0);  // the coder, not QA
+  EXPECT_EQ(driver.phases.back(), MilestonePhase::Integrate);
 }
 
 TEST_F(MilestoneLoopTest, DisputingTheSameTestAgainEscalates) {

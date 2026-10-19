@@ -94,6 +94,17 @@ class MilestoneDriver {
     (void)milestone_id;
   }
 
+  // Repairs protected tests after an approved interface change invalidated
+  // them: QA updates its own tests (or files a defect when the code is
+  // wrong). Returns a completed turn with exit_criteria_met when the tests
+  // were repaired and the gates should run again (design sections 6.9,
+  // 6.13.3). The default reports that the driver cannot repair tests.
+  virtual TurnResult run_test_repair(std::string_view milestone_id) {
+    (void)milestone_id;
+    return TurnResult{false, "", "test repair is not supported by this driver",
+                      false, false, false, false, false, ""};
+  }
+
   // Run-level hook: runs the full system validation suite on the merged
   // result (design section 11.2). The default reports "not completed".
   virtual SystemValidationResult validate_system() { return {}; }

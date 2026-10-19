@@ -30,6 +30,23 @@ std::string failure_fingerprint(const cf::gates::GateReport& report) {
   return cf::sha256_hex(canonical);
 }
 
+// True when the gate run failed only in the test gate: during revalidation
+// this points at protected tests invalidated by the interface change, which
+// QA repairs (design sections 6.9, 6.13.3).
+bool only_test_gate_failed(const cf::gates::GateReport& report) {
+  bool saw_failure = false;
+  for (const auto& result : report.results) {
+    if (result.passed || result.skipped) {
+      continue;
+    }
+    if (result.gate != "tests") {
+      return false;
+    }
+    saw_failure = true;
+  }
+  return saw_failure;
+}
+
 // How many times the coder has disputed a test, from the dispute defect's
 // body (written by the cf-mcp dispute_test tool).
 int dispute_count(const std::string& body_json) {
@@ -66,6 +83,9 @@ Result<MilestoneState> MilestoneLoop::drive(std::string_view milestone_id,
   std::string last_gate_fingerprint;
   uint32_t no_progress_iterations = 0;
   int64_t last_passing_tests = -1;
+  // The gate run that follows a revalidation: a test-only failure is routed
+  // to QA, not to the coder (design section 6.13.3).
+  bool revalidation_gate = false;
   last_escalation_reason_.clear();
 
   for (;;) {
@@ -198,8 +218,34 @@ Result<MilestoneState> MilestoneLoop::drive(std::string_view milestone_id,
 
       case MilestoneState::Gating: {
         const GateOutcome outcome = driver_.run_gates(id);
+        const bool was_revalidation = revalidation_gate;
+        revalidation_gate = false;
 
         if (!outcome.passed) {
+          // During revalidation a failing test gate usually means the
+          // approved interface change invalidated protected tests. QA owns
+          // tests/ and decides: repair them and re-gate, or file a defect
+          // when the code is wrong (design sections 6.9, 6.13.3).
+          if (was_revalidation && only_test_gate_failed(outcome.report)) {
+            const TurnResult repair = driver_.run_test_repair(id);
+            if (!repair.completed) {
+              ++consecutive_turn_failures;
+              if (consecutive_turn_failures >=
+                  limits_.max_consecutive_turn_failures) {
+                return escalate(milestone_id,
+                                "the revalidation test repair failed " +
+                                    std::to_string(consecutive_turn_failures) +
+                                    " times in a row: " + repair.detail,
+                                now);
+              }
+              continue;
+            }
+            if (repair.exit_criteria_met) {
+              consecutive_turn_failures = 0;
+              continue;  // gates run again with the repaired tests
+            }
+            // QA filed a defect: the coder fixes the code.
+          }
           const std::string fingerprint = failure_fingerprint(outcome.report);
           if (fingerprint == last_gate_fingerprint) {
             ++consecutive_same_gate_failures;
@@ -339,6 +385,7 @@ Result<MilestoneState> MilestoneLoop::drive(std::string_view milestone_id,
       }
 
       case MilestoneState::Revalidating: {
+        revalidation_gate = true;
         const auto applied =
             machine_.apply(milestone_id, MilestoneEvent::GatesRerun, now);
         if (!applied) {
