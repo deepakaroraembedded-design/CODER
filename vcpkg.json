@@ -21,6 +21,7 @@
     "spdlog",
     "sqlitecpp",
     "tl-expected",
+    "tree-sitter",
     "yaml-cpp"
   ]
 }

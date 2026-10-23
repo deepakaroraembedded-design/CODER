@@ -24,6 +24,7 @@ is still missing.
 | MCP tool surface (role-filtered, schema-validated) | Implemented and tested |
 | Reference documentation mirror (`cf-refmirror`) | Implemented and tested |
 | Git layer (worktrees, trailers, diffs, squash merges) | Implemented and tested |
+| Code intelligence (§6.5) | **Foundation**: the back-end interface and registry, the SQLite symbol index (incremental per file), a tree-sitter back end with the vendored C grammar (symbols, call edges with caller attribution, includes, doc comments, the layering check) and the `find_symbol`/`get_callers` MCP tools reading the index (`cf-mcp --codeintel-db`). Remaining: the Clang LibTooling back end for C++ (needs LLVM 17+), more tree-sitter grammars, the context packer (`get_context`), the guardrail checks and run integration that keeps the index fresh per commit |
 | Workspace milestone driver (agents + git + gates) | Implemented and tested; fix turns receive the milestone's open defects and every fix turn counts one attempt per defect (escalates at 4, §12) |
 | opencode-backed `AgentRunner` | Implemented end to end: turn driving with event-driven (`session.idle`) turn completion, permission broker, event routing, role configs, versioned prompt templates, RAG-backed question answering, server spawning, dead-server detection and restart before the next turn (§6.12, H8), `RunProcess` and `cf run --execute` |
 | GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences), dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment`), `GithubFlow` (milestone pushes, draft PR open/update/ready, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
@@ -33,7 +34,7 @@ is still missing.
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout plus run-labelled cleanup on recovery; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **557 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **577 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -56,6 +57,7 @@ The design's module map and the implemented directories:
 | cf-sandbox | `include/cf/sandbox`, `src/sandbox` | 6.8 | Sandbox executors behind `ProcessExecutor`: Docker (gate jobs + opencode servers, internal-network egress) and daemon-free namespaces (user/mount/net/UTS/IPC/PID namespaces, Landlock, seccomp, cgroups) |
 | cf-github | `include/cf/github`, `src/github` | 6.10, 10.4 | REST client (PRs, issues, comments, `cf-op` markers) and the pre-push checks |
 | cf-mcp | `include/cf/mcp`, `src/mcp` | 6.4, 9.1 | MCP stdio server, role-filtered tool registry with JSON-schema validation, structured errors |
+| cf-codeintel | `include/cf/codeintel`, `src/codeintel` | 6.5 | Language back-end interface + registry, SQLite symbol index (per-file incremental), tree-sitter back end (vendored C grammar), architecture layering check |
 | cf-agents | `include/cf/agents`, `src/agents` | 6.6 | opencode adapter: HTTP client + SSE event stream (Phase 0a) |
 | cf-cli | `include/cf/cli`, `src/cli` | 9.2 | `cf` commands |
 | harness spike | `tests/harness_compat` | 6.6.2 | H1–H15 compatibility suite used to pin/upgrade opencode |
@@ -299,7 +301,8 @@ agent role:
 ```bash
 cf-mcp --role coder --run R12 --milestone M3 \
        --db cf-work/runs/R12/run.db \
-       --docs cf-work/docs
+       --docs cf-work/docs \
+       [--codeintel-db cf-work/runs/R12/codeintel.db]
 ```
 
 | Tool | Roles | Notes |
@@ -310,7 +313,8 @@ cf-mcp --role coder --run R12 --milestone M3 \
 | `file_defect`, `verify_defect` | qa | Fingerprint de-duplication; recurring defects are marked `REOPENED` |
 | `submit_work` / `submit_review` / `submit_tests` | coder / reviewer / qa | Structured turn endings |
 | `dispute_test` | coder | Records a `DISPUTED` defect against a protected test and ends the turn; QA decides immediately (fix or reject), a second dispute of the same test escalates (design §6.9, §12) |
-| `get_context`, `find_symbol`, `get_callers`, `run_checks` | – | Return `TOOL_UNAVAILABLE` until cf-codeintel lands (§9) |
+| `find_symbol`, `get_callers` | all | Query the cf-codeintel symbol index when `--codeintel-db` is given; `TOOL_UNAVAILABLE` otherwise |
+| `get_context`, `run_checks` | – | Return `TOOL_UNAVAILABLE` until the context packer lands (§9) |
 
 Arguments are validated against JSON schemas; failures return structured errors
 (`TOOL_INVALID_ARGUMENTS`, `TOOL_DENIED`, `TOOL_NOT_FOUND`, `TOOL_UNAVAILABLE`).
@@ -339,7 +343,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 557 unit tests
+ctest --test-dir build/debug --output-on-failure     # 577 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -586,7 +590,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (557)
+tests/unit/                 # GoogleTest unit tests (577)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

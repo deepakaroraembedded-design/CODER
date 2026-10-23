@@ -791,9 +791,40 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
       "Finds a symbol definition in the symbol index (cf-codeintel).",
       object_schema(Json{{"name", string_property("Symbol name")}}, {"name"}),
       all,
-      [](const Json& arguments) -> ToolResult {
-        (void)arguments;
-        return unavailable("find_symbol");
+      [dependencies](const Json& arguments) -> ToolResult {
+        if (dependencies.symbols == nullptr) {
+          return unavailable("find_symbol");
+        }
+        auto symbols =
+            dependencies.symbols->find_symbol(arguments["name"].get<std::string>());
+        if (!symbols) {
+          return error_result(symbols.error().code, symbols.error().message);
+        }
+        Json array = Json::array();
+        std::string text;
+        for (const auto& symbol : *symbols) {
+          array.push_back(Json{
+              {"name", symbol.name},
+              {"qualified", symbol.qualified},
+              {"kind", std::string(codeintel::to_string(symbol.kind))},
+              {"file", symbol.file},
+              {"line", symbol.line},
+              {"signature", symbol.signature},
+              {"doc", symbol.doc},
+              {"is_definition", symbol.is_definition}});
+          if (!text.empty()) {
+            text += "\n";
+          }
+          text += symbol.name + " (" + std::string(codeintel::to_string(symbol.kind)) +
+                  ") — " + symbol.file + ":" + std::to_string(symbol.line) + "\n  " +
+                  symbol.signature;
+        }
+        ToolResult result;
+        result.structured = Json{{"symbols", std::move(array)}};
+        result.text = symbols->empty()
+                          ? "no symbol named '" + arguments["name"].get<std::string>() + "'"
+                          : std::move(text);
+        return result;
       }});
 
   registry.add(ToolDefinition{
@@ -801,9 +832,34 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
       "Lists the callers of a symbol (cf-codeintel).",
       object_schema(Json{{"symbol", string_property("Symbol name")}}, {"symbol"}),
       all,
-      [](const Json& arguments) -> ToolResult {
-        (void)arguments;
-        return unavailable("get_callers");
+      [dependencies](const Json& arguments) -> ToolResult {
+        if (dependencies.symbols == nullptr) {
+          return unavailable("get_callers");
+        }
+        auto callers =
+            dependencies.symbols->get_callers(arguments["symbol"].get<std::string>());
+        if (!callers) {
+          return error_result(callers.error().code, callers.error().message);
+        }
+        Json array = Json::array();
+        std::string text;
+        for (const auto& edge : *callers) {
+          array.push_back(Json{{"caller", edge.caller},
+                               {"callee", edge.callee},
+                               {"file", edge.file},
+                               {"line", edge.line}});
+          if (!text.empty()) {
+            text += "\n";
+          }
+          text += edge.caller + " — " + edge.file + ":" + std::to_string(edge.line);
+        }
+        ToolResult result;
+        result.structured = Json{{"callers", std::move(array)}};
+        result.text =
+            callers->empty()
+                ? "no recorded callers of '" + arguments["symbol"].get<std::string>() + "'"
+                : std::move(text);
+        return result;
       }});
 
   registry.add(ToolDefinition{

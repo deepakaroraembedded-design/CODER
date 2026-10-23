@@ -18,6 +18,7 @@
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
 
+#include "cf/codeintel/symbol_index.hpp"
 #include "cf/mcp/stdio_server.hpp"
 #include "cf/mcp/tools.hpp"
 #include "cf/rag/loader.hpp"
@@ -66,6 +67,7 @@ int main(int argc, char** argv) {
   std::string docs_dir;
   std::string designs_dir;
   std::string patterns_dir;
+  std::string codeintel_db;
   std::string product;
   std::string language;
   std::string name;
@@ -80,6 +82,8 @@ int main(int argc, char** argv) {
                  "Directory of approved design packages to index (optional)");
   app.add_option("--patterns", patterns_dir,
                  "Directory of pattern catalog entries (optional)");
+  app.add_option("--codeintel-db", codeintel_db,
+                 "cf-codeintel symbol index database (optional; design section 6.5)");
   app.add_option("--product", product,
                  "Product scope for RAG applicability (design section 6.3)");
   app.add_option("--language", language,
@@ -151,6 +155,16 @@ int main(int argc, char** argv) {
     store = std::move(*opened);
   }
 
+  std::unique_ptr<cf::codeintel::SymbolIndex> symbols;
+  if (!codeintel_db.empty()) {
+    auto opened = cf::codeintel::SymbolIndex::open(codeintel_db);
+    if (!opened) {
+      spdlog::error("cannot open the symbol index: {}", opened.error().message);
+      return 5;
+    }
+    symbols = std::move(*opened);
+  }
+
   cf::mcp::ToolDependencies dependencies;
   dependencies.run_id = run_id;
   dependencies.milestone_id = milestone_id;
@@ -159,6 +173,7 @@ int main(int argc, char** argv) {
   dependencies.retriever = retriever.get();
   dependencies.store = store.get();
   dependencies.patterns = &catalog;
+  dependencies.symbols = symbols.get();
   const cf::mcp::ToolRegistry registry =
       cf::mcp::build_tool_registry(std::move(dependencies));
 

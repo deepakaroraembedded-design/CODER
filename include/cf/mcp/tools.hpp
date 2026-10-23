@@ -15,6 +15,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "cf/codeintel/symbol_index.hpp"
 #include "cf/common/result.hpp"
 #include "cf/rag/catalog.hpp"
 #include "cf/rag/retriever.hpp"
@@ -76,6 +77,9 @@ struct ToolDependencies {
   // The curated pattern catalog (design section 6.2); get_pattern reads it
   // directly and falls back to the retrieval index when it is absent.
   const std::vector<rag::PatternEntry>* patterns = nullptr;
+  // The code intelligence symbol index (design section 6.5); find_symbol and
+  // get_callers read it. Null until a run indexes its code.
+  const codeintel::SymbolIndex* symbols = nullptr;
 };
 
 // Builds the design section 9.1 tool surface.

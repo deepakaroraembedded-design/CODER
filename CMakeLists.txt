@@ -3,7 +3,9 @@ cmake_minimum_required(VERSION 3.25)
 project(coder-framework
   VERSION 0.1.0
   DESCRIPTION "Coder Framework (CF): multi-agent, guardrail-driven code generation"
-  LANGUAGES CXX)
+  # C is for the vendored tree-sitter grammars (third_party/tree-sitter-c);
+  # framework code stays strict C++17.
+  LANGUAGES C CXX)
 
 # The framework itself is strict C++17 (design section 4.1); the code the
 # agents generate follows the plan's target block and is not built here.
@@ -27,6 +29,7 @@ find_package(SQLiteCpp CONFIG REQUIRED)
 find_package(cpr CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(hnswlib CONFIG REQUIRED)
+find_package(unofficial-tree-sitter CONFIG REQUIRED)
 find_package(Threads REQUIRED)
 
 # Warnings apply to framework code only, never to third-party headers.
@@ -68,6 +71,7 @@ add_library(cf_mcp_tools STATIC
   src/mcp/tools.cpp)
 target_link_libraries(cf_mcp_tools PUBLIC
   cf_common
+  cf_codeintel
   cf_rag
   cf_store
   nlohmann_json::nlohmann_json)
@@ -76,6 +80,7 @@ add_executable(cf-mcp src/mcp/main.cpp)
 target_link_libraries(cf-mcp PRIVATE
   cf_mcp_stdio
   cf_mcp_tools
+  cf_codeintel
   cf_rag
   cf_store
   CLI11::CLI11
@@ -195,6 +200,24 @@ target_link_libraries(cf_rag PUBLIC
 add_library(cf_git STATIC
   src/git/repository.cpp)
 target_link_libraries(cf_git PUBLIC cf_common)
+
+# The vendored tree-sitter C grammar (third_party/tree-sitter-c, pinned in
+# third_party/VERSIONS): generated parser code, so no project warnings apply.
+add_library(tree_sitter_c_grammar STATIC
+  third_party/tree-sitter-c/src/parser.c)
+
+# cf-codeintel: code intelligence (design section 6.5)
+add_library(cf_codeintel STATIC
+  src/codeintel/types.cpp
+  src/codeintel/backend.cpp
+  src/codeintel/symbol_index.cpp
+  src/codeintel/indexer.cpp
+  src/codeintel/treesitter_backend.cpp)
+target_link_libraries(cf_codeintel PUBLIC
+  cf_common
+  SQLiteCpp
+  unofficial::tree-sitter::tree-sitter
+  tree_sitter_c_grammar)
 
 # cf-sandbox: Docker and daemon-free namespace executors (design section 6.8)
 add_library(cf_sandbox STATIC

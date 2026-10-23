@@ -48,6 +48,8 @@ add_executable(cf_unit_tests
   licenses_test.cpp
   defect_export_test.cpp
   cli_test.cpp
+  codeintel_test.cpp
+  treesitter_backend_test.cpp
   mcp_tools_test.cpp
   eval_test.cpp
   eval_benchmark_test.cpp
@@ -62,6 +64,7 @@ target_link_libraries(cf_unit_tests PRIVATE
   cf_plan
   cf_gates
   cf_rag
+  cf_codeintel
   cf_mcp_tools
   cf_refmirror
   cf_git

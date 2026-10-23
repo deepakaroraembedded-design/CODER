@@ -478,6 +478,84 @@ TEST_F(McpToolsTest, UnavailableToolsReturnStructuredErrors) {
   EXPECT_EQ(symbols.structured["code"], "TOOL_UNAVAILABLE");
 }
 
+// find_symbol/get_callers backed by a real symbol index (design sections
+// 6.5, 9.1).
+class McpCodeIntelTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    dir_ = make_temp_dir();
+    auto opened = cf::codeintel::SymbolIndex::open(dir_ / "index.db");
+    ASSERT_TRUE(opened.has_value()) << opened.error().message;
+    symbols_ = std::move(*opened);
+
+    cf::codeintel::FileIndex file;
+    file.record = cf::codeintel::FileRecord{"src/registry.c", "h1"};
+    cf::codeintel::Symbol symbol;
+    symbol.name = "registry_open";
+    symbol.qualified = "registry_open";
+    symbol.kind = cf::codeintel::SymbolKind::Function;
+    symbol.file = "src/registry.c";
+    symbol.line = 42;
+    symbol.signature = "int registry_open(const char* path)";
+    symbol.is_definition = true;
+    file.symbols = {symbol};
+    file.calls = {cf::codeintel::CallEdge{"main", "registry_open", "src/main.c", 12}};
+    ASSERT_TRUE(symbols_->replace_file(file).has_value());
+
+    cf::mcp::ToolDependencies dependencies;
+    dependencies.run_id = "R12";
+    dependencies.symbols = symbols_.get();
+    registry_ = cf::mcp::build_tool_registry(std::move(dependencies));
+  }
+
+  void TearDown() override {
+    symbols_.reset();
+    std::error_code ec;
+    std::filesystem::remove_all(dir_, ec);
+  }
+
+  std::filesystem::path dir_;
+  std::unique_ptr<cf::codeintel::SymbolIndex> symbols_;
+  cf::mcp::ToolRegistry registry_;
+};
+
+TEST_F(McpCodeIntelTest, FindSymbolReadsTheIndex) {
+  const ToolResult found = registry_.call(ToolRole::Coder, "find_symbol",
+                                          Json{{"name", "registry_open"}});
+  ASSERT_FALSE(found.is_error) << found.text;
+  ASSERT_EQ(found.structured["symbols"].size(), 1u);
+  const auto& row = found.structured["symbols"].at(0);
+  EXPECT_EQ(row["name"], "registry_open");
+  EXPECT_EQ(row["kind"], "function");
+  EXPECT_EQ(row["file"], "src/registry.c");
+  EXPECT_EQ(row["line"], 42);
+  EXPECT_TRUE(row["is_definition"]);
+  EXPECT_NE(found.text.find("src/registry.c:42"), std::string::npos);
+
+  const ToolResult missing =
+      registry_.call(ToolRole::Coder, "find_symbol", Json{{"name", "nope"}});
+  ASSERT_FALSE(missing.is_error) << missing.text;
+  EXPECT_TRUE(missing.structured["symbols"].empty());
+  EXPECT_NE(missing.text.find("no symbol"), std::string::npos);
+}
+
+TEST_F(McpCodeIntelTest, GetCallersReadsTheIndex) {
+  const ToolResult result = registry_.call(ToolRole::Qa, "get_callers",
+                                           Json{{"symbol", "registry_open"}});
+  ASSERT_FALSE(result.is_error) << result.text;
+  ASSERT_EQ(result.structured["callers"].size(), 1u);
+  const auto& row = result.structured["callers"].at(0);
+  EXPECT_EQ(row["caller"], "main");
+  EXPECT_EQ(row["file"], "src/main.c");
+  EXPECT_EQ(row["line"], 12);
+  EXPECT_NE(result.text.find("main"), std::string::npos);
+
+  const ToolResult none =
+      registry_.call(ToolRole::Qa, "get_callers", Json{{"symbol", "orphan"}});
+  ASSERT_FALSE(none.is_error) << none.text;
+  EXPECT_TRUE(none.structured["callers"].empty());
+}
+
 TEST(McpValidationTest, ValidatorChecksSchemaRules) {
   const Json schema = Json{{"type", "object"},
                            {"properties",

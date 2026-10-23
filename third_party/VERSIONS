@@ -12,6 +12,13 @@ opencode: 1.18.35
 opencode_api: v1 (/session, /event); the /api/* family exists but its session drain is not enabled in this build (Phase 0a finding)
 vcpkg_baseline: e456309491fd875487bf02b8a0dca76c1b1b00cc
 
+# Vendored under third_party/tree-sitter-c/ (generated parser.c, its header
+# and the LICENSE), because the vcpkg tree-sitter-c port regenerates the
+# parser with a prebuilt tree-sitter-cli that needs GLIBC 2.39, newer than
+# the build host's glibc. tree-sitter runtime comes from vcpkg (0.26.12);
+# ABI version 15 parsers are compatible with it.
+tree_sitter_c: 0.24.2  # github.com/tree-sitter/tree-sitter-c v0.24.2, tarball sha256 2eeb4db31f8fa0865e45488503d13403923bcb485a1bdb637abff8c42dd97364
+
 llvm: 17          # LibTooling + clang-tidy plugin (Phase 1+)
 gcc_min: 11       # framework builds with GCC 11+
 clang_min: 17     # framework builds with Clang 17+
