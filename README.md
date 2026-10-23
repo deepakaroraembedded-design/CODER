@@ -24,7 +24,7 @@ is still missing.
 | MCP tool surface (role-filtered, schema-validated) | Implemented and tested |
 | Reference documentation mirror (`cf-refmirror`) | Implemented and tested |
 | Git layer (worktrees, trailers, diffs, squash merges) | Implemented and tested |
-| Code intelligence (§6.5) | **Foundation + run integration**: the back-end interface and registry, the SQLite symbol index (incremental per file), a tree-sitter back end with the vendored C grammar (symbols, call edges with caller attribution, includes, doc comments, the layering check) and the `find_symbol`/`get_callers` MCP tools reading the index (`cf-mcp --codeintel-db`). When a back end matches the plan's language, the run indexes the integration worktree at start-up and refreshes the index incrementally at every merge (`CodeIntelSync`), and the role MCP servers are pointed at it. Remaining: the Clang LibTooling back end for C++ (needs LLVM 17+), more tree-sitter grammars, the context packer (`get_context`) and the guardrail checks |
+| Code intelligence (§6.5) | **Foundation + run integration**: the back-end interface and registry, the SQLite symbol index (incremental per file), a tree-sitter back end with the vendored C grammar (symbols, call edges with caller attribution, includes, doc comments, the layering check), the context packer (seeds → dependencies → callers → file siblings, cut to the token budget) and the `find_symbol`/`get_callers`/`get_context` MCP tools reading the index (`cf-mcp --codeintel-db`). When a back end matches the plan's language, the run indexes the integration worktree at start-up and refreshes the index incrementally at every merge (`CodeIntelSync`), and the role MCP servers are pointed at it. Remaining: the Clang LibTooling back end for C++ (needs LLVM 17+), more tree-sitter grammars, ADR/contract retrieval in the packer, and the guardrail checks |
 | Workspace milestone driver (agents + git + gates) | Implemented and tested; fix turns receive the milestone's open defects and every fix turn counts one attempt per defect (escalates at 4, §12) |
 | opencode-backed `AgentRunner` | Implemented end to end: turn driving with event-driven (`session.idle`) turn completion, permission broker, event routing, role configs, versioned prompt templates, RAG-backed question answering, server spawning, dead-server detection and restart before the next turn (§6.12, H8), `RunProcess` and `cf run --execute` |
 | GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences), dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment`), `GithubFlow` (milestone pushes, draft PR open/update/ready, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
@@ -34,7 +34,7 @@ is still missing.
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout plus run-labelled cleanup on recovery; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **586 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **596 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -314,7 +314,8 @@ cf-mcp --role coder --run R12 --milestone M3 \
 | `submit_work` / `submit_review` / `submit_tests` | coder / reviewer / qa | Structured turn endings |
 | `dispute_test` | coder | Records a `DISPUTED` defect against a protected test and ends the turn; QA decides immediately (fix or reject), a second dispute of the same test escalates (design §6.9, §12) |
 | `find_symbol`, `get_callers` | all | Query the cf-codeintel symbol index when `--codeintel-db` is given; `TOOL_UNAVAILABLE` otherwise |
-| `get_context`, `run_checks` | – | Return `TOOL_UNAVAILABLE` until the context packer lands (§9) |
+| `get_context` | coder, reviewer | Packed code context within a token budget; the task seed is a symbol name or an indexed file/component path |
+| `run_checks` | – | Returns `TOOL_UNAVAILABLE` until the gate dry-run lands (§9) |
 
 Arguments are validated against JSON schemas; failures return structured errors
 (`TOOL_INVALID_ARGUMENTS`, `TOOL_DENIED`, `TOOL_NOT_FOUND`, `TOOL_UNAVAILABLE`).
@@ -343,7 +344,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 586 unit tests
+ctest --test-dir build/debug --output-on-failure     # 596 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -590,7 +591,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (586)
+tests/unit/                 # GoogleTest unit tests (596)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

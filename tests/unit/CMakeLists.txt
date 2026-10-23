@@ -50,6 +50,7 @@ add_executable(cf_unit_tests
   cli_test.cpp
   codeintel_test.cpp
   codeintel_sync_test.cpp
+  context_packer_test.cpp
   treesitter_backend_test.cpp
   mcp_tools_test.cpp
   eval_test.cpp

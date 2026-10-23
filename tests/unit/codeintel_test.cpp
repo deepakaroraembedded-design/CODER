@@ -219,6 +219,62 @@ TEST_F(SymbolIndexTest, RemoveFileDropsEverything) {
   EXPECT_TRUE(hits->empty());
 }
 
+TEST_F(SymbolIndexTest, SymbolsUnderMatchesFilesAndDirectoryPrefixes) {
+  FileIndex a;
+  a.record = FileRecord{"src/reg/registry.c", "h1"};
+  Symbol alpha;
+  alpha.name = "alpha";
+  alpha.qualified = "alpha";
+  alpha.file = "src/reg/registry.c";
+  alpha.line = 1;
+  a.symbols = {alpha};
+  FileIndex b;
+  b.record = FileRecord{"srcx/other.c", "h2"};
+  Symbol beta = alpha;
+  beta.name = "beta";
+  beta.qualified = "beta";
+  beta.file = "srcx/other.c";
+  b.symbols = {beta};
+  ASSERT_TRUE(index_->replace_file(a).has_value());
+  ASSERT_TRUE(index_->replace_file(b).has_value());
+
+  auto exact = index_->symbols_under("src/reg/registry.c");
+  ASSERT_TRUE(exact.has_value());
+  ASSERT_EQ(exact->size(), 1u);
+  EXPECT_EQ(exact->at(0).name, "alpha");
+
+  auto directory = index_->symbols_under("src/reg");
+  ASSERT_TRUE(directory.has_value());
+  EXPECT_EQ(directory->size(), 1u);
+
+  auto parent = index_->symbols_under("src");
+  ASSERT_TRUE(parent.has_value());
+  EXPECT_EQ(parent->size(), 1u);  // "srcx/other.c" is not under "src/"
+
+  auto not_boundary = index_->symbols_under("src/re");
+  ASSERT_TRUE(not_boundary.has_value());
+  EXPECT_TRUE(not_boundary->empty());
+}
+
+TEST_F(SymbolIndexTest, GetCalleesReturnsOutgoingEdges) {
+  FileIndex file;
+  file.record = FileRecord{"a.c", "h1"};
+  file.calls = {CallEdge{"main", "shared", "a.c", 3},
+                CallEdge{"main", "log_open", "a.c", 5},
+                CallEdge{"helper", "shared", "a.c", 9}};
+  ASSERT_TRUE(index_->replace_file(file).has_value());
+
+  auto callees = index_->get_callees("main");
+  ASSERT_TRUE(callees.has_value());
+  ASSERT_EQ(callees->size(), 2u);
+  EXPECT_EQ(callees->at(0).callee, "shared");
+  EXPECT_EQ(callees->at(1).callee, "log_open");
+
+  auto none = index_->get_callees("nobody");
+  ASSERT_TRUE(none.has_value());
+  EXPECT_TRUE(none->empty());
+}
+
 TEST_F(SymbolIndexTest, IndexTreeWritesTheBackendGraph) {
   FakeBackend backend;
   auto indexed = cf::codeintel::index_tree(backend, *index_, dir_);

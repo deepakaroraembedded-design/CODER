@@ -214,6 +214,7 @@ add_library(cf_codeintel STATIC
   src/codeintel/backend.cpp
   src/codeintel/symbol_index.cpp
   src/codeintel/indexer.cpp
+  src/codeintel/context_packer.cpp
   src/codeintel/treesitter_backend.cpp)
 target_link_libraries(cf_codeintel PUBLIC
   cf_common

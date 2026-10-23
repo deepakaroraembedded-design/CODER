@@ -556,6 +556,28 @@ TEST_F(McpCodeIntelTest, GetCallersReadsTheIndex) {
   EXPECT_TRUE(none.structured["callers"].empty());
 }
 
+TEST_F(McpCodeIntelTest, GetContextPacksAroundTheSeed) {
+  const ToolResult result =
+      registry_.call(ToolRole::Coder, "get_context",
+                     Json{{"task_id", "registry_open"}, {"token_budget", 4000}});
+  ASSERT_FALSE(result.is_error) << result.text;
+  EXPECT_NE(result.text.find("registry_open (src/registry.c:42)"),
+            std::string::npos);
+  EXPECT_EQ(result.structured["unresolved"].size(), 0u);
+  EXPECT_GE(result.structured["tokens"].get<std::uint32_t>(), 1u);
+  // The caller edge earns a one-line note (main is not an indexed symbol).
+  EXPECT_NE(result.text.find("called from main (src/main.c:12)"),
+            std::string::npos);
+}
+
+TEST_F(McpCodeIntelTest, GetContextUnknownSeedIsNotFound) {
+  const ToolResult result =
+      registry_.call(ToolRole::Coder, "get_context",
+                     Json{{"task_id", "nope"}, {"token_budget", 4000}});
+  EXPECT_TRUE(result.is_error);
+  EXPECT_EQ(result.structured["code"], "TOOL_NOT_FOUND");
+}
+
 TEST(McpValidationTest, ValidatorChecksSchemaRules) {
   const Json schema = Json{{"type", "object"},
                            {"properties",

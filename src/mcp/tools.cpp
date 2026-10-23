@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <utility>
 
+#include "cf/codeintel/context_packer.hpp"
 #include "cf/common/hash.hpp"
 
 namespace cf::mcp {
@@ -776,14 +777,48 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
 
   registry.add(ToolDefinition{
       "get_context",
-      "Packed code context for a task, within a token budget (cf-codeintel).",
-      object_schema(Json{{"task_id", string_property("Task id")},
+      "Packed code context within a token budget (cf-codeintel, design "
+      "section 6.5). task_id names what the task touches: a symbol name, or "
+      "an indexed file path or component directory.",
+      object_schema(Json{{"task_id", string_property(
+                                 "Symbol name, file path or component directory")},
                          {"token_budget", integer_property("Token budget")}},
                     {"task_id", "token_budget"}),
       {ToolRole::Coder, ToolRole::Reviewer},
-      [](const Json& arguments) -> ToolResult {
-        (void)arguments;
-        return unavailable("get_context");
+      [dependencies](const Json& arguments) -> ToolResult {
+        if (dependencies.symbols == nullptr) {
+          return unavailable("get_context");
+        }
+        codeintel::ContextPacker packer(*dependencies.symbols);
+        codeintel::ContextRequest request;
+        request.seeds = {arguments["task_id"].get<std::string>()};
+        const std::int64_t budget = arguments["token_budget"].get<int64_t>();
+        request.token_budget =
+            budget > 0 ? static_cast<std::uint32_t>(budget) : 0;
+        auto packed = packer.pack(request);
+        if (!packed) {
+          return error_result(packed.error().code, packed.error().message);
+        }
+        if (packed->included.empty() && packed->dropped.empty()) {
+          return error_result(
+              "TOOL_NOT_FOUND",
+              "no symbol or file matching '" +
+                  arguments["task_id"].get<std::string>() + "' in the symbol index");
+        }
+        ToolResult result;
+        result.structured =
+            Json{{"context", packed->text},
+                 {"tokens", packed->tokens},
+                 {"included", packed->included},
+                 {"dropped", packed->dropped},
+                 {"unresolved", packed->unresolved}};
+        std::string text = packed->text;
+        if (!packed->dropped.empty()) {
+          text += "\n(budget cut " + std::to_string(packed->dropped.size()) +
+                  " entrie(s))";
+        }
+        result.text = std::move(text);
+        return result;
       }});
 
   registry.add(ToolDefinition{

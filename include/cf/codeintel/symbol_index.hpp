@@ -44,9 +44,18 @@ class SymbolIndex {
   // before declarations, then by file and line.
   Result<std::vector<Symbol>> find_symbol(std::string_view name) const;
 
+  // Every symbol in the file at `prefix`, under it when it names a
+  // directory ("src" matches "src/a.c" but not "srcx/a.c"), or in files
+  // sharing it as a stem ("src/registry" matches "src/registry.h" and
+  // "src/registry.c"). Ordered by file and line.
+  Result<std::vector<Symbol>> symbols_under(std::string_view prefix) const;
+
   // Every recorded call to the symbol (matched on the callee's unqualified
   // or qualified name), ordered by file and line.
   Result<std::vector<CallEdge>> get_callers(std::string_view symbol) const;
+
+  // Every recorded call made by the symbol, ordered by file and line.
+  Result<std::vector<CallEdge>> get_callees(std::string_view caller) const;
 
   // Index metadata (e.g. the commit the index reflects, so an incremental
   // refresh can diff against it). get_meta returns nullopt for a key that

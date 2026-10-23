@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS calls (
   line   INT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS calls_callee ON calls (callee);
+CREATE INDEX IF NOT EXISTS calls_caller ON calls (caller);
 CREATE TABLE IF NOT EXISTS includes (
   file     TEXT NOT NULL,
   included TEXT NOT NULL,
@@ -188,6 +189,45 @@ Result<std::vector<Symbol>> SymbolIndex::find_symbol(std::string_view name) cons
   });
 }
 
+Result<std::vector<Symbol>> SymbolIndex::symbols_under(std::string_view prefix) const {
+  return sql_guard("symbols_under", [&]() -> Result<std::vector<Symbol>> {
+    // Prefixes apply on a path boundary: "src" matches "src/a.c" but not
+    // "srcx/a.c"; a component stem matches its files: "src/registry" matches
+    // "src/registry.h" and "src/registry.c".
+    std::string directory(prefix);
+    if (!directory.empty() && directory.back() != '/') {
+      directory += '/';
+    }
+    const std::string stem = std::string(prefix) + ".";
+    SQLite::Statement stmt(
+        impl_->db,
+        "SELECT file, line, name, qualified, kind, signature, doc, is_definition "
+        "FROM symbols WHERE file = ? OR substr(file, 1, ?) = ? "
+        "OR substr(file, 1, ?) = ? "
+        "ORDER BY file, line");
+    stmt.bind(1, std::string(prefix));
+    stmt.bind(2, static_cast<int64_t>(directory.size()));
+    stmt.bind(3, directory);
+    stmt.bind(4, static_cast<int64_t>(stem.size()));
+    stmt.bind(5, stem);
+    std::vector<Symbol> symbols;
+    while (stmt.executeStep()) {
+      Symbol symbol;
+      symbol.file = stmt.getColumn(0).getString();
+      symbol.line = static_cast<std::uint32_t>(stmt.getColumn(1).getInt64());
+      symbol.name = stmt.getColumn(2).getString();
+      symbol.qualified = stmt.getColumn(3).getString();
+      symbol.kind = symbol_kind_from_string(stmt.getColumn(4).getString())
+                        .value_or(SymbolKind::Function);
+      symbol.signature = stmt.getColumn(5).getString();
+      symbol.doc = stmt.getColumn(6).getString();
+      symbol.is_definition = stmt.getColumn(7).getInt() != 0;
+      symbols.push_back(std::move(symbol));
+    }
+    return symbols;
+  });
+}
+
 Result<std::vector<CallEdge>> SymbolIndex::get_callers(std::string_view symbol) const {
   return sql_guard("get_callers", [&]() -> Result<std::vector<CallEdge>> {
     SQLite::Statement stmt(
@@ -205,6 +245,26 @@ Result<std::vector<CallEdge>> SymbolIndex::get_callers(std::string_view symbol) 
       callers.push_back(std::move(edge));
     }
     return callers;
+  });
+}
+
+Result<std::vector<CallEdge>> SymbolIndex::get_callees(std::string_view caller) const {
+  return sql_guard("get_callees", [&]() -> Result<std::vector<CallEdge>> {
+    SQLite::Statement stmt(
+        impl_->db,
+        "SELECT caller, callee, file, line FROM calls WHERE caller = ? "
+        "ORDER BY file, line");
+    stmt.bind(1, std::string(caller));
+    std::vector<CallEdge> callees;
+    while (stmt.executeStep()) {
+      CallEdge edge;
+      edge.caller = stmt.getColumn(0).getString();
+      edge.callee = stmt.getColumn(1).getString();
+      edge.file = stmt.getColumn(2).getString();
+      edge.line = static_cast<std::uint32_t>(stmt.getColumn(3).getInt64());
+      callees.push_back(std::move(edge));
+    }
+    return callees;
   });
 }
 
