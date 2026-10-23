@@ -29,6 +29,9 @@ struct RoleConfigSpec {
   std::string milestone_id;
   std::string db_path;
   std::string docs_dir;
+  // The run's cf-codeintel symbol index (design section 6.5); empty omits
+  // the --codeintel-db flag.
+  std::string codeintel_db;
   // RAG applicability context for the role's cf-mcp (design section 6.3):
   // the run's product and target language, so scoped documents apply.
   std::string product;

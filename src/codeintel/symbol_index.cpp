@@ -1,6 +1,7 @@
 #include "cf/codeintel/symbol_index.hpp"
 
 #include <exception>
+#include <optional>
 #include <utility>
 
 #include <SQLiteCpp/SQLiteCpp.h>
@@ -37,6 +38,10 @@ CREATE TABLE IF NOT EXISTS includes (
   included TEXT NOT NULL,
   system   INT NOT NULL,
   line     INT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
 );
 )sql";
 
@@ -200,6 +205,28 @@ Result<std::vector<CallEdge>> SymbolIndex::get_callers(std::string_view symbol) 
       callers.push_back(std::move(edge));
     }
     return callers;
+  });
+}
+
+Status SymbolIndex::set_meta(std::string_view key, std::string_view value) {
+  return sql_guard("set_meta", [&]() -> Status {
+    SQLite::Statement stmt(
+        impl_->db, "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)");
+    stmt.bind(1, std::string(key));
+    stmt.bind(2, std::string(value));
+    stmt.exec();
+    return {};
+  });
+}
+
+Result<std::optional<std::string>> SymbolIndex::get_meta(std::string_view key) const {
+  return sql_guard("get_meta", [&]() -> Result<std::optional<std::string>> {
+    SQLite::Statement stmt(impl_->db, "SELECT value FROM meta WHERE key = ?");
+    stmt.bind(1, std::string(key));
+    if (stmt.executeStep()) {
+      return std::optional<std::string>(stmt.getColumn(0).getString());
+    }
+    return std::optional<std::string>();
   });
 }
 

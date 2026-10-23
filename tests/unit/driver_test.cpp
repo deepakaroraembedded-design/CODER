@@ -13,6 +13,9 @@
 #include <nlohmann/json.hpp>
 #include <unistd.h>
 
+#include "cf/codeintel/symbol_index.hpp"
+#include "cf/codeintel/treesitter_backend.hpp"
+#include "cf/orch/codeintel_sync.hpp"
 #include "cf/orch/driver.hpp"
 #include "cf/orch/orchestrator.hpp"
 
@@ -251,6 +254,84 @@ TEST_F(DriverTest, FullLoopReachesDoneWithRealCommitsAndGates) {
   ASSERT_TRUE(stored.has_value());
   EXPECT_EQ(stored->state, "Done");
   EXPECT_EQ(stored->iterations, 1u);
+}
+
+TEST_F(DriverTest, CodeintelIndexTracksTheIntegrationBranch) {
+  auto backend = cf::codeintel::make_c_backend();
+  // In production RunProcess owns the run directory (run.db lives there).
+  std::filesystem::create_directories(dir_ / "workspace" / "runs" / "R12");
+  auto sync = cf::orch::CodeIntelSync::open(
+      *backend, *repository_, dir_ / "workspace" / "runs" / "R12" / "codeintel.db",
+      dir_ / "workspace" / "wt" / "R12" / "integration");
+  ASSERT_TRUE(sync.has_value()) << sync.error().message;
+
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    switch (request.phase) {
+      case MilestonePhase::AuthorTests:
+        write_file(std::filesystem::path(request.worktree) / "tests" / "m3_test.c",
+                   "test\n");
+        break;
+      case MilestonePhase::Code:
+        write_file(std::filesystem::path(request.worktree) / "src" / "m3.c",
+                   "int m3_start(void) { return 0; }\n");
+        break;
+      case MilestonePhase::Validate: {
+        AgentTurnOutcome outcome;
+        outcome.completed = true;
+        outcome.exit_criteria_met = true;
+        return outcome;
+      }
+      default:
+        break;
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+
+  DriverConfig config = config_for(kPassingProfile);
+  config.codeintel = sync->get();
+  WorkspaceDriver driver(plan_, config, *repository_, executor_, runner,
+                         store_.get());
+
+  // Run start (RunProcess does this after recovery): index the base tree.
+  ASSERT_TRUE(driver.prepare_codeintel().has_value());
+  {
+    auto recorded = (*sync)->indexed_commit();
+    ASSERT_TRUE(recorded.has_value() && recorded->has_value());
+    auto base = repository_->head_sha(dir_ / "repo");
+    ASSERT_TRUE(base.has_value());
+    EXPECT_EQ(**recorded, *base);
+  }
+
+  StateMachine machine(*store_, "R12");
+  ASSERT_TRUE(machine.register_milestone("M3").has_value());
+  ASSERT_TRUE(machine.apply("M3", MilestoneEvent::Start, now_).has_value());
+  MilestoneLoop loop(*store_, machine, driver);
+
+  const auto state = loop.drive("M3", now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, MilestoneState::Done);
+
+  // The index followed the merge: the merged C source is searchable (design
+  // section 6.5, "updated incrementally per commit").
+  auto index = cf::codeintel::SymbolIndex::open(dir_ / "workspace" / "runs" / "R12" /
+                                                "codeintel.db");
+  ASSERT_TRUE(index.has_value()) << index.error().message;
+  auto hits = (*index)->find_symbol("m3_start");
+  ASSERT_TRUE(hits.has_value());
+  ASSERT_EQ(hits->size(), 1u);
+  EXPECT_EQ(hits->at(0).file, "src/m3.c");
+
+  // The recorded commit is the integration head after the merge.
+  auto head = repository_->head_sha(driver.integration_worktree());
+  ASSERT_TRUE(head.has_value());
+  auto recorded = (*sync)->indexed_commit();
+  ASSERT_TRUE(recorded.has_value() && recorded->has_value());
+  EXPECT_EQ(**recorded, *head);
+  EXPECT_NE(**recorded, *repository_->head_sha(dir_ / "repo"));
 }
 
 TEST_F(DriverTest, GateFailureLeadsToFixAndSecondIteration) {

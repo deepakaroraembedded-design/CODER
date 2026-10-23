@@ -14,6 +14,8 @@
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#include "cf/codeintel/backend.hpp"
+#include "cf/codeintel/treesitter_backend.hpp"
 #include "cf/common/hash.hpp"
 #include "cf/common/process.hpp"
 #include "cf/gates/profile.hpp"
@@ -1107,6 +1109,11 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   config.profile_build_system = effective.target.build_system;
   config.profile_test_framework = effective.target.test_framework;
   config.sandbox_image = options.sandbox_image;
+  // Code intelligence (design section 6.5): the available back ends; the
+  // run indexes when one matches the plan's target language.
+  codeintel::BackendRegistry codeintel_backends;
+  codeintel_backends.add(codeintel::make_c_backend());
+  config.codeintel_backends = &codeintel_backends;
   config.orchestrator.escalation_dir = (directory / "escalations").string();
   if (effective.budget.max_usd_total.has_value()) {
     config.orchestrator.max_usd_total = effective.budget.max_usd_total;

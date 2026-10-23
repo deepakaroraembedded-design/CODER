@@ -106,6 +106,32 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   std::error_code ec;
   std::filesystem::create_directories(run_dir, ec);
 
+  // Code intelligence (design section 6.5): when a back end matches the
+  // plan's language, the run keeps the symbol index at runs/<run>/
+  // codeintel.db in step with the integration branch and the role MCP
+  // servers read it through --codeintel-db.
+  std::string codeintel_db;
+  std::unique_ptr<CodeIntelSync> codeintel_sync;
+  if (config_.codeintel_backends != nullptr) {
+    auto backend =
+        config_.codeintel_backends->for_language(plan_.target.language);
+    if (backend) {
+      auto sync = CodeIntelSync::open(
+          **backend, repository_, run_dir / "codeintel.db",
+          config_.workspace_root / "wt" / config_.run_id / "integration");
+      if (!sync) {
+        return tl::make_unexpected(sync.error());
+      }
+      codeintel_sync = std::move(*sync);
+      codeintel_db = codeintel_sync->db_path().string();
+    } else if (backend.error().code != codeintel::error_codes::kUnknownLanguage) {
+      return tl::make_unexpected(backend.error());
+    } else {
+      spdlog::info("codeintel: no back end for language '{}', indexing off",
+                   plan_.target.language);
+    }
+  }
+
   std::unique_ptr<OpencodeRoleFactory> production_factory;
   SessionDriverFactory driver_factory = driver_factory_;
 
@@ -180,6 +206,7 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     factory_config.environment = config_.environment;
     factory_config.retriever = retriever.get();
     factory_config.ambiguities_file = run_dir / "ambiguities.jsonl";
+    factory_config.codeintel_db = codeintel_db;
     factory_config.sandbox_image = config_.agent_sandbox_image;
     factory_config.sandbox_network = config_.agent_sandbox_network;
     factory_config.sandbox_binary = config_.agent_sandbox_binary;
@@ -213,6 +240,7 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   driver_config.profile_test_framework = config_.profile_test_framework;
   driver_config.step_timeout = config_.step_timeout;
   driver_config.sandbox_image = config_.sandbox_image;
+  driver_config.codeintel = codeintel_sync.get();
   WorkspaceDriver driver(plan_, driver_config, repository_, executor_, agent_runner,
                          &store_);
 
@@ -288,6 +316,13 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   }
   now = recovered->reconciled_at;
   const uint64_t epoch = recovered->epoch;
+
+  // With recovery complete the worktrees are settled: bring the symbol index
+  // to the integration head before the first agent turn (design section 6.5).
+  auto prepared = driver.prepare_codeintel();
+  if (!prepared) {
+    return tl::make_unexpected(prepared.error());
+  }
 
   std::unique_ptr<GithubFlow> github_flow;
   std::unique_ptr<DefectExporter> defect_export;

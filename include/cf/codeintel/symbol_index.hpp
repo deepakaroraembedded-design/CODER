@@ -48,6 +48,12 @@ class SymbolIndex {
   // or qualified name), ordered by file and line.
   Result<std::vector<CallEdge>> get_callers(std::string_view symbol) const;
 
+  // Index metadata (e.g. the commit the index reflects, so an incremental
+  // refresh can diff against it). get_meta returns nullopt for a key that
+  // was never set.
+  Status set_meta(std::string_view key, std::string_view value);
+  Result<std::optional<std::string>> get_meta(std::string_view key) const;
+
  private:
   struct Impl;
   explicit SymbolIndex(std::unique_ptr<Impl> impl);

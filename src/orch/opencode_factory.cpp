@@ -292,6 +292,9 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   spec.run_id = config_.run_id;
   spec.db_path = sandboxed ? "/cf/run.db" : config_.db_path;
   spec.docs_dir = sandboxed ? "/cf/docs" : config_.docs_dir;
+  if (!config_.codeintel_db.empty()) {
+    spec.codeintel_db = sandboxed ? "/cf/codeintel.db" : config_.codeintel_db;
+  }
   spec.product = config_.product;
   spec.language = config_.language;
   if (!config_.designs_dir.empty()) {

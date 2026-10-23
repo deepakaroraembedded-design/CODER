@@ -25,6 +25,7 @@
 #include "cf/gates/runner.hpp"
 #include "cf/git/repository.hpp"
 #include "cf/orch/agent_runner.hpp"
+#include "cf/orch/codeintel_sync.hpp"
 #include "cf/orch/milestone_loop.hpp"
 #include "cf/plan/plan.hpp"
 #include "cf/store/run_store.hpp"
@@ -47,6 +48,10 @@ struct DriverConfig {
   // When true, gates run in the daemon-free namespace sandbox (design section
   // 6.8) instead of Docker; takes precedence over sandbox_image.
   bool sandbox_namespaces = false;
+  // Keeps the run's code intelligence index in step with the integration
+  // branch (design section 6.5). Null: no indexing (no back end for the
+  // plan's language). Not owned; must outlive the driver.
+  CodeIntelSync* codeintel = nullptr;
 };
 
 class WorkspaceDriver final : public MilestoneDriver {
@@ -68,6 +73,11 @@ class WorkspaceDriver final : public MilestoneDriver {
   std::filesystem::path worktree_for(std::string_view milestone_id,
                                      std::string_view role) const;
   std::filesystem::path integration_worktree() const;
+
+  // Ensures the integration worktree exists and the code index reflects its
+  // head (design section 6.5), so agents have symbol context from the first
+  // turn. No-op when no index is configured.
+  Status prepare_codeintel();
 
  private:
   Result<std::filesystem::path> ensure_worktree(std::string_view milestone_id,

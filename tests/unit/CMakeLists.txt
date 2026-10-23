@@ -49,6 +49,7 @@ add_executable(cf_unit_tests
   defect_export_test.cpp
   cli_test.cpp
   codeintel_test.cpp
+  codeintel_sync_test.cpp
   treesitter_backend_test.cpp
   mcp_tools_test.cpp
   eval_test.cpp

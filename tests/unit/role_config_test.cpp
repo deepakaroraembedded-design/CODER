@@ -71,6 +71,18 @@ TEST(RoleConfigTest, CoderConfigAllowsEditsAndProfileCommands) {
             "/work/runs/R12/calls-coder.jsonl");
 }
 
+TEST(RoleConfigTest, CodeintelDbAddsTheFlagOnlyWhenSet) {
+  RoleConfigSpec spec = base_spec("coder");
+  spec.codeintel_db = "/work/runs/R12/codeintel.db";
+  const Json config = build_role_config(spec);
+  // Appended after --patterns (design sections 6.5, 9.1).
+  EXPECT_EQ(config["mcp"]["cf"]["command"][10],
+            "--codeintel-db=/work/runs/R12/codeintel.db");
+
+  const Json without = build_role_config(base_spec("coder"));
+  EXPECT_EQ(without["mcp"]["cf"]["command"].size(), 10u);
+}
+
 TEST(RoleConfigTest, ReviewerIsReadOnlyAndDefaultsToDeny) {
   RoleConfigSpec spec = base_spec("reviewer");
   spec.allowed_commands.clear();

@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "cf/codeintel/backend.hpp"
 #include "cf/common/process.hpp"
 #include "cf/git/repository.hpp"
 #include "cf/llm/client.hpp"
@@ -71,6 +72,13 @@ struct RunProcessConfig {
   // reconciled (design section 6.12.6 rule 3).
   std::chrono::seconds lease_ttl{120};
   std::chrono::seconds in_flight_grace{120};
+
+  // Code intelligence (design section 6.5): the available language back
+  // ends. When one matches the plan's target language, the run keeps a
+  // symbol index at runs/<run>/codeintel.db in step with the integration
+  // branch and the role MCP servers get it via --codeintel-db. Null (or no
+  // back end for the language) disables indexing.
+  codeintel::BackendRegistry* codeintel_backends = nullptr;
 
   // GitHub flow (design section 10.4.4); disabled without a transport. The
   // caller owns the transport (production passes a CprTransport).

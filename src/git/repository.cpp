@@ -53,6 +53,23 @@ std::vector<std::string> split_lines(const std::string& text) {
   return lines;
 }
 
+// --numstat rename forms: "old => new" or "prefix{old => new}/suffix".
+// Returns the new (post-rename) path.
+std::string numstat_path(const std::string& field) {
+  const auto arrow = field.find(" => ");
+  if (arrow == std::string::npos) {
+    return field;
+  }
+  const auto open = field.find('{');
+  const auto close = field.find('}');
+  if (open != std::string::npos && close != std::string::npos && open < arrow &&
+      arrow < close) {
+    return field.substr(0, open) + field.substr(arrow + 4, close - arrow - 4) +
+           field.substr(close + 1);
+  }
+  return field.substr(arrow + 4);
+}
+
 std::vector<std::string> split_tabs(const std::string& line) {
   std::vector<std::string> fields;
   std::size_t begin = 0;
@@ -295,7 +312,7 @@ Result<std::vector<FileChange>> Repository::diff(const std::string& from_sha,
       continue;
     }
     FileChange change;
-    change.path = fields[2];
+    change.path = numstat_path(fields[2]);
     if (fields[0] == "-" || fields[1] == "-") {
       change.binary = true;
     } else {
@@ -305,8 +322,13 @@ Result<std::vector<FileChange>> Repository::diff(const std::string& from_sha,
     changes.push_back(std::move(change));
   }
 
-  // Status letters; renames report the new path.
-  std::vector<std::pair<std::string, char>> statuses;
+  // Status letters; renames report the new path and carry the old one.
+  struct StatusEntry {
+    std::string path;
+    char status;
+    std::string old_path;
+  };
+  std::vector<StatusEntry> statuses;
   for (const auto& line : split_lines(*name_status)) {
     const std::vector<std::string> fields = split_tabs(line);
     if (fields.size() < 2) {
@@ -314,12 +336,17 @@ Result<std::vector<FileChange>> Repository::diff(const std::string& from_sha,
     }
     const char status = fields[0].empty() ? 'M' : fields[0][0];
     const std::string path = fields.size() >= 3 ? fields[2] : fields[1];
-    statuses.emplace_back(path, status);
+    StatusEntry entry{path, status, {}};
+    if (status == 'R' && fields.size() >= 3) {
+      entry.old_path = fields[1];
+    }
+    statuses.push_back(std::move(entry));
   }
   for (auto& change : changes) {
-    for (const auto& [path, status] : statuses) {
-      if (path == change.path) {
-        change.status = status;
+    for (const auto& entry : statuses) {
+      if (entry.path == change.path) {
+        change.status = entry.status;
+        change.old_path = entry.old_path;
         break;
       }
     }

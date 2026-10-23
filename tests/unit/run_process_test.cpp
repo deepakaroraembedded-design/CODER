@@ -18,6 +18,8 @@
 #include <nlohmann/json.hpp>
 #include <unistd.h>
 
+#include "cf/codeintel/backend.hpp"
+#include "cf/codeintel/symbol_index.hpp"
 #include "cf/common/hash.hpp"
 #include "cf/github/client.hpp"
 #include "cf/orch/run_process.hpp"
@@ -156,6 +158,55 @@ test_frameworks:
   gtest: { steps: [[true]], languages: [cpp] }
 )yaml";
 
+// A code intelligence back end for the e2e's "cpp" plan: canned rows make
+// the wiring observable (index built at start, refreshed at the merge, the
+// MCP servers given --codeintel-db) without depending on a grammar.
+class FakeCodeintelBackend final : public cf::codeintel::LanguageBackend {
+ public:
+  std::string_view language() const override { return "cpp"; }
+
+  cf::Result<cf::codeintel::SymbolGraph> index(
+      const std::filesystem::path& root) override {
+    cf::codeintel::SymbolGraph graph;
+    graph.root = root.string();
+    graph.language = "cpp";
+    add_file(graph, "seed.cpp", "seed_function");
+    return graph;
+  }
+
+  cf::Result<cf::codeintel::SymbolGraph> update(
+      const cf::codeintel::SymbolGraph& graph,
+      const std::vector<std::filesystem::path>& changed) override {
+    cf::codeintel::SymbolGraph delta;
+    delta.root = graph.root;
+    delta.language = "cpp";
+    for (const auto& path : changed) {
+      add_file(delta, path.string(), "updated_" + path.stem().string());
+    }
+    return delta;
+  }
+
+  cf::Result<std::vector<cf::codeintel::Diagnostic>> check_architecture(
+      const cf::codeintel::SymbolGraph& /*graph*/,
+      const cf::codeintel::ArchitectureRules& /*rules*/) override {
+    return std::vector<cf::codeintel::Diagnostic>{};
+  }
+
+ private:
+  static void add_file(cf::codeintel::SymbolGraph& graph, const std::string& path,
+                       const std::string& function) {
+    graph.files.push_back(cf::codeintel::FileRecord{path, "hash-" + path});
+    cf::codeintel::Symbol symbol;
+    symbol.name = function;
+    symbol.qualified = function;
+    symbol.kind = cf::codeintel::SymbolKind::Function;
+    symbol.file = path;
+    symbol.line = 1;
+    symbol.is_definition = true;
+    graph.symbols.push_back(std::move(symbol));
+  }
+};
+
 TEST(RunProcessTest, DrivesAFullRunToDoneWithFakeOpencode) {
   const auto dir = make_temp_dir();
   cf::process::LocalProcessExecutor executor;
@@ -241,6 +292,12 @@ TEST(RunProcessTest, DrivesAFullRunToDoneWithFakeOpencode) {
       (config.workspace_root / "runs" / "R12" / "escalations").string();
 
   config.in_flight_grace = std::chrono::seconds(0);
+
+  // Code intelligence (design section 6.5): a back end registered for the
+  // plan's language, so the run builds and refreshes the symbol index.
+  cf::codeintel::BackendRegistry codeintel_backends;
+  codeintel_backends.add(std::make_unique<FakeCodeintelBackend>());
+  config.codeintel_backends = &codeintel_backends;
 
   // Operations left behind by an older orchestrator (design sections 6.12.4,
   // 6.12.5): one STARTED past the grace period and one already marked
@@ -401,6 +458,20 @@ TEST(RunProcessTest, DrivesAFullRunToDoneWithFakeOpencode) {
   EXPECT_EQ(pushes, 2u);
   EXPECT_TRUE(pr_created);
   EXPECT_TRUE(pr_updated);
+
+  // Code intelligence (design section 6.5): the index was built from the
+  // base tree at start-up and refreshed at the integration merge.
+  auto index = cf::codeintel::SymbolIndex::open(run_dir / "codeintel.db");
+  ASSERT_TRUE(index.has_value()) << index.error().message;
+  auto seed = (*index)->find_symbol("seed_function");
+  ASSERT_TRUE(seed.has_value());
+  EXPECT_EQ(seed->size(), 1u);
+  auto updated = (*index)->find_symbol("updated_m3");  // src/m3.cpp, merged
+  ASSERT_TRUE(updated.has_value());
+  EXPECT_EQ(updated->size(), 1u);
+  // The role configs point each MCP server at the index.
+  EXPECT_TRUE(contains(run_dir / "opencode-coder.json", "--codeintel-db="));
+  EXPECT_TRUE(contains(run_dir / "opencode-qa.json", "--codeintel-db="));
 
   store.reset();
   repository.reset();

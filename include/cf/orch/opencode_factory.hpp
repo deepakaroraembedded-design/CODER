@@ -36,6 +36,10 @@ struct OpencodeFactoryConfig {
   std::string mcp_command;  // path to the cf-mcp binary
   std::string db_path;      // run store
   std::string docs_dir;
+  // The run's code intelligence index (design section 6.5); the role's
+  // cf-mcp gets it via --codeintel-db. Empty: no index (no back end for the
+  // plan's language).
+  std::string codeintel_db;
   // RAG applicability context and approved design packages for the role's
   // cf-mcp (design sections 6.2, 6.3).
   std::string product;

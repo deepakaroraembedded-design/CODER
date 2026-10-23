@@ -126,7 +126,8 @@ add_library(cf_orch STATIC
   src/orch/question_policy.cpp
   src/orch/github_handlers.cpp
   src/orch/github_flow.cpp
-  src/orch/defect_export.cpp)
+  src/orch/defect_export.cpp
+  src/orch/codeintel_sync.cpp)
 target_link_libraries(cf_orch PUBLIC
   cf_store
   cf_plan
@@ -135,6 +136,7 @@ target_link_libraries(cf_orch PUBLIC
   cf_sandbox
   cf_agents
   cf_rag
+  cf_codeintel
   cf_github)
 
 # cf-llm: Fireworks / OpenAI-compatible client (design section 6.6)
@@ -251,6 +253,7 @@ target_link_libraries(cf_cli PUBLIC
   cf_gates
   cf_orch
   cf_git
+  cf_codeintel
   nlohmann_json::nlohmann_json)
 
 add_executable(cf src/cli/main.cpp)

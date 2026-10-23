@@ -42,6 +42,8 @@ struct CommitTrailers {
 struct FileChange {
   std::string path;
   char status = 'M';  // A added, M modified, D deleted, R renamed
+  // For renames (status R): the path before the rename. Empty otherwise.
+  std::string old_path;
   uint32_t added_lines = 0;
   uint32_t removed_lines = 0;
   bool binary = false;

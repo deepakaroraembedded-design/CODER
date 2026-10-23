@@ -350,6 +350,31 @@ Result<std::filesystem::path> WorkspaceDriver::ensure_integration_worktree() {
   return path;
 }
 
+Status WorkspaceDriver::prepare_codeintel() {
+  if (config_.codeintel == nullptr) {
+    return {};  // no back end for the plan's language: indexing is off
+  }
+  auto worktree = ensure_integration_worktree();
+  if (!worktree) {
+    return tl::make_unexpected(worktree.error());
+  }
+  auto head = repository_.head_sha(*worktree);
+  if (!head) {
+    return tl::make_unexpected(head.error());
+  }
+  // The index is advisory context, never a gate: a refresh failure is
+  // logged, not fatal.
+  auto refreshed = config_.codeintel->refresh_to(*head);
+  if (!refreshed) {
+    spdlog::warn("codeintel: refresh to {} failed: {}", head->substr(0, 12),
+                 refreshed.error().message);
+  } else if (*refreshed > 0) {
+    spdlog::info("codeintel: indexed {} file(s) at {}", *refreshed,
+                 head->substr(0, 12));
+  }
+  return {};
+}
+
 TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone_id) {
   if (phase == MilestonePhase::Integrate) {
     // The integration worktree lives under wt/<run>/integration.
@@ -411,6 +436,15 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
       }
     }
     changed_interfaces_[std::string(milestone_id)] = changed_interfaces;
+    if (config_.codeintel != nullptr) {
+      // Keep the symbol index in step with the integration head (design
+      // section 6.5). Advisory: a refresh failure never blocks the merge.
+      auto refreshed = config_.codeintel->refresh_to(*merged);
+      if (!refreshed) {
+        spdlog::warn("codeintel: refresh to {} failed: {}", merged->substr(0, 12),
+                     refreshed.error().message);
+      }
+    }
     TurnResult result;
     result.completed = true;
     result.merged = true;

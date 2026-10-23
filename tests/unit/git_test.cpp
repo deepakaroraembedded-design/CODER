@@ -209,6 +209,23 @@ TEST_F(GitTest, DiffReportsCountsAndStatus) {
   EXPECT_EQ((*changes)[1].removed_lines, 0u);
 }
 
+TEST_F(GitTest, DiffReportsTheOldPathForRenames) {
+  ASSERT_TRUE(repo_->command({"mv", "README.md", "README-renamed.md"}).has_value());
+  CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.op_id = "op_rename";
+  auto sha = repo_->commit_paths(dir_ / "repo", {"README-renamed.md"},
+                                 "refactor: rename README", trailers);
+  ASSERT_TRUE(sha.has_value()) << sha.error().message;
+
+  auto changes = repo_->diff(initial_sha_, *sha);
+  ASSERT_TRUE(changes.has_value()) << changes.error().message;
+  ASSERT_EQ(changes->size(), 1u);
+  EXPECT_EQ((*changes)[0].path, "README-renamed.md");
+  EXPECT_EQ((*changes)[0].status, 'R');
+  EXPECT_EQ((*changes)[0].old_path, "README.md");
+}
+
 TEST_F(GitTest, FileHashIsStableAndDetectsChanges) {
   auto before = repo_->file_hash(initial_sha_, "README.md");
   ASSERT_TRUE(before.has_value());
