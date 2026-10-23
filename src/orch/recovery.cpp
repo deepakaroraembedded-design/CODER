@@ -1,13 +1,20 @@
 #include "cf/orch/recovery.hpp"
 
+#include <algorithm>
+#include <thread>
 #include <utility>
 
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
 namespace cf::orch {
 namespace {
 
 using Json = nlohmann::json;
+
+// Renew the lease at least this often while recovery waits out the
+// in-flight grace period (design section 6.12.6: renewed every 10 seconds).
+constexpr std::chrono::seconds kLeaseRenewInterval{10};
 
 }  // namespace
 
@@ -19,7 +26,9 @@ std::string RecoveryReport::to_json() const {
                                    {"iterations", milestone.iterations}});
   }
   return Json{{"epoch", epoch},
+              {"reconciled_at", reconciled_at},
               {"locks_released", locks_released},
+              {"leftovers_removed", leftovers_removed},
               {"started_reconciled", started_reconciled},
               {"needs_reconcile_retried", needs_reconcile_retried},
               {"still_needs_reconcile", still_needs_reconcile},
@@ -51,27 +60,73 @@ Result<RecoveryReport> Recovery::resume(std::string_view run_id, Dispatcher& dis
   }
   report.locks_released = *released;
 
-  // 2. Reconcile operations left STARTED by an older epoch, past the
-  //    in-flight grace period (design section 6.12.6 rule 3).
-  auto started = dispatcher.reconcile_stale(lease->epoch, options.in_flight_grace, now);
+  // 2. Kill sandboxes, agent servers and gate jobs left by the old
+  //    orchestrator (design section 6.12.4 step 2).
+  if (options.kill_leftovers) {
+    auto killed = options.kill_leftovers();
+    if (!killed) {
+      return tl::make_unexpected(killed.error());
+    }
+    report.leftovers_removed = *killed;
+  }
+
+  // 3. Wait out the in-flight grace period for operations left STARTED by an
+  //    older epoch (design section 6.12.6 rule 3; the grace covers the old
+  //    lease expiry plus the request timeout). A request issued by the old
+  //    orchestrator may still land, so recovery must not read the world
+  //    before then. The lease is renewed while waiting so it cannot expire
+  //    underneath us.
+  auto started_ops = store_.list_operations(run_id, {store::op_state::kStarted});
+  if (!started_ops) {
+    return tl::make_unexpected(started_ops.error());
+  }
+  store::UnixTime wait_until = now;
+  for (const auto& operation : *started_ops) {
+    if (operation.epoch >= lease->epoch) {
+      continue;  // started under the current epoch: still in flight
+    }
+    wait_until =
+        std::max(wait_until,
+                 operation.updated_at + options.in_flight_grace.count());
+  }
+  store::UnixTime effective_now = now;
+  if (wait_until > now) {
+    spdlog::info("recovery: waiting {}s for in-flight operations", wait_until - now);
+  }
+  while (effective_now < wait_until) {
+    const auto remaining = wait_until - effective_now;
+    const auto chunk = std::min<std::int64_t>(remaining, kLeaseRenewInterval.count());
+    if (options.sleep_for) {
+      options.sleep_for(std::chrono::seconds(chunk));
+    } else {
+      std::this_thread::sleep_for(std::chrono::seconds(chunk));
+    }
+    effective_now += chunk;
+    auto renewed =
+        store_.renew_lease(run_id, options.holder, lease->epoch, effective_now);
+    if (!renewed) {
+      return tl::make_unexpected(renewed.error());
+    }
+  }
+
+  report.reconciled_at = effective_now;
+
+  // 4. Reconcile operations left STARTED by an older epoch.
+  auto started =
+      dispatcher.reconcile_stale(lease->epoch, options.in_flight_grace, effective_now);
   if (!started) {
     return tl::make_unexpected(started.error());
   }
   report.started_reconciled = *started;
 
-  // 3. Retry every operation that needs reconciliation.
+  // 5. Retry every operation that needs reconciliation.
+  auto retried =
+      dispatcher.reconcile_needs_reconcile(lease->epoch, effective_now);
+  if (!retried) {
+    return tl::make_unexpected(retried.error());
+  }
+  report.needs_reconcile_retried = *retried;
   auto needs = store_.list_operations(run_id, {store::op_state::kNeedsReconcile});
-  if (!needs) {
-    return tl::make_unexpected(needs.error());
-  }
-  for (const auto& operation : *needs) {
-    auto outcome = dispatcher.reconcile_one(operation.op_id, lease->epoch, now);
-    if (!outcome) {
-      return tl::make_unexpected(outcome.error());
-    }
-    ++report.needs_reconcile_retried;
-  }
-  needs = store_.list_operations(run_id, {store::op_state::kNeedsReconcile});
   if (!needs) {
     return tl::make_unexpected(needs.error());
   }
@@ -79,7 +134,7 @@ Result<RecoveryReport> Recovery::resume(std::string_view run_id, Dispatcher& dis
     report.still_needs_reconcile.push_back(operation.op_id);
   }
 
-  // 4. Reset every worktree to its latest checkpoint.
+  // 6. Reset every worktree to its latest checkpoint.
   auto milestones = store_.list_milestones(run_id);
   if (!milestones) {
     return tl::make_unexpected(milestones.error());
@@ -99,7 +154,7 @@ Result<RecoveryReport> Recovery::resume(std::string_view run_id, Dispatcher& dis
     }
   }
 
-  // 5. Re-derive every milestone state from the store.
+  // 7. Re-derive every milestone state from the store.
   for (const auto& milestone : *milestones) {
     if (!milestone_state_from_string(milestone.state).has_value()) {
       return fail(error_codes::kInvalidMilestoneTransition,

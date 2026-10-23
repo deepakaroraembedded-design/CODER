@@ -77,6 +77,11 @@ class Dispatcher {
   Result<DispatchOutcome> reconcile_one(std::string_view op_id, uint64_t epoch,
                                         store::UnixTime now);
 
+  // Reconciles every operation in NEEDS_RECONCILE (design section 6.12.4 step
+  // 3). Returns how many operations were offered to their reconcilers; those
+  // whose reconciler still answers NeedsReconcile stay in that state.
+  Result<std::size_t> reconcile_needs_reconcile(uint64_t epoch, store::UnixTime now);
+
  private:
   Status apply_outcome(std::string_view op_id, uint64_t epoch,
                        const DispatchResult& result, store::UnixTime now);

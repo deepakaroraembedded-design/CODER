@@ -15,8 +15,11 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
 #include <unistd.h>
 
+#include "cf/common/hash.hpp"
+#include "cf/github/client.hpp"
 #include "cf/orch/run_process.hpp"
 #include "fake_http_transport.hpp"
 
@@ -237,8 +240,49 @@ TEST(RunProcessTest, DrivesAFullRunToDoneWithFakeOpencode) {
   config.orchestrator.escalation_dir =
       (config.workspace_root / "runs" / "R12" / "escalations").string();
 
+  config.in_flight_grace = std::chrono::seconds(0);
+
+  // Operations left behind by an older orchestrator (design sections 6.12.4,
+  // 6.12.5): one STARTED past the grace period and one already marked
+  // NEEDS_RECONCILE. Startup recovery must reconcile both with the real
+  // GitHub handler before the loop issues any new effect.
+  const cf::store::UnixTime now = cf::store::unix_now();
+  ASSERT_TRUE(store
+                  ->acquire_lease("R12", "old-orch", std::chrono::seconds(30),
+                                  now - 1000)
+                  .has_value());
+  std::vector<std::string> recovered_op_ids;
+  auto seed_comment = [&](const std::string& body, bool needs_reconcile) {
+    cf::store::NewOperation intent;
+    intent.idempotency_key =
+        cf::idempotency_key("R12", "", "comment", cf::sha256_hex(body));
+    intent.kind = "comment";
+    intent.input_json =
+        nlohmann::json{{"issue_number", 7}, {"body", body}}.dump();
+    intent.expected_json = "{}";
+    ASSERT_TRUE(store->record_intents("R12", {intent}, now - 1000).has_value());
+    auto op = store->find_operation_by_key(intent.idempotency_key);
+    ASSERT_TRUE(op.has_value());
+    ASSERT_TRUE(store->mark_operation_started(op->op_id, 1, now - 1000).has_value());
+    if (needs_reconcile) {
+      ASSERT_TRUE(
+          store->mark_operation_needs_reconcile(op->op_id, "world differs", now - 1000)
+              .has_value());
+    }
+    recovered_op_ids.push_back(op->op_id);
+  };
+  seed_comment("stale comment", false);
+  seed_comment("needs-reconcile comment", true);
+
   // GitHub flow: a scripted API and the real bare remote.
   cf::test::ScriptedHttpTransport github;
+  // Startup recovery reconciles the two comments: each GET finds the marker.
+  for (const auto& op_id : recovered_op_ids) {
+    nlohmann::json comments = nlohmann::json::array();
+    comments.push_back(
+        {{"body", std::string("x\n") + cf::github::Client::op_marker(op_id)}});
+    github.script(200, comments.dump());
+  }
   github.script(200, "[]");  // PR dedupe: none yet
   github.script(201,
                 R"({"number": 7, "html_url": "u", "state": "open", "body": "b",
@@ -305,13 +349,44 @@ TEST(RunProcessTest, DrivesAFullRunToDoneWithFakeOpencode) {
   ASSERT_TRUE(integration_remote.has_value()) << integration_remote.error().message;
   EXPECT_FALSE(integration_remote->empty());
 
-  ASSERT_GE(github.requests().size(), 3u);
-  EXPECT_EQ(github.requests()[0].method, "GET");
-  EXPECT_EQ(github.requests()[1].method, "POST");
-  EXPECT_NE(github.requests()[1].url.find("/pulls"), std::string::npos);
-  EXPECT_NE(github.requests()[1].body.find("<!-- cf-op:"), std::string::npos);
-  EXPECT_EQ(github.requests()[2].method, "PATCH");
-  EXPECT_NE(github.requests()[2].body.find("\"draft\":false"), std::string::npos);
+  ASSERT_GE(github.requests().size(), 5u);
+  const auto* created_pr = [&]() -> const cf::test::ScriptedHttpTransport::RecordedRequest* {
+    for (const auto& request : github.requests()) {
+      if (request.method == "POST" &&
+          request.url.find("/pulls") != std::string::npos) {
+        return &request;
+      }
+    }
+    return nullptr;
+  }();
+  ASSERT_NE(created_pr, nullptr);
+  EXPECT_NE(created_pr->body.find("<!-- cf-op:"), std::string::npos);
+  const auto* ready_pr = [&]() -> const cf::test::ScriptedHttpTransport::RecordedRequest* {
+    for (const auto& request : github.requests()) {
+      if (request.method == "PATCH" &&
+          request.body.find("\"draft\":false") != std::string::npos) {
+        return &request;
+      }
+    }
+    return nullptr;
+  }();
+  ASSERT_NE(ready_pr, nullptr);
+
+  // The two operations from the crashed attempt were reconciled, not
+  // re-performed or left behind.
+  for (const auto& op_id : recovered_op_ids) {
+    auto stored_op = store->get_operation(op_id);
+    ASSERT_TRUE(stored_op.has_value()) << stored_op.error().message;
+    EXPECT_EQ(stored_op->state, cf::store::op_state::kConfirmed);
+  }
+  std::size_t comment_gets = 0;
+  for (const auto& request : github.requests()) {
+    if (request.method == "GET" &&
+        request.url.find("/issues/7/comments") != std::string::npos) {
+      ++comment_gets;
+    }
+  }
+  EXPECT_EQ(comment_gets, 2u);
 
   auto operations = store->list_operations("R12", {cf::store::op_state::kConfirmed});
   ASSERT_TRUE(operations.has_value());

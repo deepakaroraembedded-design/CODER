@@ -62,6 +62,7 @@ bool contains(const std::vector<std::string>& values, const std::string& value) 
 TEST(SandboxArgvTest, HardeningFlagsAndMountLayout) {
   SandboxSpec spec;
   spec.image = "img";
+  spec.run_id = "R12";
   spec.worktree = "/host/wt";
   spec.writable_paths = {"src", "include"};
   spec.extra_mounts.push_back(cf::sandbox::SandboxMount{"/host/deps", "/deps", false});
@@ -85,6 +86,9 @@ TEST(SandboxArgvTest, HardeningFlagsAndMountLayout) {
   EXPECT_TRUE(contains(argv, "ALL"));
   EXPECT_TRUE(contains(argv, "--security-opt"));
   EXPECT_TRUE(contains(argv, "no-new-privileges"));
+  EXPECT_TRUE(contains(argv, "--label"));
+  EXPECT_TRUE(contains(argv, "cf.run=R12"));
+  EXPECT_TRUE(contains(argv, "cf.kind=gate"));
   EXPECT_TRUE(contains(argv, std::to_string(::getuid()) + ":" + std::to_string(::getgid())));
   EXPECT_TRUE(contains(argv, "/host/wt:/work:ro"));
   EXPECT_TRUE(contains(argv, "/host/wt/src:/work/src"));
@@ -254,6 +258,43 @@ TEST(SandboxEscapeTest, TimeoutLeavesNoContainerBehind) {
   ASSERT_EQ(containers.exit_code, 0) << containers.stderr_text;
   EXPECT_EQ(containers.stdout_text.find("cf-sandbox-"), std::string::npos)
       << containers.stdout_text;
+}
+
+TEST(SandboxCleanupTest, RemovesOnlyContainersOfTheRun) {
+  if (!docker_ok()) {
+    GTEST_SKIP() << "docker is not available";
+  }
+  const std::string run_id = "cf-cleanup-" + std::to_string(::getpid());
+  const std::string other_run = run_id + "-other";
+  cf::process::LocalProcessExecutor local;
+  auto start = [&](const std::string& label) {
+    ProcessRequest request;
+    request.argv = {"docker", "run", "-d", "--rm", "--label", "cf.run=" + label,
+                    "--name", label, kTestImage, "sleep", "120"};
+    request.timeout = std::chrono::seconds(60);
+    return local.run(request);
+  };
+  const ProcessResult mine = start(run_id);
+  EXPECT_TRUE(mine.launched && mine.exit_code == 0) << mine.stderr_text;
+  const ProcessResult theirs = start(other_run);
+  EXPECT_TRUE(theirs.launched && theirs.exit_code == 0) << theirs.stderr_text;
+
+  const auto removed = cf::sandbox::remove_run_containers("docker", run_id);
+  EXPECT_TRUE(removed.has_value()) << removed.error().message;
+  if (removed.has_value()) {
+    EXPECT_EQ(*removed, 1u);
+  }
+
+  // Another run's container is untouched.
+  ProcessRequest inspect;
+  inspect.argv = {"docker", "inspect", "--format", "{{.State.Running}}", other_run};
+  inspect.timeout = std::chrono::seconds(10);
+  const ProcessResult state = local.run(inspect);
+  EXPECT_EQ(state.exit_code, 0) << state.stderr_text;
+  EXPECT_NE(state.stdout_text.find("true"), std::string::npos);
+
+  (void)cf::sandbox::remove_run_containers("docker", run_id);
+  (void)cf::sandbox::remove_run_containers("docker", other_run);
 }
 
 TEST(SandboxDriverTest, GatesRunInsideTheSandbox) {

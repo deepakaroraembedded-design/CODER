@@ -813,6 +813,7 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     // layout (/work read-only with writable src/include, executable /build).
     sandbox::SandboxSpec spec;
     spec.image = config_.sandbox_image;
+    spec.run_id = config_.run_id;
     spec.worktree = worktree->string();
     spec.writable_paths = {"src", "include"};
     sandbox = std::make_unique<cf::sandbox::DockerSandboxExecutor>(std::move(spec));

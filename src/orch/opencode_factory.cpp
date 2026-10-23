@@ -131,6 +131,11 @@ std::vector<std::string> sandboxed_server_launcher(
     const std::filesystem::path& calls_file) {
   std::vector<std::string> argv = {config.docker_binary, "run", "--rm", "--read-only"};
   add_option(argv, "--name", sandboxed_container_name(role, port));
+  if (!config.run_id.empty()) {
+    // Recovery removes orphaned containers by run label (design 6.12.4).
+    add_option(argv, "--label", "cf.run=" + config.run_id);
+    add_option(argv, "--label", "cf.kind=agent");
+  }
   if (!config.sandbox_internal_network) {
     // Port publishing needs a routable bridge; --network none cannot publish.
     add_option(argv, "-p", "127.0.0.1:" + std::to_string(port) + ":" +

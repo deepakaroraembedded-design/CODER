@@ -66,6 +66,11 @@ struct RunProcessConfig {
   // orchestration
   OrchestratorConfig orchestrator;
   uint32_t max_system_validation_attempts = 1;
+  // Startup recovery (design section 6.12.4): the lease lifetime and the
+  // in-flight grace period before operations left by an older epoch are
+  // reconciled (design section 6.12.6 rule 3).
+  std::chrono::seconds lease_ttl{120};
+  std::chrono::seconds in_flight_grace{120};
 
   // GitHub flow (design section 10.4.4); disabled without a transport. The
   // caller owns the transport (production passes a CprTransport).

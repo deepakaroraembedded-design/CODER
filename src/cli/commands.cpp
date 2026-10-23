@@ -28,6 +28,7 @@
 #include "cf/rag/injection_scan.hpp"
 #include "cf/rag/loader.hpp"
 #include "cf/rag/retriever.hpp"
+#include "cf/sandbox/docker.hpp"
 #include "cf/store/run_store.hpp"
 
 namespace cf::cli {
@@ -513,9 +514,21 @@ int resume_command(const std::filesystem::path& workspace, const std::string& ru
   orch::Dispatcher dispatcher(**store, run_id, holder);
   orch::RecoveryOptions options;
   options.holder = holder;
+  if (sandbox::docker_available()) {
+    options.kill_leftovers = [run_id]() {
+      return sandbox::remove_run_containers("docker", run_id);
+    };
+  }
   auto report = recovery.resume(run_id, dispatcher, options, store::unix_now());
   if (!report) {
     err << report.error().code << ": " << report.error().message << "\n";
+    return 1;
+  }
+  // The resume command does not go on to execute the run, so it must not
+  // keep the lease (a second orchestrator would be locked out until the TTL).
+  const auto released = (*store)->release_lease(run_id, holder, report->epoch);
+  if (!released) {
+    err << released.error().code << ": " << released.error().message << "\n";
     return 1;
   }
   out << report->to_json() << "\n";

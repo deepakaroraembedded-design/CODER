@@ -149,6 +149,36 @@ TEST_F(RecoveryTest, TakesOverExpiredLeaseAndReleasesStaleLocks) {
   EXPECT_TRUE(locks->empty());
 }
 
+TEST_F(RecoveryTest, KillsLeftoversBeforeReconciling) {
+  bool killed = false;
+  Recovery recovery(*store_);
+  Dispatcher dispatcher(*store_, "R12", "new-orch");
+  RecoveryOptions options;
+  options.holder = "new-orch";
+  options.kill_leftovers = [&killed]() -> cf::Result<std::size_t> {
+    killed = true;
+    return std::size_t{2};
+  };
+  auto report = recovery.resume("R12", dispatcher, options, now_);
+  ASSERT_TRUE(report.has_value()) << report.error().message;
+  EXPECT_TRUE(killed);
+  EXPECT_EQ(report->leftovers_removed, 2u);
+  EXPECT_EQ(nlohmann::json::parse(report->to_json())["leftovers_removed"], 2u);
+}
+
+TEST_F(RecoveryTest, FailsRecoveryWhenLeftoversCannotBeKilled) {
+  Recovery recovery(*store_);
+  Dispatcher dispatcher(*store_, "R12", "new-orch");
+  RecoveryOptions options;
+  options.holder = "new-orch";
+  options.kill_leftovers = []() -> cf::Result<std::size_t> {
+    return cf::fail("SANDBOX_DOCKER_FAILED", "no daemon");
+  };
+  const auto report = recovery.resume("R12", dispatcher, options, now_);
+  ASSERT_FALSE(report.has_value());
+  EXPECT_EQ(report.error().code, "SANDBOX_DOCKER_FAILED");
+}
+
 TEST_F(RecoveryTest, FailsWhenAnotherOrchestratorHoldsTheLease) {
   ASSERT_TRUE(store_
                   ->acquire_lease("R12", "other-orch", std::chrono::seconds(300), now_)
@@ -193,7 +223,7 @@ TEST_F(RecoveryTest, ReconcilesStartedOperationsPastTheGracePeriod) {
   EXPECT_EQ(op->state, cf::store::op_state::kConfirmed);
 }
 
-TEST_F(RecoveryTest, RespectsTheInFlightGracePeriod) {
+TEST_F(RecoveryTest, WaitsOutTheInFlightGracePeriodThenReconciles) {
   const std::string key = record_intent("push", "commit-a");
   ASSERT_TRUE(store_
                   ->acquire_lease("R12", "old-orch", std::chrono::seconds(30),
@@ -203,18 +233,33 @@ TEST_F(RecoveryTest, RespectsTheInFlightGracePeriod) {
   ASSERT_TRUE(op.has_value());
   ASSERT_TRUE(store_->mark_operation_started(op->op_id, 1, now_).has_value());
 
+  auto handler = std::make_unique<FakeHandler>(
+      "push", DispatchResult{DispatchOutcome::Retry, "", ""},
+      DispatchResult{DispatchOutcome::Confirmed, "{\"pushed\":true}", ""});
   Dispatcher dispatcher(*store_, "R12", "new-orch");
+  dispatcher.register_handler(std::move(handler));
+
   Recovery recovery(*store_);
   RecoveryOptions options;
   options.holder = "new-orch";
   options.in_flight_grace = std::chrono::seconds(600);
+  std::chrono::seconds waited{0};
+  options.sleep_for = [&](std::chrono::seconds duration) { waited += duration; };
   auto report = recovery.resume("R12", dispatcher, options, now_);
   ASSERT_TRUE(report.has_value()) << report.error().message;
-  EXPECT_EQ(report->started_reconciled, 0u);
+  EXPECT_EQ(waited, std::chrono::seconds(600));
+  EXPECT_EQ(report->reconciled_at, now_ + 600);
+  EXPECT_EQ(report->started_reconciled, 1u);
 
   op = store_->find_operation_by_key(key);
   ASSERT_TRUE(op.has_value());
-  EXPECT_EQ(op->state, cf::store::op_state::kStarted);
+  EXPECT_EQ(op->state, cf::store::op_state::kConfirmed);
+
+  // The lease was renewed while waiting (design section 6.12.6), so it is
+  // still live when recovery finishes.
+  const auto lease = store_->get_lease("R12");
+  ASSERT_TRUE(lease.has_value()) << lease.error().message;
+  EXPECT_EQ(lease->renewed_at, now_ + 600);
 }
 
 TEST_F(RecoveryTest, RetriesOperationsThatNeedReconciliation) {

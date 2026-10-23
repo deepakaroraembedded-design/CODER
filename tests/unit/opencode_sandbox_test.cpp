@@ -70,6 +70,9 @@ TEST(OpencodeSandboxTest, LauncherCarriesTheDesignLayout) {
   EXPECT_TRUE(contains(argv, "--cap-drop"));
   EXPECT_TRUE(contains(argv, "ALL"));
   EXPECT_TRUE(contains(argv, "no-new-privileges"));
+  EXPECT_TRUE(contains(argv, "--label"));
+  EXPECT_TRUE(contains(argv, "cf.run=R12"));
+  EXPECT_TRUE(contains(argv, "cf.kind=agent"));
   EXPECT_TRUE(contains(argv, "--workdir"));
   EXPECT_TRUE(contains(argv, "/work"));
 

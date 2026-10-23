@@ -84,6 +84,23 @@ Result<DispatchOutcome> Dispatcher::reconcile_one(std::string_view op_id, uint64
   return result.outcome;
 }
 
+Result<std::size_t> Dispatcher::reconcile_needs_reconcile(uint64_t epoch,
+                                                          store::UnixTime now) {
+  auto needs = store_.list_operations(run_id_, {store::op_state::kNeedsReconcile});
+  if (!needs) {
+    return tl::make_unexpected(needs.error());
+  }
+  std::size_t reconciled = 0;
+  for (const auto& op : *needs) {
+    auto outcome = reconcile_one(op.op_id, epoch, now);
+    if (!outcome) {
+      return tl::make_unexpected(outcome.error());
+    }
+    ++reconciled;
+  }
+  return reconciled;
+}
+
 Result<std::size_t> Dispatcher::reconcile_stale(uint64_t epoch,
                                                 std::chrono::seconds grace,
                                                 store::UnixTime now) {

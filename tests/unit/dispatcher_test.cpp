@@ -262,6 +262,54 @@ TEST_F(DispatcherTest, ReconcileRespectsInFlightGracePeriod) {
   EXPECT_EQ(op->state, cf::store::op_state::kStarted);
 }
 
+TEST_F(DispatcherTest, ReconcilesEveryNeedsReconcileOperation) {
+  const std::string first = record_intent("pr_create", "branch-a");
+  NewOperation comment;
+  comment.idempotency_key =
+      cf::idempotency_key("R12", "M3", "comment", cf::sha256_hex("comment-b"));
+  comment.milestone_id = "M3";
+  comment.kind = "comment";
+  comment.input_json = "comment-b";
+  comment.expected_json = "{}";
+  ASSERT_TRUE(store_->record_intents("R12", {comment}, now_).has_value());
+  const std::string second = comment.idempotency_key;
+
+  ASSERT_TRUE(store_
+                  ->acquire_lease("R12", "orch-1", std::chrono::seconds(30), now_)
+                  .has_value());
+  for (const std::string& key : {first, second}) {
+    auto op = store_->find_operation_by_key(key);
+    ASSERT_TRUE(op.has_value());
+    ASSERT_TRUE(store_->mark_operation_started(op->op_id, 1, now_).has_value());
+    ASSERT_TRUE(
+        store_->mark_operation_needs_reconcile(op->op_id, "world differs", now_)
+            .has_value());
+  }
+  const auto takeover = store_->acquire_lease(
+      "R12", "orch-2", std::chrono::seconds(30), now_ + 100);
+  ASSERT_TRUE(takeover.has_value()) << takeover.error().message;
+  ASSERT_EQ(takeover->epoch, 2u);
+
+  Dispatcher dispatcher(*store_, "R12", "orch-2");
+  auto handler = std::make_unique<FakeHandler>(
+      "pr_create", DispatchResult{DispatchOutcome::Retry, "", ""},
+      DispatchResult{DispatchOutcome::Confirmed, "{\"number\":7}", ""});
+  FakeHandler* raw = handler.get();
+  dispatcher.register_handler(std::move(handler));
+  // The comment has no reconciler: it must stay NEEDS_RECONCILE.
+  const auto reconciled = dispatcher.reconcile_needs_reconcile(2, now_ + 100);
+  ASSERT_TRUE(reconciled.has_value()) << reconciled.error().message;
+  EXPECT_EQ(*reconciled, 2u);
+  EXPECT_EQ(raw->reconcile_calls, 1);
+
+  auto confirmed = store_->find_operation_by_key(first);
+  ASSERT_TRUE(confirmed.has_value());
+  EXPECT_EQ(confirmed->state, cf::store::op_state::kConfirmed);
+  auto still = store_->find_operation_by_key(second);
+  ASSERT_TRUE(still.has_value());
+  EXPECT_EQ(still->state, cf::store::op_state::kNeedsReconcile);
+}
+
 TEST_F(DispatcherTest, ReconcileSkipsCurrentEpochOperations) {
   const std::string key = record_intent("push", "commit-a");
   ASSERT_TRUE(store_

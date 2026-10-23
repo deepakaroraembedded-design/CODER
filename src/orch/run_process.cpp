@@ -11,8 +11,10 @@
 #include "cf/orch/escalation.hpp"
 #include "cf/orch/defect_export.hpp"
 #include "cf/orch/github_flow.hpp"
+#include "cf/orch/recovery.hpp"
 #include "cf/rag/loader.hpp"
 #include "cf/rag/retriever.hpp"
+#include "cf/sandbox/docker.hpp"
 
 namespace cf::orch {
 namespace {
@@ -217,23 +219,16 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   RunOrchestrator orchestrator(store_, config_.run_id, plan_, driver,
                                config_.orchestrator);
 
-  // The orchestrator holds the run lease (design section 6.12.6); its epoch
-  // stamps every operation.
-  auto lease = store_.acquire_lease(
-      config_.run_id, "run-process-" + std::to_string(::getpid()),
-      std::chrono::seconds(120), now);
-  if (!lease) {
-    return tl::make_unexpected(lease.error());
-  }
-  const uint64_t epoch = lease->epoch;
+  const std::string holder = "run-process-" + std::to_string(::getpid());
 
   // GitHub flow: push per milestone, draft PR from integration (10.4.4).
+  // The handlers double as reconcilers, so recovery gets them too.
   std::unique_ptr<github::Client> github_client;
-  std::unique_ptr<Dispatcher> github_dispatcher;
-  std::unique_ptr<GithubFlow> github_flow;
-  std::unique_ptr<DefectExporter> defect_export;
-  if (config_.github_transport != nullptr && !config_.github_owner.empty() &&
-      !config_.github_repo.empty()) {
+  Dispatcher operation_dispatcher(store_, config_.run_id, holder);
+  const bool github_enabled = config_.github_transport != nullptr &&
+                              !config_.github_owner.empty() &&
+                              !config_.github_repo.empty();
+  if (github_enabled) {
     github::ClientOptions client_options;
     client_options.api_base = config_.github_api_base;
     client_options.token = config_.github_token;
@@ -246,26 +241,64 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     handler_context.owner = config_.github_owner;
     handler_context.repo = config_.github_repo;
     handler_context.remote = config_.github_remote;
-    github_dispatcher = std::make_unique<Dispatcher>(
-        store_, config_.run_id, "run-process-" + std::to_string(::getpid()));
-    github_dispatcher->register_handler(std::make_unique<PushHandler>(handler_context));
-    github_dispatcher->register_handler(
+    operation_dispatcher.register_handler(
+        std::make_unique<PushHandler>(handler_context));
+    operation_dispatcher.register_handler(
         std::make_unique<PrCreateHandler>(handler_context));
-    github_dispatcher->register_handler(
+    operation_dispatcher.register_handler(
         std::make_unique<PrUpdateHandler>(handler_context));
-    github_dispatcher->register_handler(
+    operation_dispatcher.register_handler(
         std::make_unique<IssueCreateHandler>(handler_context));
-    github_dispatcher->register_handler(
+    operation_dispatcher.register_handler(
         std::make_unique<IssueUpdateHandler>(handler_context));
-    github_dispatcher->register_handler(
+    operation_dispatcher.register_handler(
         std::make_unique<CommentHandler>(handler_context));
+  }
+
+  StateMachine machine(store_, config_.run_id);
+  RunState state = machine.current();
+  if (state != RunState::Executing && state != RunState::SystemValidation) {
+    return state;  // waiting on a person or already terminal
+  }
+
+  // Recovery runs automatically on start-up (design section 6.12.4): take
+  // the run lease, release stale locks, reconcile operations left in flight
+  // with the real handlers, and reset worktrees to their checkpoints before
+  // any new effect is issued.
+  Recovery recovery(
+      store_,
+      std::make_unique<GitWorktreeHook>(repository_, config_.workspace_root));
+  RecoveryOptions recovery_options;
+  recovery_options.holder = holder;
+  recovery_options.lease_ttl = config_.lease_ttl;
+  recovery_options.in_flight_grace = config_.in_flight_grace;
+  if (!config_.agent_sandbox_image.empty() || !config_.sandbox_image.empty()) {
+    // Remove containers left behind by the killed orchestrator before new
+    // gate jobs or agent servers start (design section 6.12.4 step 2).
+    const std::string docker_binary = config_.docker_binary;
+    const std::string run_id = config_.run_id;
+    recovery_options.kill_leftovers = [docker_binary, run_id]() {
+      return sandbox::remove_run_containers(docker_binary, run_id);
+    };
+  }
+  auto recovered =
+      recovery.resume(config_.run_id, operation_dispatcher, recovery_options, now);
+  if (!recovered) {
+    return tl::make_unexpected(recovered.error());
+  }
+  now = recovered->reconciled_at;
+  const uint64_t epoch = recovered->epoch;
+
+  std::unique_ptr<GithubFlow> github_flow;
+  std::unique_ptr<DefectExporter> defect_export;
+  if (github_enabled) {
     GithubFlowConfig flow_config;
     flow_config.owner = config_.github_owner;
     flow_config.repo = config_.github_repo;
     flow_config.remote = config_.github_remote;
     flow_config.base_branch = config_.base_branch;
-    github_flow = std::make_unique<GithubFlow>(store_, *github_dispatcher, repository_,
-                                               std::move(flow_config));
+    github_flow = std::make_unique<GithubFlow>(store_, operation_dispatcher,
+                                               repository_, std::move(flow_config));
     if (config_.export_defects) {
       DefectExportConfig export_config;
       export_config.owner = config_.github_owner;
@@ -273,15 +306,9 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
       export_config.report_base =
           (config_.workspace_root / "runs" / config_.run_id).string();
       export_config.client = github_client.get();
-      defect_export = std::make_unique<DefectExporter>(store_, *github_dispatcher,
-                                                       std::move(export_config));
+      defect_export = std::make_unique<DefectExporter>(
+          store_, operation_dispatcher, std::move(export_config));
     }
-  }
-
-  StateMachine machine(store_, config_.run_id);
-  RunState state = machine.current();
-  if (state != RunState::Executing && state != RunState::SystemValidation) {
-    return state;  // waiting on a person or already terminal
   }
 
   uint32_t validation_failures = 0;

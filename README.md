@@ -17,7 +17,7 @@ is still missing.
 | Area | State |
 |---|---|
 | Phase 0a — opencode harness go/no-go | **Complete**: 300/300 iterations passed (H1–H15 × 20) against pinned opencode 1.18.35; recommendation **Go** (`docs/phase0a/decision.md`) |
-| Run store, side-effect protocol, crash recovery | Implemented and tested |
+| Run store, side-effect protocol, crash recovery | Implemented and tested; startup recovery (§6.12.4) runs automatically at the start of `cf run --execute` (lease takeover, leftover-container removal, in-flight grace period, reconcile), and `cf resume` releases the lease it takes |
 | State machines, scheduler, review rules, milestone loop, run orchestrator | Implemented and tested; refined plans' declared write sets are enforced at snapshot time (§6.13.2), and a merge that changes a public interface revalidates the Done milestones that use it against the new integration head (§6.13.3; a revalidation fix starts from that head, gates run in a separate build directory, and test-only gate failures are repaired by QA) |
 | Toolchain profiles and staged gate runner | Implemented and tested |
 | RAG retrieval (BM25 + vectors, precedence, conflicts) and document ingestion | Implemented and tested |
@@ -27,13 +27,13 @@ is still missing.
 | Workspace milestone driver (agents + git + gates) | Implemented and tested; fix turns receive the milestone's open defects and every fix turn counts one attempt per defect (escalates at 4, §12) |
 | opencode-backed `AgentRunner` | Implemented end to end: turn driving with event-driven (`session.idle`) turn completion, permission broker, event routing, role configs, versioned prompt templates, RAG-backed question answering, server spawning, dead-server detection and restart before the next turn (§6.12, H8), `RunProcess` and `cf run --execute` |
 | GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences), dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment`), `GithubFlow` (milestone pushes, draft PR open/update/ready, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
-| CLI (`cf check/run/status/resume/escalations/report/approve/abort`) | Implemented and tested |
-| Design refinement (Phase 4) | Implemented and verified with the real planner model: the refiner turns the plan into a design package (`runs/<run>/design.{json,md}` — component design, refined milestone DAG with write sets/uses/interfaces for the scheduler, ADRs), self-critiques and revises once, stops at the human approval gate, and the approved package drives execution. Approving publishes the design as a product-scoped RAG design document (`<workspace>/designs/`, status `approved`; an earlier design for the same plan becomes `superseded` and is no longer retrieved), and the run's MCP servers and question policy carry the product/language applicability context. The curated pattern catalog (`catalog/patterns/`, six entries) is loaded by `cf-mcp --patterns`, is authoritative for `get_pattern` and is indexed into retrieval; the refiner prompt carries it. Remaining: pattern-conformance checks, adversarial conflict set |
+| CLI (`cf check/run/status/resume/escalations/report/approve/abort/ingest`) | Implemented and tested |
+| Design refinement (Phase 4) | Implemented and verified with the real planner model: the refiner turns the plan into a design package (`runs/<run>/design.{json,md}` — component design, refined milestone DAG with write sets/uses/interfaces for the scheduler, ADRs), self-critiques and revises once, stops at the human approval gate, and the approved package drives execution. Approving publishes the design as a product-scoped RAG design document (`<workspace>/designs/`, status `approved`; an earlier design for the same plan becomes `superseded` and is no longer retrieved), and the run's MCP servers and question policy carry the product/language applicability context. The curated pattern catalog (`catalog/patterns/`, six entries) is loaded by `cf-mcp --patterns`, is authoritative for `get_pattern` and is indexed into retrieval; the refiner prompt carries it. Remaining: pattern-conformance checks |
 | Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the suite spans C++, Python and Go plus a crash-injection reliability scenario, and the full benchmark (3 candidates × 7 plans) is complete and confirms the pinned models |
-| Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
+| Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout plus run-labelled cleanup on recovery; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **553 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **557 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -176,7 +176,7 @@ and GCC 11's cannot suppress them (the small HNSW tests still run).
 
 | Binary | Purpose |
 |---|---|
-| `cf` | CLI: `check`, `run`, `status`, `resume`, `escalations`, `report` |
+| `cf` | CLI: `check`, `run`, `status`, `resume`, `escalations`, `report`, `approve`, `abort`, `ingest` |
 | `cf-mcp` | MCP tool server over stdio (one per agent role) |
 | `cf-mcp-spike` | Minimal MCP stub used by the Phase 0a harness |
 | `cf-refmirror` | Reference documentation mirroring job |
@@ -225,9 +225,10 @@ cf run --plan plans/product-x.yaml --profiles profiles --workspace cf-work --run
 # review the design package, then approve it (AwaitingDesignApproval -> Executing)
 cf approve --run R12 --workspace cf-work --stage design
 
-# execute again: the run already exists (re-running is idempotent), the
-# approved refined plan drives the scheduler (write sets, interfaces) and the
-# pipeline runs to Done
+# execute again: the run already exists (re-running is idempotent), startup
+# recovery reconciles whatever a killed orchestrator left behind (§6.12.4),
+# the approved refined plan drives the scheduler (write sets, interfaces)
+# and the pipeline runs to Done
 cf run --plan plans/product-x.yaml --profiles profiles --workspace cf-work --run-id R12 \
        --execute --repo /path/to/target-repo
 
@@ -236,7 +237,8 @@ cf status --run R12 --workspace cf-work          # human-readable
 cf status --run R12 --workspace cf-work --json   # machine-readable
 
 # recover after a crash (lease takeover, stale locks, in-flight ops,
-# worktree reset when --repo is given)
+# worktree reset when --repo is given; force-removes containers left by the
+# killed orchestrator and releases the lease afterwards)
 cf resume --run R12 --workspace cf-work --repo /path/to/target-repo
 
 # escalation bundles
@@ -308,7 +310,7 @@ cf-mcp --role coder --run R12 --milestone M3 \
 | `file_defect`, `verify_defect` | qa | Fingerprint de-duplication; recurring defects are marked `REOPENED` |
 | `submit_work` / `submit_review` / `submit_tests` | coder / reviewer / qa | Structured turn endings |
 | `dispute_test` | coder | Records a `DISPUTED` defect against a protected test and ends the turn; QA decides immediately (fix or reject), a second dispute of the same test escalates (design §6.9, §12) |
-| `get_context`, `find_symbol`, `get_callers`, `run_checks` | – | Return `TOOL_UNAVAILABLE` until cf-codeintel/gates/sandbox land |
+| `get_context`, `find_symbol`, `get_callers`, `run_checks` | – | Return `TOOL_UNAVAILABLE` until cf-codeintel lands (§9) |
 
 Arguments are validated against JSON schemas; failures return structured errors
 (`TOOL_INVALID_ARGUMENTS`, `TOOL_DENIED`, `TOOL_NOT_FOUND`, `TOOL_UNAVAILABLE`).
@@ -337,7 +339,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 553 unit tests
+ctest --test-dir build/debug --output-on-failure     # 557 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -455,8 +457,8 @@ opencode version.
   defaults. `cf run --execute` drives it (with `cf approve` for the design gate);
   an end-to-end test drives a full milestone to `Done` against a fake opencode
   server, with real git snapshots, gates and integration. Remaining for full
-  fidelity: running the opencode servers in the daemon-free sandbox and the
-  real-model runs of the golden suite (Phase 0b).
+  fidelity: running the opencode servers in the daemon-free sandbox (see
+  below); the Phase 0b benchmark has already run end to end with real models.
 - **Sandbox (design §6.8).** The Docker-based executor covers gate jobs
   (`cf-sandbox`) and, since this session, the opencode servers themselves
   (`agent_sandbox_image` on the run process): each server runs in a container
@@ -472,7 +474,8 @@ opencode version.
   published ports, which internal networks cannot provide), and the built-in
   allow-listing CONNECT proxy, bound to the bridge gateway, is the only
   outbound path for the model endpoint (`sandbox_allowed_hosts`). The §6.8.4
-  escape suite covers it.
+  escape suite covers it; recovery also force-removes any container left
+  behind by a killed orchestrator, using the `cf.run` label.
 - **Daemon-free sandbox (design §6.8).** `cf-sandbox`'s namespace executor
   runs a command in unprivileged user, mount, network, UTS, IPC and PID
   namespaces with no Docker and no root, with **Landlock** path confinement,
@@ -549,10 +552,18 @@ opencode version.
   `crash_count`), resumes it (lease takeover, stale locks, in-flight
   operations, worktree reset to the checkpoint) and continues;
   `rel-orchestrator-crash` and `rel-crash-mid-turn` verify the run still
-  reaches Done with no duplicated commits or operations. The rest of the
-  §6.12.5 matrix (a kill at every protocol step for every operation kind,
-  SIGSTOP takeover with a live GitHub request, sandbox kills) is still to be
-  built.
+  reaches Done with no duplicated commits or operations. Startup recovery
+  (design section 6.12.4) also runs automatically at the beginning of
+  `cf run --execute`, with the GitHub handlers wired in as reconcilers, so
+  operations left `STARTED` or `NEEDS_RECONCILE` by a killed orchestrator
+  are reconciled before any new effect; recovery waits out the in-flight
+  grace period (renewing the lease every 10 s while it waits), so an old
+  request can no longer land after the world was read, and it removes
+  orphaned run containers by the `cf.run` label (gate jobs and agent
+  servers). `cf resume` releases the lease it took so execution can follow
+  immediately. The rest of the §6.12.5 matrix (a kill at every protocol step
+  for every operation kind, SIGSTOP takeover with a live GitHub request,
+  sandbox kills) is still to be built.
 - **RAG production index.** hnswlib is the default vector index (brute force
   stays behind the same `VectorIndex` interface as the parity reference); FAISS
   (IVF-PQ for collections over 5M chunks) is still pending. PDF/DOCX ingestion
@@ -575,7 +586,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (553)
+tests/unit/                 # GoogleTest unit tests (557)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

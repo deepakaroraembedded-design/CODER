@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -29,11 +30,22 @@ struct RecoveryOptions {
   // In-flight grace period (design section 6.12.6 rule 3): operations left
   // STARTED by an older epoch are only reconciled once this has passed.
   std::chrono::seconds in_flight_grace{120};
+  // How recovery waits out the remainder of the grace period. Empty sleeps
+  // on the calling thread; tests inject a fake that advances instantly.
+  std::function<void(std::chrono::seconds)> sleep_for;
+  // Kills sandboxes and other runners left by the previous orchestrator
+  // (design section 6.12.4 step 2). Empty: nothing to clean. Returns how many
+  // containers were removed; a failure stops recovery (fail closed).
+  std::function<Result<std::size_t>()> kill_leftovers;
 };
 
 struct RecoveryReport {
   uint64_t epoch = 0;
+  // The time recovery acted at: after waiting out the in-flight grace period
+  // this is later than the `now` passed to resume().
+  store::UnixTime reconciled_at = 0;
   std::size_t locks_released = 0;
+  std::size_t leftovers_removed = 0;
   std::size_t started_reconciled = 0;
   std::size_t needs_reconcile_retried = 0;
   std::vector<std::string> still_needs_reconcile;

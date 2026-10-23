@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <sstream>
 #include <utility>
 
 #include <unistd.h>
@@ -23,6 +24,10 @@ std::vector<std::string> docker_run_argv(const SandboxSpec& spec,
   std::vector<std::string> argv = {spec.docker_binary, "run", "--rm", "--read-only"};
   if (!container_name.empty()) {
     add_option(argv, "--name", container_name);
+  }
+  if (!spec.run_id.empty()) {
+    add_option(argv, "--label", "cf.run=" + spec.run_id);
+    add_option(argv, "--label", "cf.kind=gate");
   }
   if (spec.network) {
     add_option(argv, "--network", spec.network_name.empty() ? "bridge" : spec.network_name);
@@ -109,6 +114,55 @@ bool docker_available(const std::string& docker_binary) {
   request.timeout = std::chrono::milliseconds(10000);
   const process::ProcessResult result = local.run(request);
   return result.launched && result.exit_code == 0;
+}
+
+Result<std::size_t> remove_run_containers(const std::string& docker_binary,
+                                          std::string_view run_id,
+                                          std::chrono::milliseconds timeout) {
+  process::LocalProcessExecutor local;
+
+  process::ProcessRequest list;
+  list.argv = {docker_binary, "ps", "-aq", "--filter",
+               "label=cf.run=" + std::string(run_id)};
+  list.timeout = timeout;
+  const process::ProcessResult listed = local.run(list);
+  if (!listed.launched) {
+    return fail("SANDBOX_DOCKER_UNAVAILABLE",
+                "cannot launch " + docker_binary + ": " + listed.error);
+  }
+  if (listed.exit_code != 0) {
+    return fail("SANDBOX_DOCKER_FAILED",
+                "docker ps failed: " + listed.stderr_text);
+  }
+
+  std::vector<std::string> containers;
+  std::istringstream lines(listed.stdout_text);
+  for (std::string line; std::getline(lines, line);) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    if (!line.empty()) {
+      containers.push_back(std::move(line));
+    }
+  }
+  if (containers.empty()) {
+    return 0;
+  }
+
+  process::ProcessRequest remove;
+  remove.argv = {docker_binary, "rm", "-f"};
+  remove.argv.insert(remove.argv.end(), containers.begin(), containers.end());
+  remove.timeout = timeout;
+  const process::ProcessResult removed = local.run(remove);
+  if (!removed.launched) {
+    return fail("SANDBOX_DOCKER_UNAVAILABLE",
+                "cannot launch " + docker_binary + ": " + removed.error);
+  }
+  if (removed.exit_code != 0) {
+    return fail("SANDBOX_DOCKER_FAILED",
+                "docker rm failed: " + removed.stderr_text);
+  }
+  return containers.size();
 }
 
 }  // namespace cf::sandbox

@@ -12,11 +12,14 @@
 // 6.8) can follow behind the same interface.
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "cf/common/process.hpp"
+#include "cf/common/result.hpp"
 
 namespace cf::sandbox {
 
@@ -28,6 +31,9 @@ struct SandboxMount {
 
 struct SandboxSpec {
   std::string image;                         // the profile's toolchain image
+  // Run this sandbox belongs to; labels the container `cf.run=<run_id>` so
+  // recovery can remove containers orphaned by a killed orchestrator.
+  std::string run_id;
   std::string worktree;                      // mounted read-only at /work
   std::vector<std::string> writable_paths;   // relative to the worktree
   std::vector<SandboxMount> extra_mounts;    // e.g. /deps dependency caches
@@ -63,5 +69,12 @@ class DockerSandboxExecutor final : public process::ProcessExecutor {
 
 // True when the docker CLI can talk to a daemon.
 bool docker_available(const std::string& docker_binary = "docker");
+
+// Force-removes every container labelled `cf.run=<run_id>`: gate jobs and
+// agent servers left behind when the orchestrator was killed (design
+// section 6.12.4 step 2). Returns how many containers were removed.
+Result<std::size_t> remove_run_containers(
+    const std::string& docker_binary, std::string_view run_id,
+    std::chrono::milliseconds timeout = std::chrono::seconds(30));
 
 }  // namespace cf::sandbox
