@@ -1113,6 +1113,8 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   // run indexes when one matches the plan's target language.
   codeintel::BackendRegistry codeintel_backends;
   codeintel_backends.add(codeintel::make_c_backend());
+  codeintel_backends.add(codeintel::make_python_backend());
+  codeintel_backends.add(codeintel::make_go_backend());
   config.codeintel_backends = &codeintel_backends;
   config.orchestrator.escalation_dir = (directory / "escalations").string();
   if (effective.budget.max_usd_total.has_value()) {

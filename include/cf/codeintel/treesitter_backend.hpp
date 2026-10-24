@@ -1,30 +1,48 @@
 // cf-codeintel: the tree-sitter back end (design section 6.5).
 //
-// One parser per language grammar; the grammar's extracted symbols, call
-// edges and includes feed the shared SymbolGraph. The C grammar is vendored
-// under third_party/tree-sitter-c (the vcpkg port's prebuilt CLI cannot run
-// on the build host, see third_party/VERSIONS); other languages slot in by
-// constructing the back end with their TSLanguage.
+// One parser per language grammar; each grammar ships an extractor that
+// walks the parsed tree and records its symbols, call edges and includes
+// into the shared SymbolGraph. The grammars are vendored under
+// third_party/tree-sitter-* (the vcpkg ports' prebuilt CLI cannot run on
+// the build host, see third_party/VERSIONS); another language slots in as
+// a grammar plus an extractor plus a factory below.
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#include <tree_sitter/api.h>
 
 #include "cf/codeintel/backend.hpp"
 
-// tree-sitter's api.h typedefs `struct TSLanguage` — forward-declared here
-// so the public header does not expose the tree-sitter headers.
-typedef struct TSLanguage TSLanguage;
-
 namespace cf::codeintel {
+
+namespace detail {
+
+// Per-file extraction state threaded through a grammar's tree walk.
+struct Extraction {
+  std::string_view source;
+  std::string path;  // root-relative
+  SymbolGraph* graph;
+  std::string current_caller;  // the enclosing function/method, empty at file scope
+  std::string current_scope;   // the enclosing class name, when the grammar
+                               // tracks one (Python methods)
+};
+
+// A grammar's extractor: walks the parsed tree of one file.
+using ExtractFn = void (*)(TSNode root, Extraction& extraction);
+
+}  // namespace detail
 
 class TreeSitterBackend final : public LanguageBackend {
  public:
   // `ts_language` is the grammar's entry point (e.g. tree_sitter_c());
   // `extensions` are the source file extensions it applies to (".c", ".h").
   TreeSitterBackend(const TSLanguage* ts_language, std::string language_id,
-                    std::vector<std::string> extensions);
+                    std::vector<std::string> extensions, detail::ExtractFn extract);
   ~TreeSitterBackend() override;
   TreeSitterBackend(const TreeSitterBackend&) = delete;
   TreeSitterBackend& operator=(const TreeSitterBackend&) = delete;
@@ -41,7 +59,9 @@ class TreeSitterBackend final : public LanguageBackend {
   std::unique_ptr<Impl> impl_;
 };
 
-// The C grammar (third_party/tree-sitter-c): indexes ".c" and ".h" files.
-std::unique_ptr<LanguageBackend> make_c_backend();
+// The vendored grammars (third_party/tree-sitter-*, pinned in VERSIONS).
+std::unique_ptr<LanguageBackend> make_c_backend();       // ".c", ".h"
+std::unique_ptr<LanguageBackend> make_python_backend();  // ".py"
+std::unique_ptr<LanguageBackend> make_go_backend();      // ".go"
 
 }  // namespace cf::codeintel

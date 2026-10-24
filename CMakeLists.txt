@@ -203,10 +203,15 @@ add_library(cf_git STATIC
   src/git/repository.cpp)
 target_link_libraries(cf_git PUBLIC cf_common)
 
-# The vendored tree-sitter C grammar (third_party/tree-sitter-c, pinned in
+# The vendored tree-sitter grammars (third_party/tree-sitter-*, pinned in
 # third_party/VERSIONS): generated parser code, so no project warnings apply.
 add_library(tree_sitter_c_grammar STATIC
   third_party/tree-sitter-c/src/parser.c)
+add_library(tree_sitter_python_grammar STATIC
+  third_party/tree-sitter-python/src/parser.c
+  third_party/tree-sitter-python/src/scanner.c)
+add_library(tree_sitter_go_grammar STATIC
+  third_party/tree-sitter-go/src/parser.c)
 
 # cf-codeintel: code intelligence (design section 6.5)
 add_library(cf_codeintel STATIC
@@ -215,12 +220,17 @@ add_library(cf_codeintel STATIC
   src/codeintel/symbol_index.cpp
   src/codeintel/indexer.cpp
   src/codeintel/context_packer.cpp
+  src/codeintel/grammar_c.cpp
+  src/codeintel/grammar_python.cpp
+  src/codeintel/grammar_go.cpp
   src/codeintel/treesitter_backend.cpp)
 target_link_libraries(cf_codeintel PUBLIC
   cf_common
   SQLiteCpp
   unofficial::tree-sitter::tree-sitter
-  tree_sitter_c_grammar)
+  tree_sitter_c_grammar
+  tree_sitter_python_grammar
+  tree_sitter_go_grammar)
 
 # cf-sandbox: Docker and daemon-free namespace executors (design section 6.8)
 add_library(cf_sandbox STATIC

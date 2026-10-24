@@ -9,6 +9,7 @@ std::string_view to_string(SymbolKind kind) {
     case SymbolKind::Class: return "class";
     case SymbolKind::Struct: return "struct";
     case SymbolKind::Enum: return "enum";
+    case SymbolKind::Interface: return "interface";
     case SymbolKind::Typedef: return "typedef";
     case SymbolKind::Variable: return "variable";
     case SymbolKind::Macro: return "macro";
@@ -23,6 +24,7 @@ std::optional<SymbolKind> symbol_kind_from_string(std::string_view text) {
   if (text == "class") return SymbolKind::Class;
   if (text == "struct") return SymbolKind::Struct;
   if (text == "enum") return SymbolKind::Enum;
+  if (text == "interface") return SymbolKind::Interface;
   if (text == "typedef") return SymbolKind::Typedef;
   if (text == "variable") return SymbolKind::Variable;
   if (text == "macro") return SymbolKind::Macro;
