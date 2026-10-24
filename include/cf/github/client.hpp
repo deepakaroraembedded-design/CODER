@@ -90,9 +90,21 @@ class Client {
   Result<std::string> get_file(const std::string& owner, const std::string& repo,
                                const std::string& path, const std::string& ref = "");
 
-  Result<std::vector<std::string>> list_issue_comments(const std::string& owner,
-                                                       const std::string& repo,
-                                                       int64_t issue_number);
+  // An issue comment with its id, so duplicates can be addressed (deleted)
+  // after a late landing (design section 6.12.6 rule 4).
+  struct IssueComment {
+    int64_t id = 0;
+    std::string body;
+  };
+
+  Result<std::vector<IssueComment>> list_issue_comments(const std::string& owner,
+                                                        const std::string& repo,
+                                                        int64_t issue_number);
+
+  // Deletes one issue comment (204). Other statuses follow request()'s
+  // error mapping.
+  Status delete_comment(const std::string& owner, const std::string& repo,
+                        int64_t comment_id);
 
   Result<Issue> create_issue(const std::string& owner, const std::string& repo,
                              const std::string& title, const std::string& body,

@@ -97,6 +97,12 @@ Result<HttpResponse> HttpTransport::patch(const HttpRequest& request) {
               "this transport does not implement PATCH");
 }
 
+Result<HttpResponse> HttpTransport::del(const HttpRequest& request) {
+  (void)request;
+  return fail(error_codes::kTransportError,
+              "this transport does not implement DELETE");
+}
+
 Result<HttpResponse> CprTransport::post(const HttpRequest& request) {
   cpr::Header headers;
   for (const auto& [key, value] : request.headers) {
@@ -152,6 +158,29 @@ Result<HttpResponse> CprTransport::patch(const HttpRequest& request) {
   const cpr::Response response = cpr::Patch(cpr::Url{request.url}, headers,
                                             cpr::Body{request.body},
                                             cpr::Timeout{request.timeout});
+  if (response.error.code != cpr::ErrorCode::OK) {
+    if (response.error.code == cpr::ErrorCode::OPERATION_TIMEDOUT) {
+      return fail(error_codes::kTimeout, response.error.message);
+    }
+    return fail(error_codes::kTransportError, response.error.message);
+  }
+  HttpResponse out;
+  out.status = response.status_code;
+  out.headers.reserve(response.header.size());
+  for (const auto& [key, value] : response.header) {
+    out.headers.emplace_back(key, value);
+  }
+  out.body = response.text;
+  return out;
+}
+
+Result<HttpResponse> CprTransport::del(const HttpRequest& request) {
+  cpr::Header headers;
+  for (const auto& [key, value] : request.headers) {
+    headers[key] = value;
+  }
+  const cpr::Response response = cpr::Delete(cpr::Url{request.url}, headers,
+                                             cpr::Timeout{request.timeout});
   if (response.error.code != cpr::ErrorCode::OK) {
     if (response.error.code == cpr::ErrorCode::OPERATION_TIMEDOUT) {
       return fail(error_codes::kTimeout, response.error.message);

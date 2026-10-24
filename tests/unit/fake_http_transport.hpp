@@ -31,6 +31,10 @@ class ScriptedHttpTransport final : public cf::llm::HttpTransport {
     return respond("PATCH", request);
   }
 
+  cf::Result<cf::llm::HttpResponse> del(const cf::llm::HttpRequest& request) override {
+    return respond("DELETE", request);
+  }
+
   void script(long status, std::string body) {
     cf::llm::HttpResponse response;
     response.status = status;

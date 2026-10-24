@@ -149,12 +149,23 @@ TEST_F(GithubClientTest, GetsAPullRequest) {
 }
 
 TEST_F(GithubClientTest, ListsIssueComments) {
-  transport_->script(200, R"([{"body": "first"}, {"body": "second"}])");
+  transport_->script(
+      200, R"([{"id": 1001, "body": "first"}, {"id": 1002, "body": "second"}])");
   auto comments = client_->list_issue_comments("o", "r", 3);
   ASSERT_TRUE(comments.has_value()) << comments.error().message;
   ASSERT_EQ(comments->size(), 2u);
-  EXPECT_EQ((*comments)[1], "second");
+  EXPECT_EQ(comments->at(0).id, 1001);
+  EXPECT_EQ(comments->at(1).body, "second");
   EXPECT_NE(transport_->requests().front().url.find("/issues/3/comments"),
+            std::string::npos);
+}
+
+TEST_F(GithubClientTest, DeletesAComment) {
+  transport_->script(204, "");
+  ASSERT_TRUE(client_->delete_comment("o", "r", 1002).has_value());
+  ASSERT_EQ(transport_->requests().size(), 1u);
+  EXPECT_EQ(transport_->requests().front().method, "DELETE");
+  EXPECT_NE(transport_->requests().front().url.find("/issues/comments/1002"),
             std::string::npos);
 }
 

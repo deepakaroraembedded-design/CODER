@@ -110,9 +110,10 @@ Result<llm::HttpResponse> Client::send(const std::string& method,
   request.timeout = options_.timeout;
 
   Result<llm::HttpResponse> response =
-      method == "GET"    ? transport_.get(request)
-      : method == "POST" ? transport_.post(request)
-                         : transport_.patch(request);
+      method == "GET"      ? transport_.get(request)
+      : method == "POST"   ? transport_.post(request)
+      : method == "DELETE" ? transport_.del(request)
+                           : transport_.patch(request);
   if (!response) {
     return fail(error_codes::kTransportError, response.error().message);
   }
@@ -318,7 +319,7 @@ Result<std::string> Client::get_file(const std::string& owner, const std::string
               "GitHub HTTP " + std::to_string(status) + ": " + error_detail(*response));
 }
 
-Result<std::vector<std::string>> Client::list_issue_comments(
+Result<std::vector<Client::IssueComment>> Client::list_issue_comments(
     const std::string& owner, const std::string& repo, int64_t issue_number) {
   auto response = request(
       "GET",
@@ -331,13 +332,37 @@ Result<std::vector<std::string>> Client::list_issue_comments(
   if (!response->is_array()) {
     return fail(error_codes::kInvalidResponse, "comment list is not an array");
   }
-  std::vector<std::string> bodies;
+  std::vector<IssueComment> comments;
   for (const auto& entry : *response) {
     if (entry.is_object()) {
-      bodies.push_back(entry.value("body", ""));
+      comments.push_back(IssueComment{entry.value("id", int64_t{0}),
+                                      entry.value("body", "")});
     }
   }
-  return bodies;
+  return comments;
+}
+
+Status Client::delete_comment(const std::string& owner, const std::string& repo,
+                              int64_t comment_id) {
+  // 204 No Content: bypass request()'s JSON parsing.
+  auto response = send("DELETE",
+                       "/repos/" + owner + "/" + repo + "/issues/comments/" +
+                           std::to_string(comment_id),
+                       Json(), "application/vnd.github+json");
+  if (!response) {
+    return tl::make_unexpected(response.error());
+  }
+  if (response->status >= 200 && response->status < 300) {
+    return {};
+  }
+  if (response->status >= 500) {
+    return fail(error_codes::kServerError,
+                "GitHub HTTP " + std::to_string(response->status) + ": " +
+                    error_detail(*response));
+  }
+  return fail(error_codes::kClientError,
+              "GitHub HTTP " + std::to_string(response->status) + ": " +
+                  error_detail(*response));
 }
 
 Status Client::create_comment(const std::string& owner, const std::string& repo,

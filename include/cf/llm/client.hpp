@@ -126,6 +126,9 @@ class HttpTransport {
   virtual Result<HttpResponse> get(const HttpRequest& request);
   // GitHub updates use PATCH; the default reports it as unsupported.
   virtual Result<HttpResponse> patch(const HttpRequest& request);
+  // Deleting duplicate side effects after a late landing (design section
+  // 6.12.6 rule 4) uses DELETE; the default reports it as unsupported.
+  virtual Result<HttpResponse> del(const HttpRequest& request);
 };
 
 // libcurl-backed transport (design section 6.6: cpr).
@@ -134,6 +137,7 @@ class CprTransport final : public HttpTransport {
   Result<HttpResponse> post(const HttpRequest& request) override;
   Result<HttpResponse> get(const HttpRequest& request) override;
   Result<HttpResponse> patch(const HttpRequest& request) override;
+  Result<HttpResponse> del(const HttpRequest& request) override;
 };
 
 // Price per million tokens, used to turn usage into dollars for the ledger.

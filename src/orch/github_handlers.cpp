@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <spdlog/spdlog.h>
 
 namespace cf::orch {
 namespace {
@@ -327,12 +328,32 @@ DispatchResult CommentHandler::reconcile(const store::OperationRecord& op) {
   if (!comments) {
     return classify(comments.error());
   }
-  for (const auto& body : *comments) {
-    if (github::Client::body_has_marker(body, op.op_id)) {
-      return confirmed(Json{{"issue_number", number}}.dump());
+  // A stalled orchestrator's request can land after the takeover, so the
+  // same operation may exist twice (design section 6.12.6 rule 4): keep the
+  // earliest comment and delete the rest, with a note in the run log.
+  std::vector<const github::Client::IssueComment*> matches;
+  for (const auto& comment : *comments) {
+    if (github::Client::body_has_marker(comment.body, op.op_id)) {
+      matches.push_back(&comment);
     }
   }
-  return retry("the comment has not landed yet");
+  if (matches.empty()) {
+    return retry("the comment has not landed yet");
+  }
+  for (std::size_t i = 1; i < matches.size(); ++i) {
+    if (matches[i]->id == 0) {
+      continue;  // no id, cannot address it for deletion
+    }
+    auto deleted = context_.client->delete_comment(context_.owner, context_.repo,
+                                                   matches[i]->id);
+    if (!deleted) {
+      return retry("cannot delete duplicate comment " +
+                   std::to_string(matches[i]->id) + ": " + deleted.error().message);
+    }
+    spdlog::warn("op {}: deleted duplicate comment {} on issue {} (late landing)",
+                 op.op_id, matches[i]->id, number);
+  }
+  return confirmed(Json{{"issue_number", number}}.dump());
 }
 
 IssueUpdateHandler::IssueUpdateHandler(GithubHandlerContext context)

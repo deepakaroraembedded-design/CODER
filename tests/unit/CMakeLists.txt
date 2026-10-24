@@ -51,6 +51,7 @@ add_executable(cf_unit_tests
   codeintel_test.cpp
   codeintel_sync_test.cpp
   context_packer_test.cpp
+  fault_injection_test.cpp
   treesitter_backend_test.cpp
   treesitter_python_test.cpp
   treesitter_go_test.cpp
