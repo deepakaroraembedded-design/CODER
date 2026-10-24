@@ -34,7 +34,7 @@ is still missing.
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout plus run-labelled cleanup on recovery; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **614 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **616 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -344,7 +344,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 614 unit tests
+ctest --test-dir build/debug --output-on-failure     # 616 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -574,9 +574,15 @@ opencode version.
   force-with-lease from a stalled orchestrator fails and leaves the branch),
   and the SIGSTOP takeover with a comment request in flight (the old
   epoch's confirm is fenced with STORE_STALE_EPOCH; a reconcile that finds
-  the same comment twice deletes the later duplicate, §6.12.6 rule 4).
-  Still to build: the kill matrix for the local operations (agent_turn,
-  local_commit, merge) and sandbox kills.
+  the same comment twice deletes the later duplicate, §6.12.6 rule 4). For
+  the local operations, a crash between the integration merge and its
+  state record is recognized at the next Integrate by the CF-Milestone
+  trailer on the integration branch (§6.12.5 merge row): confirmed as
+  already integrated, never re-merged or spuriously escalated; agent turns
+  are covered by the pre-turn checkpoint reset (§6.12.3) and the
+  refs/cf/recovered parking, exercised end to end by the crash-injection
+  reliability plans. Still to build: the kill matrix around the local
+  commit itself and sandbox kills.
 - **RAG production index.** hnswlib is the default vector index (brute force
   stays behind the same `VectorIndex` interface as the parity reference); FAISS
   (IVF-PQ for collections over 5M chunks) is still pending. PDF/DOCX ingestion
@@ -599,7 +605,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (614)
+tests/unit/                 # GoogleTest unit tests (616)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

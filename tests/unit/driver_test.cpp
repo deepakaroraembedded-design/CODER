@@ -488,6 +488,73 @@ TEST_F(DriverTest, IntegrateConflictIsReported) {
   EXPECT_TRUE(result.conflicts);
 }
 
+TEST_F(DriverTest, CrashBetweenMergeAndStateRecordReintegratesCleanly) {
+  FakeAgentRunner runner;
+  WorkspaceDriver first(plan_, config_for(kPassingProfile), *repository_, executor_,
+                        runner, store_.get());
+
+  // A milestone branch with committed work.
+  const auto integration = first.integration_worktree();
+  ASSERT_TRUE(repository_
+                  ->create_worktree(integration, "cf/R12/integration", "main")
+                  .has_value());
+  const auto coder = first.worktree_for("M3", "coder");
+  ASSERT_TRUE(repository_
+                  ->create_worktree(coder, "cf-local/R12/M3/coder", "main")
+                  .has_value());
+  write_file(coder / "src" / "m3.cpp", "int m3() { return 0; }\n");
+  cf::git::CommitTrailers coder_trailers;
+  coder_trailers.run_id = "R12";
+  coder_trailers.milestone_id = "M3";
+  coder_trailers.op_id = "op_coder";
+  ASSERT_TRUE(repository_
+                  ->commit_paths(coder, {"src/m3.cpp"}, "feat: m3", coder_trailers)
+                  .has_value());
+
+  auto commit_count = [&](const std::string& ref) {
+    auto listed = repository_->command({"rev-list", "--count", ref});
+    EXPECT_TRUE(listed.has_value()) << listed.error().message;
+    return std::stoi(*listed);
+  };
+
+  // The merge lands, then the "crash": no state transition is recorded.
+  const TurnResult merged = first.run(MilestonePhase::Integrate, "M3");
+  ASSERT_TRUE(merged.completed && merged.merged) << merged.detail;
+  const int commits_after_first = commit_count("cf/R12/integration");
+
+  // A fresh driver (a restarted process has an empty in-memory integrated
+  // set) re-runs Integrate: the CF-Milestone trailer on the integration
+  // branch shows the merge already landed (design section 6.12.5), so it
+  // confirms instead of failing or merging a second time.
+  WorkspaceDriver second(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  const TurnResult reintegrated = second.run(MilestonePhase::Integrate, "M3");
+  EXPECT_TRUE(reintegrated.completed);
+  EXPECT_TRUE(reintegrated.merged);
+  EXPECT_EQ(reintegrated.summary, "already integrated");
+  EXPECT_EQ(commit_count("cf/R12/integration"), commits_after_first);
+}
+
+TEST_F(DriverTest, IntegrateWithNothingToMergeStillFails) {
+  // A genuine no-op (no prior merge, no changes on the branch) must fail,
+  // not be mistaken for a landed merge.
+  FakeAgentRunner runner;
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  ASSERT_TRUE(repository_
+                  ->create_worktree(driver.integration_worktree(),
+                                    "cf/R12/integration", "main")
+                  .has_value());
+  ASSERT_TRUE(repository_
+                  ->create_worktree(driver.worktree_for("M3", "coder"),
+                                    "cf-local/R12/M3/coder", "main")
+                  .has_value());
+
+  const TurnResult result = driver.run(MilestonePhase::Integrate, "M3");
+  EXPECT_FALSE(result.completed);
+  EXPECT_FALSE(result.merged);
+}
+
 TEST_F(DriverTest, OpenDefectsArePassedToTheAgent) {
   cf::store::DefectRecord defect;
   defect.id = "D-1";

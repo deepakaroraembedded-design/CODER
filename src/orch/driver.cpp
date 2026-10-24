@@ -409,17 +409,26 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
         conflict.detail = merged.error().message;
         return conflict;
       }
-      // A milestone whose work is already merged has nothing new to
-      // integrate: that is the normal end of a revalidation cycle (design
-      // section 6.13.3), not a failure.
-      if (merged.error().code == git::error_codes::kNoChanges &&
-          integrated_.count(std::string(milestone_id)) > 0) {
-        revalidating_.erase(std::string(milestone_id));
-        TurnResult done;
-        done.completed = true;
-        done.merged = true;
-        done.summary = "already integrated";
-        return done;
+      if (merged.error().code == git::error_codes::kNoChanges) {
+        // Nothing to integrate: the branch's content is already in the
+        // integration tree. That is the normal end of a revalidation cycle
+        // (design section 6.13.3) — and, after a crash between the merge
+        // and its state record, the merge row of design section 6.12.5: the
+        // integration branch already carries this milestone's squash merge
+        // (its CF-Milestone trailer), so confirm instead of failing.
+        auto landed = repository_.find_commit_by_trailer(
+            config_.integration_branch, "CF-Milestone",
+            std::string(milestone_id));
+        if (integrated_.count(std::string(milestone_id)) > 0 ||
+            (landed.has_value() && !landed->empty())) {
+          integrated_.insert(std::string(milestone_id));
+          revalidating_.erase(std::string(milestone_id));
+          TurnResult done;
+          done.completed = true;
+          done.merged = true;
+          done.summary = "already integrated";
+          return done;
+        }
       }
       return TurnResult{false, "", merged.error().message, false, false, false, false,
                         false, ""};
