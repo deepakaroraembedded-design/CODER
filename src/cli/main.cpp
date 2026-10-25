@@ -1,4 +1,5 @@
 // cf: the Coder Framework command line (design section 9.2).
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -6,6 +7,7 @@
 #include <CLI/CLI.hpp>
 
 #include "cf/cli/commands.hpp"
+#include "cf/cli/config.hpp"
 
 int main(int argc, char** argv) {
   CLI::App app{"cf: Coder Framework (multi-agent, guardrail-driven code generation)"};
@@ -69,6 +71,10 @@ int main(int argc, char** argv) {
   run->add_option("--github-key-file", github_key_file,
                   "GitHub App private key PEM file (read into memory)");
   run->add_option("--github-token", github_token, "Static GitHub token");
+  std::string config_path;
+  run->add_option("--config", config_path,
+                  "cf.yaml configuration file (design section 15); default: "
+                  "./cf.yaml when it exists");
 
   auto* approve = app.add_subcommand("approve", "Approve a run stage (design gate)");
   std::string stage = "design";
@@ -119,34 +125,72 @@ int main(int argc, char** argv) {
     return cf::cli::check_command(plan_path, profiles_dir, std::cout, std::cerr);
   }
   if (*run) {
+    // cf.yaml (design section 15): explicit --config, else ./cf.yaml when it
+    // exists. Flags override the file; the file overrides built-in defaults.
+    cf::cli::FrameworkConfig file_config;
+    std::string config_file = config_path;
+    if (config_file.empty() && std::filesystem::exists("cf.yaml")) {
+      config_file = "cf.yaml";
+    }
+    if (!config_file.empty()) {
+      auto loaded = cf::cli::load_config(config_file);
+      if (!loaded) {
+        std::cerr << loaded.error().code << ": " << loaded.error().message << "\n";
+        return 2;
+      }
+      file_config = std::move(*loaded);
+      if (run->count("--workspace") == 0 && file_config.run.workspace.has_value()) {
+        workspace = *file_config.run.workspace;
+      }
+      if (run->count("--profiles") == 0 && file_config.gates.profiles_dir.has_value()) {
+        profiles_dir = *file_config.gates.profiles_dir;
+      }
+    }
+
     const int created = cf::cli::run_command(plan_path, profiles_dir, workspace, run_id,
                                              std::cout, std::cerr);
     if (created != 0 || !execute) {
       return created;
     }
     cf::cli::ExecuteOptions options;
-    options.workspace = workspace;
-    options.run_id = run_id;
+    // Pinned defaults from third_party/VERSIONS; cf.yaml overrides them
+    // (apply_config), and --model overrides both (below).
+    options.role_models = {
+        {"coder", "accounts/fireworks/models/deepseek-v4p1-flash"},
+        {"reviewer", "accounts/fireworks/models/kimi-k3"},
+        {"qa", "accounts/fireworks/models/glm-5p3"}};
+    auto applied = cf::cli::apply_config(options, file_config);
+    if (!applied) {
+      std::cerr << applied.error().code << ": " << applied.error().message << "\n";
+      return 2;
+    }
+    options.workspace = workspace;      // already config-aware above
     options.profiles_dir = profiles_dir;
-    options.repository_path = repository_path;
+    options.run_id = run_id;
+    if (run->count("--repo") > 0 || options.repository_path.empty()) {
+      options.repository_path = repository_path;  // flag wins over run.repo
+    }
     options.opencode_binary = opencode_binary;
     options.mcp_binary = mcp_binary;
     options.sandbox_image = sandbox_image;
     options.docs_dir = docs_dir;
     options.skip_refinement = skip_refinement;
-    options.design_model = design_model;
     options.patterns_dir = patterns_dir;
     options.github_owner = github_owner;
     options.github_repo = github_repo;
-    options.github_app_id = github_app_id;
-    options.github_installation_id = github_installation_id;
-    options.github_private_key_file = github_key_file;
     options.github_token = github_token;
-    // Pinned defaults from third_party/VERSIONS; override with --model.
-    options.role_models = {
-        {"coder", "accounts/fireworks/models/deepseek-v4p1-flash"},
-        {"reviewer", "accounts/fireworks/models/kimi-k3"},
-        {"qa", "accounts/fireworks/models/glm-5p3"}};
+    if (run->count("--design-model") > 0) {
+      options.design_model = design_model;
+    }
+    if (run->count("--github-app-id") > 0) {
+      options.github_app_id = github_app_id;
+    }
+    if (run->count("--github-installation-id") > 0) {
+      options.github_installation_id = github_installation_id;
+    }
+    if (run->count("--github-key-file") > 0) {
+      options.github_private_key_file = github_key_file;
+    }
     for (const auto& override : model_overrides) {
       const std::size_t equals = override.find('=');
       if (equals == std::string::npos) {

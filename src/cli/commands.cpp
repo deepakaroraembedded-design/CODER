@@ -1095,9 +1095,10 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   config.run_id = options.run_id;
   config.workspace_root = options.workspace;
   config.integration_branch = "cf/" + options.run_id + "/integration";
-  config.base_branch = "main";
+  config.base_branch = options.base_branch;
   config.opencode_binary = options.opencode_binary;
   config.role_models = options.role_models;
+  config.role_options = options.role_options;
   config.mcp_command = options.mcp_binary;
   config.docs_dir = options.docs_dir;
   if (!options.patterns_dir.empty() &&
@@ -1117,11 +1118,37 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   codeintel_backends.add(codeintel::make_go_backend());
   config.codeintel_backends = &codeintel_backends;
   config.orchestrator.escalation_dir = (directory / "escalations").string();
+  // Budget: the plan's block wins over cf.yaml defaults (design Q5).
   if (effective.budget.max_usd_total.has_value()) {
     config.orchestrator.max_usd_total = effective.budget.max_usd_total;
+  } else if (options.budget_usd.has_value()) {
+    config.orchestrator.max_usd_total = options.budget_usd;
   }
   if (effective.budget.max_tokens_total.has_value()) {
     config.orchestrator.max_tokens_total = effective.budget.max_tokens_total;
+  } else if (options.budget_tokens.has_value()) {
+    config.orchestrator.max_tokens_total = options.budget_tokens;
+  }
+  if (options.max_iterations_per_milestone.has_value()) {
+    config.orchestrator.loop_limits.max_iterations_per_milestone =
+        *options.max_iterations_per_milestone;
+  }
+  if (options.max_attempts_per_defect.has_value()) {
+    config.orchestrator.loop_limits.max_attempts_per_defect =
+        *options.max_attempts_per_defect;
+  }
+  if (options.review_diff_threshold_lines.has_value()) {
+    config.full_review_threshold = *options.review_diff_threshold_lines;
+  }
+  if (options.sandbox_cpus.has_value()) {
+    config.gate_cpus = *options.sandbox_cpus;
+  }
+  if (options.sandbox_memory_gb.has_value()) {
+    config.gate_memory_mb =
+        static_cast<std::uint64_t>(*options.sandbox_memory_gb * 1024.0);
+  }
+  if (options.gate_timeout_min.has_value()) {
+    config.step_timeout = std::chrono::minutes(*options.gate_timeout_min);
   }
 
   // GitHub flow: the App identity (preferred) or a static token.

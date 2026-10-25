@@ -799,7 +799,7 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     }
   }
   outcome.review_context.first_gate_run = gated_once_.emplace(milestone_id, true).second;
-  outcome.review_context.full_review_threshold = 400;
+  outcome.review_context.full_review_threshold = config_.full_review_threshold;
   outcome.review_context.dependency_interface_changed = revalidating;
 
   auto plan = gates::build_gate_plan(config_.profile, config_.profile_language,
@@ -846,6 +846,7 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     sandbox::NamespaceSandboxSpec spec;
     spec.worktree = worktree->string();
     spec.writable_paths = {"src", "include"};
+    spec.memory_mb = config_.gate_memory_mb;
     namespace_sandbox = std::make_unique<cf::sandbox::NamespaceExecutor>(std::move(spec));
     runner = std::make_unique<gates::GateRunner>(*namespace_sandbox);
     options.step_context.src_dir = "/work";
@@ -859,6 +860,8 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     spec.run_id = config_.run_id;
     spec.worktree = worktree->string();
     spec.writable_paths = {"src", "include"};
+    spec.cpus = config_.gate_cpus;
+    spec.memory_mb = config_.gate_memory_mb;
     sandbox = std::make_unique<cf::sandbox::DockerSandboxExecutor>(std::move(spec));
     runner = std::make_unique<gates::GateRunner>(*sandbox);
     options.step_context.src_dir = "/work";

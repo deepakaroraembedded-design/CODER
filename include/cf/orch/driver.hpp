@@ -42,6 +42,14 @@ struct DriverConfig {
   std::string profile_build_system;
   std::string profile_test_framework;
   std::chrono::milliseconds step_timeout{600000};
+  // review.diff_threshold_lines (design section 15): a cumulative change
+  // beyond this many lines since the last full review forces a full review
+  // (design section 7.4).
+  std::uint32_t full_review_threshold = 400;
+  // Gate sandbox resource limits (design section 15, sandbox): 0 means no
+  // limit.
+  double gate_cpus = 0.0;
+  std::uint64_t gate_memory_mb = 0;
   // When set, gates run inside a Docker sandbox using this image (design
   // section 6.8); empty runs them through the local executor.
   std::string sandbox_image;

@@ -63,6 +63,10 @@ struct RunProcessConfig {
   std::string profile_test_framework;
   std::string sandbox_image;
   std::chrono::milliseconds step_timeout{600000};
+  // Review and gate resources (design section 15, review/sandbox sections).
+  std::uint32_t full_review_threshold = 400;
+  double gate_cpus = 0.0;      // 0: no limit
+  std::uint64_t gate_memory_mb = 0;  // 0: no limit
 
   // orchestration
   OrchestratorConfig orchestrator;

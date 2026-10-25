@@ -723,4 +723,38 @@ TEST(CliBinaryTest, BinaryCheckCommandRuns) {
   std::filesystem::remove_all(dir, ec);
 }
 
+TEST(CliBinaryTest, RunReadsTheConfigFile) {
+  const auto dir = make_temp_dir();
+  write_file(dir / "plan.yaml", kPlan);
+  write_file(dir / "profiles" / "test.yaml", kProfile);
+  write_file(dir / "cf.yaml",
+             "run: { workspace: " + (dir / "work").string() + " }\n"
+             "budget: { max_usd_total: 25 }\n");
+  cf::process::LocalProcessExecutor executor;
+
+  cf::process::ProcessRequest request;
+  request.argv = {std::string(CF_BINARY_DIR) + "/cf", "run", "--plan",
+                  (dir / "plan.yaml").string(), "--profiles",
+                  (dir / "profiles").string(), "--config",
+                  (dir / "cf.yaml").string(), "--run-id", "R1"};
+  const auto result = executor.run(request);
+  EXPECT_TRUE(result.launched) << result.error;
+  EXPECT_EQ(result.exit_code, 0) << result.stderr_text;
+  // The workspace came from cf.yaml.
+  EXPECT_TRUE(std::filesystem::exists(dir / "work" / "runs" / "R1" / "run.db"));
+
+  // An invalid config fails loudly (design section 15: strict schema).
+  write_file(dir / "bad.yaml", "unknown_section: 1\n");
+  cf::process::ProcessRequest bad;
+  bad.argv = {std::string(CF_BINARY_DIR) + "/cf", "run", "--plan",
+              (dir / "plan.yaml").string(), "--config", (dir / "bad.yaml").string()};
+  const auto bad_result = executor.run(bad);
+  EXPECT_TRUE(bad_result.launched);
+  EXPECT_EQ(bad_result.exit_code, 2);
+  EXPECT_NE(bad_result.stderr_text.find("unknown_section"), std::string::npos);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
 }  // namespace

@@ -49,6 +49,7 @@ add_executable(cf_unit_tests
   defect_export_test.cpp
   cli_test.cpp
   codeintel_test.cpp
+  config_test.cpp
   codeintel_sync_test.cpp
   context_packer_test.cpp
   fault_injection_test.cpp

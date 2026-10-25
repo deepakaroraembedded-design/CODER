@@ -256,7 +256,8 @@ target_link_libraries(cf_github PUBLIC
 
 # cf-cli: command implementations and the cf binary (design section 9.2)
 add_library(cf_cli STATIC
-  src/cli/commands.cpp)
+  src/cli/commands.cpp
+  src/cli/config.cpp)
 target_link_libraries(cf_cli PUBLIC
   cf_common
   cf_store
@@ -265,7 +266,8 @@ target_link_libraries(cf_cli PUBLIC
   cf_orch
   cf_git
   cf_codeintel
-  nlohmann_json::nlohmann_json)
+  nlohmann_json::nlohmann_json
+  yaml-cpp::yaml-cpp)
 
 add_executable(cf src/cli/main.cpp)
 target_link_libraries(cf PRIVATE cf_cli CLI11::CLI11)

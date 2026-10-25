@@ -6,10 +6,14 @@
 // streams so they are unit-testable.
 #pragma once
 
+#include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <ostream>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 #include "cf/llm/client.hpp"
 #include "cf/orch/refiner.hpp"
@@ -85,9 +89,13 @@ struct ExecuteOptions {
   std::string run_id;
   std::filesystem::path profiles_dir = "profiles";
   std::filesystem::path repository_path;  // the target repository (required)
+  std::string base_branch = "main";
   std::string opencode_binary = "opencode";
   std::string mcp_binary = "cf-mcp";
   std::map<std::string, std::string, std::less<>> role_models;
+  // Extra opencode model options per role (e.g. temperature), typically from
+  // cf.yaml (design section 15, models.roles).
+  std::map<std::string, nlohmann::json, std::less<>> role_options;
   std::string sandbox_image;  // empty: gates run through the local executor
   std::string docs_dir;
   // Design refinement (design section 6.2). Unless --skip-refinement is set,
@@ -115,6 +123,18 @@ struct ExecuteOptions {
   std::string github_token;  // fallback: a static token
   // Tests inject a transport; production uses cpr.
   cf::llm::HttpTransport* github_transport = nullptr;
+
+  // cf.yaml (design section 15), applied below any flag: budget defaults (a
+  // plan's budget block still wins), loop limits, the review threshold and
+  // gate sandbox resources.
+  std::optional<double> budget_usd;
+  std::optional<std::uint64_t> budget_tokens;
+  std::optional<std::uint32_t> max_iterations_per_milestone;
+  std::optional<std::uint32_t> max_attempts_per_defect;
+  std::optional<std::uint32_t> review_diff_threshold_lines;
+  std::optional<double> sandbox_cpus;
+  std::optional<double> sandbox_memory_gb;
+  std::optional<std::uint32_t> gate_timeout_min;
 };
 
 // cf run --execute: drives the run with the production opencode factory, or

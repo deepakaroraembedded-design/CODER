@@ -29,12 +29,13 @@ is still missing.
 | opencode-backed `AgentRunner` | Implemented end to end: turn driving with event-driven (`session.idle`) turn completion, permission broker, event routing, role configs, versioned prompt templates, RAG-backed question answering, server spawning, dead-server detection and restart before the next turn (§6.12, H8), `RunProcess` and `cf run --execute` |
 | GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences), dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment` with late-landing duplicate deletion, §6.12.6 rule 4), `GithubFlow` (milestone pushes, draft PR open/update/ready, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
 | CLI (`cf check/run/status/resume/escalations/report/approve/abort/ingest`) | Implemented and tested |
+| Configuration file (§15) | `cf run --config` (default `./cf.yaml`): strict schema, flags > file > defaults, plan budget wins over file defaults; provider/role-model resolution with no provider mixing (§13.1); budget/loop/review-threshold/gate-resource knobs wired. Remaining: approvals, rag, reference_docs, coverage/mutation and GitHub-policy sections |
 | Design refinement (Phase 4) | Implemented and verified with the real planner model: the refiner turns the plan into a design package (`runs/<run>/design.{json,md}` — component design, refined milestone DAG with write sets/uses/interfaces for the scheduler, ADRs), self-critiques and revises once, stops at the human approval gate, and the approved package drives execution. Approving publishes the design as a product-scoped RAG design document (`<workspace>/designs/`, status `approved`; an earlier design for the same plan becomes `superseded` and is no longer retrieved), and the run's MCP servers and question policy carry the product/language applicability context. The curated pattern catalog (`catalog/patterns/`, six entries) is loaded by `cf-mcp --patterns`, is authoritative for `get_pattern` and is indexed into retrieval; the refiner prompt carries it. Remaining: pattern-conformance checks |
 | Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the suite spans C++, Python and Go plus a crash-injection reliability scenario, and the full benchmark (3 candidates × 7 plans) is complete and confirms the pinned models |
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout plus run-labelled cleanup on recovery; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
 | Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
 
-Test suite: **616 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **625 tests**, green on `debug`, `release`, `asan` and `tsan`.
 
 ---
 
@@ -291,6 +292,34 @@ placeholders are expanded per element. `profiles/c-cpp.yaml` is provided; the
 Python, TypeScript/JavaScript, Java and Go profiles follow the tools table in
 design §6.7.2.
 
+### Configuration file (`cf.yaml`, design §15)
+
+`cf run` loads `--config <path>`, defaulting to `./cf.yaml` when it exists.
+Precedence: **flags > cf.yaml > built-in defaults**, and a plan's `budget`
+block still wins over the file (design Q5). The schema is strict — an unknown
+key fails with `CLI_CONFIG_INVALID` naming the key, so a config never silently
+half-applies; documented sections with no consumer yet (`approvals`, `rag`,
+`reference_docs`, gate coverage/mutation, GitHub policies) are rejected the
+same way until they land. Supported today:
+
+```yaml
+run:      { workspace, repo, base_branch }     # repo: a local checkout path
+github:   { app_id, installation_id, private_key_ref }   # private_key_ref: a PEM path
+providers: { <name>: { base_url, api_key_env } }
+models:   { default_provider, roles: { coder|reviewer|qa|planner:
+            { family, temperature, max_output_tokens, <provider>: <model-id> } } }
+budget:   { max_usd_total, max_tokens_total,
+            max_iterations_per_milestone, max_attempts_per_defect }
+gates:    { profiles_dir }
+review:   { diff_threshold_lines }
+sandbox:  { cpu, memory_gb, job_timeout_min }
+```
+
+The role models all resolve against `default_provider` — a run never mixes
+providers (design §13.1), and a role without an id for the default provider is
+a load-time error. `secretmanager://` key references are rejected (not
+resolvable in this build); point `private_key_ref` at a PEM file.
+
 ---
 
 ## 6. MCP tool server
@@ -344,7 +373,7 @@ setups).
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 616 unit tests
+ctest --test-dir build/debug --output-on-failure     # 625 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -605,7 +634,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (616)
+tests/unit/                 # GoogleTest unit tests (625)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)
