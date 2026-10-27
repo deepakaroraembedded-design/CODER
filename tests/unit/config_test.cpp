@@ -70,6 +70,10 @@ budget:
   max_tokens_total: 60000000
   max_iterations_per_milestone: 12
   max_attempts_per_defect: 4
+  max_wall_clock_hours: 24
+approvals:
+  design_approval: 5d
+  escalation: 3d
 gates:
   profiles_dir: /srv/cf/profiles
 review:
@@ -109,6 +113,9 @@ TEST_F(ConfigTest, LoadsTheFullSchema) {
   EXPECT_EQ(*config->budget.max_tokens_total, 60000000u);
   EXPECT_EQ(*config->budget.max_iterations_per_milestone, 12u);
   EXPECT_EQ(*config->budget.max_attempts_per_defect, 4u);
+  EXPECT_DOUBLE_EQ(*config->budget.max_wall_clock_hours, 24.0);
+  EXPECT_EQ(*config->approvals.design_approval_business_days, 5u);
+  EXPECT_EQ(*config->approvals.escalation_business_days, 3u);
   EXPECT_EQ(*config->gates.profiles_dir, "/srv/cf/profiles");
   EXPECT_EQ(*config->review.diff_threshold_lines, 250u);
   EXPECT_DOUBLE_EQ(*config->sandbox.cpu, 8.0);
@@ -136,10 +143,16 @@ TEST_F(ConfigTest, UnknownAndUnsupportedKeysAreRejected) {
   ASSERT_FALSE(nested.has_value());
   EXPECT_NE(nested.error().message.find("workspac"), std::string::npos);
 
-  // A documented section this build does not consume yet says so.
-  auto unsupported = cf::cli::load_config(write_config("approvals: {design_approval: 5d}\n"));
+  // A documented knob this build does not consume yet says so.
+  auto unsupported = cf::cli::load_config(write_config("approvals: {waiver: 2d}\n"));
   ASSERT_FALSE(unsupported.has_value());
   EXPECT_NE(unsupported.error().message.find("not supported"),
+            std::string::npos);
+
+  auto deadline = cf::cli::load_config(
+      write_config("approvals: {design_approval: 5h}\n"));
+  ASSERT_FALSE(deadline.has_value());
+  EXPECT_NE(deadline.error().message.find("approvals.design_approval"),
             std::string::npos);
 
   auto gate_policy = cf::cli::load_config(write_config("gates: {coverage: {line: 0.85}}\n"));
@@ -198,6 +211,9 @@ TEST_F(ConfigTest, ApplyConfigResolvesProvidersAndRoles) {
 
   EXPECT_DOUBLE_EQ(*options.budget_usd, 150.0);
   EXPECT_EQ(*options.max_iterations_per_milestone, 12u);
+  EXPECT_DOUBLE_EQ(*options.budget_wall_clock_hours, 24.0);
+  EXPECT_EQ(*options.design_approval_business_days, 5u);
+  EXPECT_EQ(*options.escalation_business_days, 3u);
   EXPECT_EQ(*options.review_diff_threshold_lines, 250u);
   EXPECT_DOUBLE_EQ(*options.sandbox_cpus, 8.0);
   EXPECT_DOUBLE_EQ(*options.sandbox_memory_gb, 16.0);

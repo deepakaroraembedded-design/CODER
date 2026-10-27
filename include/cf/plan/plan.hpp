@@ -55,6 +55,14 @@ struct BudgetSpec {
   std::optional<double> max_wall_clock_hours;
 };
 
+// Deadlines for states that wait for people (design section 12.1). They are
+// business days; the config file supplies defaults and the plan overrides
+// them.
+struct ApprovalSpec {
+  std::optional<uint32_t> design_approval_business_days;
+  std::optional<uint32_t> escalation_business_days;
+};
+
 struct Plan {
   std::string plan_id;
   std::string product;
@@ -66,6 +74,7 @@ struct Plan {
   std::map<std::string, std::string, std::less<>> role_models;  // planner|coder|reviewer|qa
   std::string inference = "fireworks";  // or "local-vllm" (design section 13.1)
   BudgetSpec budget;
+  ApprovalSpec approvals;
   std::string source_path;
 
   const MilestoneSpec* find_milestone(std::string_view id) const;

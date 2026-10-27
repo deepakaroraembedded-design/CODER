@@ -308,6 +308,68 @@ TEST_F(OrchestratorTest, BudgetExceededEscalatesAndWritesBundle) {
   EXPECT_DOUBLE_EQ(bundle["cost"]["usd"].get<double>(), 2.0);
 }
 
+TEST_F(OrchestratorTest, WallClockBudgetExceededEscalates) {
+  create_run("R12", "Created");
+  Plan plan = make_plan({milestone("M1")});
+
+  StateMachine machine(*store_, "R12");
+  const cf::store::UnixTime two_hours_ago = now_ - 2 * 3600;
+  const cf::store::UnixTime one_hour_ago = now_ - 3600;
+  ASSERT_TRUE(machine.apply(cf::orch::RunEvent::Start, {}, two_hours_ago).has_value());
+  ASSERT_TRUE(
+      machine.apply(cf::orch::RunEvent::IndexReady, {}, two_hours_ago).has_value());
+  ASSERT_TRUE(machine
+                  .apply(cf::orch::RunEvent::DesignPackageReady, {}, one_hour_ago)
+                  .has_value());
+  ASSERT_TRUE(
+      machine.apply(cf::orch::RunEvent::Approved, {}, one_hour_ago).has_value());
+
+  FakeDriver driver;
+  OrchestratorConfig config;
+  config.max_wall_clock_hours = 1.5;  // 2 active hours so far
+  RunOrchestrator orchestrator(*store_, "R12", plan, driver, config);
+
+  const auto state = orchestrator.step(now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, RunState::Escalated);
+  EXPECT_NE(orchestrator.last_escalation_reason().find("wall-clock budget"),
+            std::string::npos);
+  EXPECT_TRUE(driver.log.empty());  // escalation happens before any work
+}
+
+TEST_F(OrchestratorTest, WaitingForPeopleDoesNotConsumeTheWallClockBudget) {
+  create_run("R12", "Created");
+  Plan plan = make_plan({milestone("M1")});
+
+  StateMachine machine(*store_, "R12");
+  const cf::store::UnixTime eleven_hours_ago = now_ - 11 * 3600;
+  const cf::store::UnixTime ten_hours_ago = now_ - 10 * 3600;
+  const cf::store::UnixTime one_hour_ago = now_ - 3600;
+  ASSERT_TRUE(
+      machine.apply(cf::orch::RunEvent::Start, {}, eleven_hours_ago).has_value());
+  ASSERT_TRUE(
+      machine.apply(cf::orch::RunEvent::IndexReady, {}, ten_hours_ago).has_value());
+  ASSERT_TRUE(machine
+                  .apply(cf::orch::RunEvent::DesignPackageReady, {}, ten_hours_ago)
+                  .has_value());
+  ASSERT_TRUE(
+      machine.apply(cf::orch::RunEvent::Approved, {}, one_hour_ago).has_value());
+
+  FakeDriver driver;
+  driver.on_turn = successful_turn;
+  driver.on_gates = full_review_gates;
+  OrchestratorConfig config;
+  // 2 active hours (1 ingesting/refining + 1 executing); the 9 hours spent
+  // awaiting design approval do not count (design sections 12.1, 15).
+  config.max_wall_clock_hours = 3.0;
+  RunOrchestrator orchestrator(*store_, "R12", plan, driver, config);
+
+  const auto state = orchestrator.step(now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, RunState::SystemValidation);
+  EXPECT_FALSE(driver.log.empty());
+}
+
 TEST_F(OrchestratorTest, StuckRunEscalatesWithNoProgress) {
   create_run();
   Plan plan = make_plan({milestone("M1"), milestone("M2", {"M1"})});

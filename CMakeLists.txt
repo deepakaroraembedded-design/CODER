@@ -105,6 +105,7 @@ target_link_libraries(cf_store PUBLIC
 add_library(cf_orch STATIC
   src/orch/dispatcher.cpp
   src/orch/state_machine.cpp
+  src/orch/approval_deadline.cpp
   src/orch/scheduler.cpp
   src/orch/review_policy.cpp
   src/orch/milestone_loop.cpp

@@ -421,6 +421,119 @@ TEST_F(CliTest, IngestRejectsAMissingDirectory) {
   EXPECT_FALSE(err.str().empty());
 }
 
+TEST_F(CliTest, ExecuteAbortsARunWhoseDesignApprovalDeadlineExpired) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+
+  const auto run_dir = cf::cli::run_directory(workspace_, "R12");
+  {
+    auto store = cf::store::RunStore::open(run_dir / "run.db");
+    ASSERT_TRUE(store.has_value());
+    cf::orch::StateMachine machine(**store, "R12");
+    const cf::store::UnixTime waiting_since = now_ - 30 * 86400;
+    ASSERT_TRUE(
+        machine.apply(cf::orch::RunEvent::Start, {}, waiting_since).has_value());
+    ASSERT_TRUE(machine
+                    .apply(cf::orch::RunEvent::IndexReady, {}, waiting_since)
+                    .has_value());
+    ASSERT_TRUE(machine
+                    .apply(cf::orch::RunEvent::DesignPackageReady, {},
+                           waiting_since)
+                    .has_value());
+  }
+
+  cf::cli::ExecuteOptions options;
+  options.workspace = workspace_;
+  options.run_id = "R12";
+  options.profiles_dir = dir_ / "profiles";
+  std::ostringstream execute_out;
+  std::ostringstream execute_err;
+  EXPECT_EQ(cf::cli::execute_command(options, execute_out, execute_err), 0)
+      << execute_err.str();
+  const auto document = nlohmann::json::parse(execute_out.str());
+  EXPECT_EQ(document["state"], "Aborted");
+  EXPECT_EQ(document["reason"], "approval_timeout");
+}
+
+TEST_F(CliTest, ExecuteStoresTheConfiguredDeadlineForApprove) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+
+  const auto run_dir = cf::cli::run_directory(workspace_, "R12");
+  {
+    auto store = cf::store::RunStore::open(run_dir / "run.db");
+    ASSERT_TRUE(store.has_value());
+    cf::orch::StateMachine machine(**store, "R12");
+    const cf::store::UnixTime waiting_since = now_ - 8 * 86400;
+    ASSERT_TRUE(
+        machine.apply(cf::orch::RunEvent::Start, {}, waiting_since).has_value());
+    ASSERT_TRUE(machine
+                    .apply(cf::orch::RunEvent::IndexReady, {}, waiting_since)
+                    .has_value());
+    ASSERT_TRUE(machine
+                    .apply(cf::orch::RunEvent::DesignPackageReady, {},
+                           waiting_since)
+                    .has_value());
+  }
+
+  cf::cli::ExecuteOptions options;
+  options.workspace = workspace_;
+  options.run_id = "R12";
+  options.profiles_dir = dir_ / "profiles";
+  options.design_approval_business_days = 14;
+  std::ostringstream execute_out;
+  std::ostringstream execute_err;
+  EXPECT_EQ(cf::cli::execute_command(options, execute_out, execute_err), 0)
+      << execute_err.str();
+  EXPECT_NE(execute_out.str().find("AwaitingDesignApproval"),
+            std::string::npos);
+
+  // The plan/default would have expired after 5 business days; approving
+  // honours the 14 business days stored by the execution above.
+  std::ostringstream approve_out;
+  std::ostringstream approve_err;
+  EXPECT_EQ(cf::cli::approve_command(workspace_, "R12", "design", approve_out,
+                                     approve_err),
+            0)
+      << approve_err.str();
+  const auto document = nlohmann::json::parse(approve_out.str());
+  EXPECT_EQ(document["state"], "Executing");
+}
+
+TEST_F(CliTest, ApproveRefusesAfterTheDesignDeadlineExpired) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+
+  const auto run_dir = cf::cli::run_directory(workspace_, "R12");
+  auto store = cf::store::RunStore::open(run_dir / "run.db");
+  ASSERT_TRUE(store.has_value());
+  cf::orch::StateMachine machine(**store, "R12");
+  const cf::store::UnixTime waiting_since = now_ - 30 * 86400;
+  ASSERT_TRUE(
+      machine.apply(cf::orch::RunEvent::Start, {}, waiting_since).has_value());
+  ASSERT_TRUE(machine
+                  .apply(cf::orch::RunEvent::IndexReady, {}, waiting_since)
+                  .has_value());
+  ASSERT_TRUE(machine
+                  .apply(cf::orch::RunEvent::DesignPackageReady, {},
+                         waiting_since)
+                  .has_value());
+
+  std::ostringstream approve_out;
+  std::ostringstream approve_err;
+  EXPECT_EQ(cf::cli::approve_command(workspace_, "R12", "design", approve_out,
+                                     approve_err),
+            1);
+  const auto document = nlohmann::json::parse(approve_out.str());
+  EXPECT_EQ(document["state"], "Aborted");
+  EXPECT_EQ(document["reason"], "approval_timeout");
+  EXPECT_EQ(machine.current(), cf::orch::RunState::Aborted);
+  (*store).reset();
+}
+
 TEST_F(CliTest, RefinementStopsAtTheApprovalGateAndTheRefinedPlanDrivesExecution) {
   std::ostringstream out;
   std::ostringstream err;

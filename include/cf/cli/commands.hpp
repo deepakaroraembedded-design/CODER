@@ -131,6 +131,11 @@ struct ExecuteOptions {
   std::optional<std::uint64_t> budget_tokens;
   std::optional<std::uint32_t> max_iterations_per_milestone;
   std::optional<std::uint32_t> max_attempts_per_defect;
+  std::optional<double> budget_wall_clock_hours;
+  // Waiting-state deadlines in business days (design section 12.1); a plan's
+  // approvals block overrides these defaults.
+  std::optional<std::uint32_t> design_approval_business_days;
+  std::optional<std::uint32_t> escalation_business_days;
   std::optional<std::uint32_t> review_diff_threshold_lines;
   std::optional<double> sandbox_cpus;
   std::optional<double> sandbox_memory_gb;

@@ -21,6 +21,7 @@
 #include "cf/gates/profile.hpp"
 #include "cf/git/repository.hpp"
 #include "cf/github/app_auth.hpp"
+#include "cf/orch/approval_deadline.hpp"
 #include "cf/orch/dispatcher.hpp"
 #include "cf/orch/recovery.hpp"
 #include "cf/orch/run_process.hpp"
@@ -104,6 +105,47 @@ std::string read_file_text(const std::filesystem::path& path) {
   std::ifstream in(path, std::ios::binary);
   return std::string(std::istreambuf_iterator<char>(in),
                      std::istreambuf_iterator<char>());
+}
+
+void apply_plan_approvals(const plan::Plan& plan,
+                          orch::ApprovalDeadlines& deadlines) {
+  if (plan.approvals.design_approval_business_days.has_value()) {
+    deadlines.design_approval_business_days =
+        *plan.approvals.design_approval_business_days;
+  }
+  if (plan.approvals.escalation_business_days.has_value()) {
+    deadlines.escalation_business_days =
+        *plan.approvals.escalation_business_days;
+  }
+}
+
+void apply_stored_approvals(const store::RunRecord& run,
+                            orch::ApprovalDeadlines& deadlines) {
+  const Json config = Json::parse(run.config_json, nullptr, false);
+  if (!config.is_object()) {
+    return;
+  }
+  const auto approvals = config.find("approvals");
+  if (approvals == config.end() || !approvals->is_object()) {
+    return;
+  }
+  deadlines.design_approval_business_days = approvals->value(
+      "design_business_days", deadlines.design_approval_business_days);
+  deadlines.escalation_business_days = approvals->value(
+      "escalation_business_days", deadlines.escalation_business_days);
+}
+
+Status store_approvals(const store::RunRecord& run,
+                       const orch::ApprovalDeadlines& deadlines,
+                       store::RunStore& store) {
+  Json config = Json::parse(run.config_json, nullptr, false);
+  if (!config.is_object()) {
+    config = Json::object();
+  }
+  config["approvals"] =
+      Json{{"design_business_days", deadlines.design_approval_business_days},
+           {"escalation_business_days", deadlines.escalation_business_days}};
+  return store.update_run_config(run.run_id, config.dump());
 }
 
 // Bridges the planner model over cf-llm (design section 6.2): the refiner
@@ -768,8 +810,33 @@ int approve_command(const std::filesystem::path& workspace, const std::string& r
     err << store.error().code << ": " << store.error().message << "\n";
     return 2;
   }
-  orch::StateMachine machine(**store, run_id);
+  auto run = (*store)->get_run(run_id);
+  if (!run) {
+    err << run.error().code << ": " << run.error().message << "\n";
+    return 1;
+  }
+  orch::ApprovalDeadlines deadlines;
+  auto plan = plan::parse_plan_file(run_directory(workspace, run_id) / "plan.yaml");
+  if (plan) {
+    apply_plan_approvals(*plan, deadlines);
+  }
+  apply_stored_approvals(*run, deadlines);
   const int64_t now = store::unix_now();
+  const auto expired =
+      orch::expire_waiting_run(**store, run_id, deadlines, now);
+  if (!expired) {
+    err << expired.error().code << ": " << expired.error().message << "\n";
+    return 1;
+  }
+  if (expired->has_value()) {
+    out << Json{{"run_id", run_id},
+                {"state", "Aborted"},
+                {"reason", **expired}}
+               .dump(2)
+        << "\n";
+    return 1;
+  }
+  orch::StateMachine machine(**store, run_id);
   const auto applied = machine.apply(orch::RunEvent::Approved, {}, now);
   if (!applied) {
     err << applied.error().code << ": " << applied.error().message << "\n";
@@ -971,6 +1038,39 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
     return 1;
   }
 
+  // Deadlines for states that wait for people (design section 12.1): cf.yaml
+  // supplies defaults, the plan overrides them, and the resolved values are
+  // stored so `cf approve` sees the same deadline.
+  orch::ApprovalDeadlines deadlines;
+  if (options.design_approval_business_days.has_value()) {
+    deadlines.design_approval_business_days =
+        *options.design_approval_business_days;
+  }
+  if (options.escalation_business_days.has_value()) {
+    deadlines.escalation_business_days =
+        *options.escalation_business_days;
+  }
+  apply_plan_approvals(*plan, deadlines);
+  const auto stored = store_approvals(*run, deadlines, **store);
+  if (!stored) {
+    err << stored.error().code << ": " << stored.error().message << "\n";
+    return 1;
+  }
+  const auto expired = orch::expire_waiting_run(
+      **store, options.run_id, deadlines, store::unix_now());
+  if (!expired) {
+    err << expired.error().code << ": " << expired.error().message << "\n";
+    return 1;
+  }
+  if (expired->has_value()) {
+    out << Json{{"run_id", options.run_id},
+                {"state", "Aborted"},
+                {"reason", **expired}}
+               .dump(2)
+        << "\n";
+    return 0;
+  }
+
   // Advance the run state (design section 7.1). Without --skip-refinement
   // the refinement pipeline runs first and the run stops at the human
   // approval gate (design section 6.2); `cf approve --stage design` releases
@@ -1128,6 +1228,13 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
     config.orchestrator.max_tokens_total = effective.budget.max_tokens_total;
   } else if (options.budget_tokens.has_value()) {
     config.orchestrator.max_tokens_total = options.budget_tokens;
+  }
+  if (effective.budget.max_wall_clock_hours.has_value()) {
+    config.orchestrator.max_wall_clock_hours =
+        effective.budget.max_wall_clock_hours;
+  } else if (options.budget_wall_clock_hours.has_value()) {
+    config.orchestrator.max_wall_clock_hours =
+        options.budget_wall_clock_hours;
   }
   if (options.max_iterations_per_milestone.has_value()) {
     config.orchestrator.loop_limits.max_iterations_per_milestone =

@@ -10,6 +10,7 @@ add_executable(cf_unit_tests
   milestone_loop_test.cpp
   refiner_test.cpp
   orchestrator_test.cpp
+  approval_deadline_test.cpp
   llm_client_test.cpp
   plan_test.cpp
   profile_test.cpp

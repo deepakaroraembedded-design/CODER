@@ -33,6 +33,9 @@ struct OrchestratorConfig {
   // milestone turn and gate run.
   std::optional<double> max_usd_total;
   std::optional<uint64_t> max_tokens_total;
+  // Active time only: states waiting for people do not count (design
+  // sections 12, 15).
+  std::optional<double> max_wall_clock_hours;
   // Empty: escalation bundles are not written.
   std::string escalation_dir;
 };
@@ -53,7 +56,10 @@ class RunOrchestrator {
 
  private:
   Result<RunState> escalate(std::string_view reason, RunEvent event, store::UnixTime now);
-  Result<std::optional<std::string>> budget_exceeded() const;
+  Result<std::optional<std::string>> budget_exceeded(store::UnixTime now) const;
+  // Seconds spent in states that do work for the run, from the transition
+  // log; waiting for people (design sections 12.1, 15) is excluded.
+  Result<int64_t> active_seconds(store::UnixTime now) const;
   Result<bool> all_milestones_done() const;
   // Registers every plan milestone that has no row yet, in Pending.
   Status ensure_milestones_registered();

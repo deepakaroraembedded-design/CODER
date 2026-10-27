@@ -4,8 +4,8 @@
 // is command-line flags > cf.yaml > built-in defaults. The parsed schema is
 // strict: an unknown key fails with CLI_CONFIG_INVALID naming the key, so a
 // configuration never silently half-applies; sections whose knobs have no
-// consumer yet (approvals, rag, reference_docs, gate coverage/mutation,
-// github policies) are rejected the same way until they are implemented.
+// consumer yet (rag, reference_docs, gate coverage/mutation, github policies,
+// waiver deadlines) are rejected the same way until they are implemented.
 #pragma once
 
 #include <cstdint>
@@ -70,8 +70,18 @@ struct FrameworkConfig {
     std::optional<std::uint64_t> max_tokens_total;
     std::optional<std::uint32_t> max_iterations_per_milestone;
     std::optional<std::uint32_t> max_attempts_per_defect;
+    // Active time only: states that wait for people do not count (design
+    // sections 12, 15).
+    std::optional<double> max_wall_clock_hours;
   };
   Budget budget;
+
+  struct Approvals {
+    // Business days (design section 12.1); the plan overrides these.
+    std::optional<std::uint32_t> design_approval_business_days;
+    std::optional<std::uint32_t> escalation_business_days;
+  };
+  Approvals approvals;
 
   struct Gates {
     std::optional<std::string> profiles_dir;

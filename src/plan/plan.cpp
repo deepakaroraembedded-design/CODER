@@ -9,6 +9,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "cf/common/duration.hpp"
+
 namespace cf::plan {
 namespace {
 
@@ -84,6 +86,17 @@ double required_double(const YAML::Node& node, const std::string& context) {
   } catch (const YAML::Exception& e) {
     schema_error(context + ": " + e.what());
   }
+}
+
+std::uint32_t required_business_days(const YAML::Node& node,
+                                     const std::string& context) {
+  const auto parsed =
+      cf::parse_business_day_duration(as_string(node, context));
+  if (!parsed) {
+    schema_error(context +
+                 " must be a positive business-day duration like '5d'");
+  }
+  return *parsed;
 }
 
 // Pure YAML, or Markdown with a leading YAML front matter block.
@@ -304,6 +317,25 @@ Plan parse_yaml(const std::string& yaml_text, const ValidationOptions& options,
     if (const YAML::Node wall = budget["max_wall_clock_hours"]) {
       plan.budget.max_wall_clock_hours =
           required_double(wall, "budget.max_wall_clock_hours");
+    }
+  }
+
+  if (const YAML::Node approvals = root["approvals"]) {
+    if (!approvals.IsMap()) {
+      schema_error("plan.approvals must be a mapping");
+    }
+    for (const auto& entry : approvals) {
+      const std::string key = as_string(entry.first, "approvals.<key>");
+      if (key == "design_approval") {
+        plan.approvals.design_approval_business_days =
+            required_business_days(entry.second, "approvals.design_approval");
+      } else if (key == "escalation") {
+        plan.approvals.escalation_business_days =
+            required_business_days(entry.second, "approvals.escalation");
+      } else {
+        schema_error("unknown approvals key '" + key +
+                     "' (expected design_approval or escalation)");
+      }
     }
   }
 

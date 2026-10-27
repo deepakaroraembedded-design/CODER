@@ -6,6 +6,8 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "cf/common/duration.hpp"
+
 namespace cf::cli {
 namespace {
 
@@ -75,13 +77,32 @@ Status read_optional(const YAML::Node& node, std::string_view key,
 
 // Documented top-level sections this build does not consume yet.
 const std::vector<std::string_view> kUnsupportedTopLevel = {
-    "approvals", "rag", "reference_docs",
+    "rag", "reference_docs",
 };
 
 const std::vector<std::string_view> kTopLevel = {
-    "run", "github", "providers", "models", "budget", "gates", "review",
-    "sandbox",
+    "run", "github", "providers", "models", "approvals", "budget", "gates",
+    "review", "sandbox",
 };
+
+Status read_business_days(const YAML::Node& node, std::string_view key,
+                          std::optional<std::uint32_t>& out) {
+  if (!node) {
+    return {};
+  }
+  std::string text;
+  try {
+    text = node.as<std::string>();
+  } catch (const YAML::Exception& e) {
+    return invalid(key, e.what());
+  }
+  const auto parsed = cf::parse_business_day_duration(text);
+  if (!parsed) {
+    return invalid(key, "expected a positive business-day duration like '5d'");
+  }
+  out = *parsed;
+  return {};
+}
 
 }  // namespace
 
@@ -277,12 +298,41 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
     }
   }
 
+  if (const YAML::Node approvals = root["approvals"]) {
+    if (!approvals.IsMap()) {
+      return invalid("approvals", "must be a mapping of waiting state to deadline");
+    }
+    for (const auto& entry : approvals) {
+      const std::string key = entry.first.as<std::string>();
+      if (key == "design_approval" || key == "escalation") {
+        continue;
+      }
+      if (key == "waiver") {
+        return unsupported("approvals.waiver");
+      }
+      return unknown_key(key, "approvals");
+    }
+    if (auto status = read_business_days(approvals["design_approval"],
+                                         "approvals.design_approval",
+                                         config.approvals.design_approval_business_days);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (auto status = read_business_days(approvals["escalation"],
+                                         "approvals.escalation",
+                                         config.approvals.escalation_business_days);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+  }
+
   if (const YAML::Node budget = root["budget"]) {
     for (const auto& entry : budget) {
       const std::string key = entry.first.as<std::string>();
       if (key == "max_usd_total" || key == "max_tokens_total" ||
           key == "max_iterations_per_milestone" ||
-          key == "max_attempts_per_defect") {
+          key == "max_attempts_per_defect" ||
+          key == "max_wall_clock_hours") {
         continue;
       }
       return unsupported("budget." + key);
@@ -308,6 +358,12 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
     if (auto status = read_optional(budget["max_attempts_per_defect"],
                                     "budget.max_attempts_per_defect",
                                     config.budget.max_attempts_per_defect);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (auto status = read_optional(budget["max_wall_clock_hours"],
+                                    "budget.max_wall_clock_hours",
+                                    config.budget.max_wall_clock_hours);
         !status) {
       return tl::make_unexpected(status.error());
     }
@@ -463,6 +519,17 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   }
   if (config.budget.max_attempts_per_defect.has_value()) {
     options.max_attempts_per_defect = *config.budget.max_attempts_per_defect;
+  }
+  if (config.budget.max_wall_clock_hours.has_value()) {
+    options.budget_wall_clock_hours = *config.budget.max_wall_clock_hours;
+  }
+  if (config.approvals.design_approval_business_days.has_value()) {
+    options.design_approval_business_days =
+        *config.approvals.design_approval_business_days;
+  }
+  if (config.approvals.escalation_business_days.has_value()) {
+    options.escalation_business_days =
+        *config.approvals.escalation_business_days;
   }
   if (config.review.diff_threshold_lines.has_value()) {
     options.review_diff_threshold_lines = *config.review.diff_threshold_lines;

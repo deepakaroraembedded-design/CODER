@@ -70,6 +70,9 @@ inference: fireworks
 budget:
   max_usd_total: 250
   max_wall_clock_hours: 36
+approvals:
+  design_approval: 4d
+  escalation: 2d
 )yaml";
 
 TEST(PlanTest, ParsesTheExamplePlan) {
@@ -102,6 +105,24 @@ TEST(PlanTest, ParsesTheExamplePlan) {
   EXPECT_DOUBLE_EQ(*plan->budget.max_usd_total, 250.0);
   ASSERT_TRUE(plan->budget.max_wall_clock_hours.has_value());
   EXPECT_DOUBLE_EQ(*plan->budget.max_wall_clock_hours, 36.0);
+  ASSERT_TRUE(plan->approvals.design_approval_business_days.has_value());
+  EXPECT_EQ(*plan->approvals.design_approval_business_days, 4u);
+  ASSERT_TRUE(plan->approvals.escalation_business_days.has_value());
+  EXPECT_EQ(*plan->approvals.escalation_business_days, 2u);
+}
+
+TEST(PlanTest, RejectsInvalidApprovalDeadlines) {
+  auto invalid = cf::plan::parse_plan_string(minimal_plan(
+      "  - id: M1\n    title: T\n", "approvals:\n  design_approval: 0d\n"));
+  ASSERT_FALSE(invalid.has_value());
+  EXPECT_EQ(invalid.error().code, cf::plan::error_codes::kSchemaInvalid);
+  EXPECT_NE(invalid.error().message.find("design_approval"), std::string::npos);
+
+  auto unknown = cf::plan::parse_plan_string(minimal_plan(
+      "  - id: M1\n    title: T\n", "approvals:\n  waiver: 2d\n"));
+  ASSERT_FALSE(unknown.has_value());
+  EXPECT_EQ(unknown.error().code, cf::plan::error_codes::kSchemaInvalid);
+  EXPECT_NE(unknown.error().message.find("waiver"), std::string::npos);
 }
 
 TEST(PlanTest, ParsesMarkdownWithFrontMatter) {

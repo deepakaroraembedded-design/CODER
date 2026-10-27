@@ -212,6 +212,10 @@ class RunStore {
   // --- runs and transitions (design sections 7.1, 8.4) ---------------------
   Status create_run(const RunRecord& run);
   Result<RunRecord> get_run(std::string_view run_id) const;
+  // Replaces config_json; the run process records the resolved approval
+  // deadlines here so later commands see the same values (design section
+  // 12.1).
+  Status update_run_config(std::string_view run_id, std::string_view config_json);
 
   // Applies one run state transition, appends the transition log row and
   // records any operation intents in a single transaction (design section

@@ -429,6 +429,21 @@ Result<RunRecord> RunStore::get_run(std::string_view run_id) const {
   });
 }
 
+Status RunStore::update_run_config(std::string_view run_id,
+                                   std::string_view config_json) {
+  return sql_guard("update_run_config", [&]() -> Status {
+    SQLite::Statement stmt(
+        impl_->db, "UPDATE runs SET config_json = ? WHERE run_id = ?");
+    stmt.bind(1, std::string(config_json));
+    stmt.bind(2, std::string(run_id));
+    if (stmt.exec() == 0) {
+      return fail(error_codes::kNotFound,
+                  "run not found: " + std::string(run_id));
+    }
+    return {};
+  });
+}
+
 Status RunStore::apply_transition(std::string_view run_id, std::string_view from_state,
                                   std::string_view to_state, std::string_view event_json,
                                   const std::vector<NewOperation>& intents, UnixTime now) {

@@ -1,5 +1,6 @@
 #include "cf/orch/orchestrator.hpp"
 
+#include <cstddef>
 #include <utility>
 
 #include "cf/orch/escalation.hpp"
@@ -33,6 +34,29 @@ bool uses_any_interface(const std::vector<std::string>& uses,
   return false;
 }
 
+// States that consume the active-time budget. Created (waiting for `cf run`)
+// and the human-waiting states do not; Done and Aborted stopped the clock.
+bool is_active_run_state(std::string_view state) {
+  const auto parsed = run_state_from_string(state);
+  if (!parsed) {
+    return false;
+  }
+  switch (*parsed) {
+    case RunState::Ingesting:
+    case RunState::Refining:
+    case RunState::Executing:
+    case RunState::SystemValidation:
+      return true;
+    case RunState::Created:
+    case RunState::AwaitingDesignApproval:
+    case RunState::Done:
+    case RunState::Escalated:
+    case RunState::Aborted:
+      return false;
+  }
+  return false;
+}
+
 }  // namespace
 
 RunOrchestrator::RunOrchestrator(store::RunStore& store, std::string run_id,
@@ -45,7 +69,28 @@ RunOrchestrator::RunOrchestrator(store::RunStore& store, std::string run_id,
       config_(std::move(config)),
       machine_(store, run_id_) {}
 
-Result<std::optional<std::string>> RunOrchestrator::budget_exceeded() const {
+Result<int64_t> RunOrchestrator::active_seconds(store::UnixTime now) const {
+  auto transitions = store_.list_transitions(run_id_);
+  if (!transitions) {
+    return tl::make_unexpected(transitions.error());
+  }
+  int64_t seconds = 0;
+  for (std::size_t i = 0; i < transitions->size(); ++i) {
+    const auto& transition = (*transitions)[i];
+    if (!is_active_run_state(transition.to_state)) {
+      continue;
+    }
+    const store::UnixTime end =
+        i + 1 < transitions->size() ? (*transitions)[i + 1].at : now;
+    if (end > transition.at) {
+      seconds += end - transition.at;
+    }
+  }
+  return seconds;
+}
+
+Result<std::optional<std::string>> RunOrchestrator::budget_exceeded(
+    store::UnixTime now) const {
   if (config_.max_usd_total.has_value()) {
     auto usd = store_.total_usd(run_id_);
     if (!usd) {
@@ -66,6 +111,18 @@ Result<std::optional<std::string>> RunOrchestrator::budget_exceeded() const {
       return std::optional<std::string>(
           "run token budget exceeded: " + std::to_string(*tokens) + " of " +
           std::to_string(*config_.max_tokens_total));
+    }
+  }
+  if (config_.max_wall_clock_hours.has_value()) {
+    auto seconds = active_seconds(now);
+    if (!seconds) {
+      return tl::make_unexpected(seconds.error());
+    }
+    const double hours = static_cast<double>(*seconds) / 3600.0;
+    if (hours >= *config_.max_wall_clock_hours) {
+      return std::optional<std::string>(
+          "run wall-clock budget exceeded: " + std::to_string(hours) + " of " +
+          std::to_string(*config_.max_wall_clock_hours) + " active hours");
     }
   }
   return std::optional<std::string>{};
@@ -153,7 +210,7 @@ Result<RunState> RunOrchestrator::step(store::UnixTime now) {
   while (progressed) {
     progressed = false;
 
-    auto exceeded = budget_exceeded();
+    auto exceeded = budget_exceeded(now);
     if (!exceeded) {
       return tl::make_unexpected(exceeded.error());
     }
@@ -247,7 +304,7 @@ Result<RunState> RunOrchestrator::step(store::UnixTime now) {
         }
       }
 
-      exceeded = budget_exceeded();
+      exceeded = budget_exceeded(now);
       if (!exceeded) {
         return tl::make_unexpected(exceeded.error());
       }
