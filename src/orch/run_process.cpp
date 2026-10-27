@@ -370,6 +370,8 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     flow_config.pr_labels = config_.github_pr_labels;
     flow_config.pr_request_codeowners =
         config_.github_pr_request_codeowners;
+    flow_config.report_path =
+        (std::filesystem::path("runs") / config_.run_id / "report.md").string();
     github_flow = std::make_unique<GithubFlow>(store_, operation_dispatcher,
                                                repository_, std::move(flow_config));
     if (config_.export_defects) {

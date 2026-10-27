@@ -42,6 +42,9 @@ struct GithubFlowConfig {
   bool pr_draft_until_done = true;
   std::vector<std::string> pr_labels;
   bool pr_request_codeowners = true;
+  // Path shown in the PR body for the full run report (design section
+  // 10.4.8); empty omits the link.
+  std::string report_path;
 };
 
 class GithubFlow {
@@ -80,8 +83,9 @@ class GithubFlow {
   Result<store::UnixTime> last_transition_at(std::string_view run_id,
                                              std::string_view to_state) const;
 
-  std::string build_pr_body(std::string_view run_id, const plan::Plan& plan,
-                            RunState run_state) const;
+  Result<std::string> build_pr_body(std::string_view run_id,
+                                    const plan::Plan& plan,
+                                    RunState run_state) const;
 
   store::RunStore& store_;
   Dispatcher& dispatcher_;

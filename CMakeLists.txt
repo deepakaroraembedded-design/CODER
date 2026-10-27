@@ -127,6 +127,7 @@ add_library(cf_orch STATIC
   src/orch/question_policy.cpp
   src/orch/github_handlers.cpp
   src/orch/github_flow.cpp
+  src/orch/run_summary.cpp
   src/orch/defect_export.cpp
   src/orch/codeintel_sync.cpp)
 target_link_libraries(cf_orch PUBLIC

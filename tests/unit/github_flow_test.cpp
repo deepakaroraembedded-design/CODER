@@ -166,6 +166,23 @@ TEST_F(GithubFlowTest, PushesMilestonesAndOpensADraftPullRequest) {
   ASSERT_TRUE(synced.has_value()) << synced.error().message;
   EXPECT_EQ(*synced, 3u);  // two pushes + pr_create
 
+  // The body is built from the run summary (design section 10.4.8).
+  auto operations = store_->list_operations("R12", {});
+  ASSERT_TRUE(operations.has_value());
+  bool found_body = false;
+  for (const auto& op : *operations) {
+    if (op.kind != "pr_create") {
+      continue;
+    }
+    const auto input = nlohmann::json::parse(op.input_json);
+    const std::string body = input.value("body", "");
+    EXPECT_NE(body.find("Requirement traceability"), std::string::npos);
+    EXPECT_NE(body.find("## Defects"), std::string::npos);
+    EXPECT_NE(body.find("Cost so far"), std::string::npos);
+    found_body = true;
+  }
+  EXPECT_TRUE(found_body);
+
   auto milestone_remote = repository_->remote_branch_sha("origin", "cf/R12/M1");
   ASSERT_TRUE(milestone_remote.has_value());
   EXPECT_FALSE(milestone_remote->empty());

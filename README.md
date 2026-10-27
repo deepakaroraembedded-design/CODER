@@ -22,12 +22,12 @@ is still missing.
 | Toolchain profiles and staged gate runner | Implemented and tested |
 | RAG retrieval (BM25 + vectors, precedence, conflicts) and document ingestion | Implemented and tested; the `rag` config section selects hnswlib or brute force, the hybrid BM25/vector weights, the default `top_k` (refiner, MCP search and role servers) and the document-type precedence |
 | MCP tool surface (role-filtered, schema-validated) | Implemented and tested |
-| Reference documentation mirror (`cf-refmirror`) | Implemented and tested |
+| Reference documentation mirror (`cf-refmirror`) | Implemented and tested: manifest validation, fetch, checksum, HTML→Markdown cleaning, injection scan, audit snapshot and report. Remaining: generated sets (e.g. Doxygen), archive extraction, and the checked-in manifest still has placeholder URLs/checksums |
 | Git layer (worktrees, trailers, diffs, squash merges) | Implemented and tested |
 | Code intelligence (§6.5) | **Foundation + run integration**: the back-end interface and registry, the SQLite symbol index (incremental per file), tree-sitter back ends with the vendored **C, Python and Go** grammars (symbols, methods qualified `Class.method`/`Receiver.Method`, call edges with caller attribution, imports/includes, doc comments and docstrings, the layering check), the context packer (seeds → dependencies → callers → file siblings, cut to the token budget) and the `find_symbol`/`get_callers`/`get_context` MCP tools reading the index (`cf-mcp --codeintel-db`). When a back end matches the plan's language, the run indexes the integration worktree at start-up and refreshes the index incrementally at every merge (`CodeIntelSync`), and the role MCP servers are pointed at it. Remaining: the Clang LibTooling back end for C++ (needs LLVM 17+), TypeScript/Java grammars, ADR/contract retrieval in the packer, and the guardrail checks |
 | Workspace milestone driver (agents + git + gates) | Implemented and tested; fix turns receive the milestone's open defects and every fix turn counts one attempt per defect (escalates at 4, §12) |
 | opencode-backed `AgentRunner` | Implemented end to end: turn driving with event-driven (`session.idle`) turn completion, permission broker, event routing, role configs, versioned prompt templates, RAG-backed question answering, server spawning, dead-server detection and restart before the next turn (§6.12, H8), `RunProcess` and `cf run --execute` |
-| GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences) that run on the exact commit before every flow push — a rejection records no intent and escalates the run, dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment` with late-landing duplicate deletion, §6.12.6 rule 4), `GithubFlow` (milestone pushes, PR open/update/ready with `pr.draft_until_done`/labels/`request_codeowners` policy, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
+| GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences) that run on the exact commit before every flow push — a rejection records no intent and escalates the run, dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment` with late-landing duplicate deletion, §6.12.6 rule 4), `GithubFlow` (milestone pushes, PR open/update/ready with `pr.draft_until_done`/labels/`request_codeowners` policy and a report-derived body — milestone/gate summary, requirement traceability, defects and cost, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
 | CLI (`cf check/run/status/resume/escalations/report/approve/abort/ingest`) | Implemented and tested |
 | Configuration file (§15) | `cf run --config` (default `./cf.yaml`): strict schema, flags > file > defaults, plan budget wins over file defaults; provider/role-model resolution with no provider mixing (§13.1); budget (cost, tokens, iterations, defect attempts and the active wall-clock limit, which excludes states waiting for people, §12), design-approval and escalation deadlines in business days (§12.1), GitHub pre-push policy (`branch_prefix`, `protected_paths`, `max_file_mb`) and PR policy (`draft_until_done`, `labels`, `request_codeowners`), RAG policy (`index`, `top_k`, hybrid weights, precedence), loop/review-threshold/gate-resource knobs wired. Remaining: approval reminders and waiver deadlines, reference_docs, coverage/mutation, and the GitHub `push_on`/branch-retention policy |
 | Design refinement (Phase 4) | Implemented and verified with the real planner model: the refiner turns the plan into a design package (`runs/<run>/design.{json,md}` — component design, refined milestone DAG with write sets/uses/interfaces for the scheduler, ADRs), self-critiques and revises once, stops at the human approval gate, and the approved package drives execution. Approving publishes the design as a product-scoped RAG design document (`<workspace>/designs/`, status `approved`; an earlier design for the same plan becomes `superseded` and is no longer retrieved), and the run's MCP servers and question policy carry the product/language applicability context. The curated pattern catalog (`catalog/patterns/`, six entries) is loaded by `cf-mcp --patterns`, is authoritative for `get_pattern` and is indexed into retrieval; the refiner prompt carries it. Remaining: pattern-conformance checks |
@@ -196,7 +196,10 @@ The workspace layout created by the CLI:
 <workspace>/
   runs/<run_id>/run.db          # SQLite run store (WAL)
   runs/<run_id>/plan.yaml       # copy of the validated plan
+  runs/<run_id>/design.{json,md}# approved design package (Phase 4)
+  runs/<run_id>/codeintel.db    # symbol index (when a back end matches)
   runs/<run_id>/escalations/    # escalation bundles
+  designs/                      # published approved designs (RAG input)
   wt/<run>/<milestone>/<role>/  # agent worktrees (driver)
   wt/<run>/integration/         # integration branch worktree
   build/<run>/<milestone>/      # out-of-source builds
@@ -220,7 +223,7 @@ cf run --plan plans/product-x.yaml --profiles profiles --workspace cf-work --run
 # milestone DAG with write sets and interfaces, ADRs) and the run stops at the
 # human approval gate. --skip-refinement bypasses the gate entirely.
 cf run --plan plans/product-x.yaml --profiles profiles --workspace cf-work --run-id R12 \
-       --execute --repo /path/to/target-repo \
+       --execute --repo /path/to/target-repo [--config cf.yaml] \
        [--design-model accounts/fireworks/models/<planner>] \
        [--model coder=accounts/fireworks/models/<model>] \
        [--sandbox-image cf-toolchain-c-cpp:2026.10] [--docs cf-work/docs]
@@ -277,6 +280,10 @@ target:                # decides the generated code's language (design §4.2)
 inference: fireworks   # or local-vllm
 budget:
   max_usd_total: 250
+  max_wall_clock_hours: 36   # active time; human-waiting states do not count
+approvals:                   # business days; overrides cf.yaml defaults
+  design_approval: 4d
+  escalation: 2d
 ```
 
 Refined plans may additionally declare per milestone: `writes` (components/paths),
@@ -288,37 +295,106 @@ these drive the scheduler's parallel-safety rules (design §6.13.2).
 `profiles/*.yaml` (design §6.7.3) contain **trusted commands only**: lists of steps,
 each an argument list, executed with no shell. `{src_dir}`, `{build_dir}`,
 `{standard}`, `{standard_number}`, `{standard_var}` and `{changed_files...}`
-placeholders are expanded per element. `profiles/c-cpp.yaml` is provided; the
-Python, TypeScript/JavaScript, Java and Go profiles follow the tools table in
-design §6.7.2.
+placeholders are expanded per element. `profiles/c-cpp.yaml`, `profiles/python.yaml`
+and `profiles/go.yaml` are provided; TypeScript/JavaScript and Java follow the
+tools table in design §6.7.2. The profile also supplies the coverage/mutation tool
+metadata, but the stage-3 coverage and mutation runners are not built yet (see §9).
 
 ### Configuration file (`cf.yaml`, design §15)
 
 `cf run` loads `--config <path>`, defaulting to `./cf.yaml` when it exists.
-Precedence: **flags > cf.yaml > built-in defaults**, and a plan's `budget`
-block still wins over the file (design Q5). The schema is strict — an unknown
-key fails with `CLI_CONFIG_INVALID` naming the key, so a config never silently
-half-applies; documented sections with no consumer yet (`approvals`, `rag`,
-`reference_docs`, gate coverage/mutation, GitHub policies) are rejected the
-same way until they land. Supported today:
+Precedence is **flags > cf.yaml > built-in defaults**; a plan's `budget` and
+`approvals` blocks still win over the file (design Q5, §12.1). The schema is
+strict: an unknown key or a documented-but-unimplemented knob fails with
+`CLI_CONFIG_INVALID` naming the key, so a configuration never silently
+half-applies.
+
+Supported sections and keys:
 
 ```yaml
-run:      { workspace, repo, base_branch }     # repo: a local checkout path
-github:   { app_id, installation_id, private_key_ref }   # private_key_ref: a PEM path
-providers: { <name>: { base_url, api_key_env } }
-models:   { default_provider, roles: { coder|reviewer|qa|planner:
-            { family, temperature, max_output_tokens, <provider>: <model-id> } } }
-budget:   { max_usd_total, max_tokens_total,
-            max_iterations_per_milestone, max_attempts_per_defect }
-gates:    { profiles_dir }
-review:   { diff_threshold_lines }
-sandbox:  { cpu, memory_gb, job_timeout_min }
+run:
+  workspace: /srv/cf/work       # run store, worktrees
+  repo: /srv/checkouts/app      # a local checkout path (cloning is not implemented)
+  base_branch: main
+
+github:
+  app_id: "12345"               # GitHub App identity; private_key_ref is a PEM path
+  installation_id: "67890"
+  private_key_ref: /srv/keys/github-app.pem   # secretmanager:// is rejected
+  branch_prefix: "cf/"          # pre-push branch policy
+  protected_paths: [".github/**", "CODEOWNERS", "cf.yaml", "deploy/**"]
+  max_file_mb: 5                # pre-push size limit
+  pr:
+    draft_until_done: true      # false: open the PR ready immediately
+    labels: [cf-generated]      # applied to the PR (added, never removed)
+    request_codeowners: true    # ready-time reviewer request
+
+providers:                      # OpenAI-compatible endpoints
+  fireworks: { base_url: https://api.fireworks.ai/inference/v1, api_key_env: FIREWORKS_API_KEY }
+  local-vllm: { base_url: http://vllm-host:8000/v1, api_key_env: VLLM_API_KEY }
+
+models:
+  default_provider: fireworks
+  roles:
+    planner:  { family: deepseek, fireworks: "<model-id>", temperature: 0.2 }
+    coder:    { family: deepseek, fireworks: "<model-id>", temperature: 0.1, max_output_tokens: 8192 }
+    reviewer: { family: kimi,     fireworks: "<model-id>", temperature: 0.0 }
+    qa:       { family: glm,      fireworks: "<model-id>" }
+
+approvals:                      # business-day deadlines (§12.1)
+  design_approval: 5d
+  escalation: 3d
+
+budget:                         # defaults only; a plan's budget wins
+  max_usd_total: 150
+  max_tokens_total: 60000000
+  max_iterations_per_milestone: 12
+  max_attempts_per_defect: 4
+  max_wall_clock_hours: 24      # active time; Created/human-waiting excluded
+
+rag:
+  index: hnswlib                # or brute-force (the parity reference)
+  top_k: 8                      # refiner context, MCP search default
+  hybrid: { bm25_weight: 1.0, vector_weight: 1.0 }  # RRF contributions
+  precedence: [policy, requirements, architecture, design, guideline, pattern, external_reference]
+                                # listed first; missing types keep the built-in order
+
+gates:   { profiles_dir: ./profiles }
+review:  { diff_threshold_lines: 400 }
+sandbox: { cpu: 8, memory_gb: 16, job_timeout_min: 30 }
 ```
 
-The role models all resolve against `default_provider` — a run never mixes
-providers (design §13.1), and a role without an id for the default provider is
-a load-time error. `secretmanager://` key references are rejected (not
-resolvable in this build); point `private_key_ref` at a PEM file.
+Behaviour worth knowing:
+
+- **Providers/models.** Every agent role (coder, reviewer, qa) must resolve a
+  model id for `default_provider`; a run never mixes providers (design §13.1).
+  `planner` is optional and falls back to the coder model. Per-role
+  `temperature` / `max_output_tokens` go into the opencode model options.
+- **Approvals.** `Nd` means N business days (weekends skipped). Expired
+  design-approval or escalation waits abort the run with
+  `approval_timeout`/`escalation_timeout`; the resolved values are stored on
+  the run, so `cf approve` sees the same deadline. `approvals.waiver` is not
+  implemented yet.
+- **Budget.** The plan's block wins over the file. The wall-clock limit counts
+  only active states; waiting for people is bounded by `approvals` instead.
+- **GitHub pre-push.** The checks run on the exact commit before every flow
+  push; a rejection records no intent and escalates the run. Configured
+  `protected_paths` are additive: the standard set cannot be removed.
+- **GitHub PR policy.** `draft_until_done: false` opens the PR ready (and
+  requests reviewers at creation when enabled); labels are applied
+  idempotently; the PR body is built from the run summary (gates,
+  traceability, defects, cost) and links `runs/<run>/report.md`.
+- **RAG.** `top_k` is the default for `search_guidelines` and the refiner
+  context size. Hybrid weights scale the two reciprocal-rank-fusion lists;
+  `precedence` decides conflict winners, with unlisted types appended in the
+  built-in order.
+- **Gate resources.** `sandbox.cpu`, `memory_gb` and `job_timeout_min` apply
+  to gate jobs (container/namespace limits and step timeout).
+
+Not accepted yet (the loader rejects them): `reference_docs`,
+`gates.coverage`, `gates.mutation`, `approvals.waiver`, `github.push_on`,
+`github.branch_retention_days` and `github.signing_key_ref`. See
+[§9](#9-known-gaps-and-roadmap).
 
 ---
 
@@ -331,8 +407,14 @@ agent role:
 cf-mcp --role coder --run R12 --milestone M3 \
        --db cf-work/runs/R12/run.db \
        --docs cf-work/docs \
-       [--codeintel-db cf-work/runs/R12/codeintel.db]
+       [--codeintel-db cf-work/runs/R12/codeintel.db] \
+       [--top-k 8] [--rag-index hnswlib|brute-force] \
+       [--rag-bm25-weight 0.4 --rag-vector-weight 0.6] \
+       [--rag-precedence policy,requirements,architecture,design,guideline,pattern,external_reference]
 ```
+
+The run process forwards the `rag` settings from `cf.yaml` to every role server;
+`--top-k` also supplies the default when `search_guidelines` omits `top_k`.
 
 | Tool | Roles | Notes |
 |---|---|---|
@@ -366,14 +448,16 @@ cf-refmirror --manifest reference-docs/manifest.yaml --out mirror/ [--only boost
 
 Sets that fail the checksum or the injection scan are held and reported, never
 indexed. Sources can be HTTP(S) or local files (useful for tests and air-gapped
-setups).
+setups). Sets that request generation (e.g. `generate: doxygen`) are reported as
+`unsupported`; archive extraction is not implemented yet either. The checked-in
+manifest carries placeholder URLs/checksums until the real approved sets land.
 
 ---
 
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 625 unit tests
+ctest --test-dir build/debug --output-on-failure     # 648 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -539,8 +623,9 @@ opencode version.
   `GithubFlow`, which the run process calls after every step: Done milestones
   push to `cf/<run>/<m>` and `cf/<run>/integration`, a PR opens on the first
   milestone (draft while in progress unless `pr.draft_until_done` is false),
-  later states update it (skipping no-op syncs), configured `pr.labels` are
-  applied, `Done` marks it ready, escalation pushes
+  its body is built from the run summary (gates, traceability, defects,
+  cost) and later states update it (skipping no-op syncs), configured
+  `pr.labels` are applied, `Done` marks it ready, escalation pushes
   `cf/<run>/escalation/<at>` and comments the bundle link, and abort closes
   the PR. The GitHub App identity signs an RS256
   JWT in memory and exchanges it for short-lived installation tokens, cached
@@ -557,6 +642,10 @@ opencode version.
   `.github/CODEOWNERS`, `CODEOWNERS` or `docs/CODEOWNERS` from the repository
   and requests users and teams on the pull request, again on reconcile after a
   crash (requesting is idempotent); a missing file simply means no reviewers.
+  Remaining for full §10.4 fidelity: `github.push_on` scheduling,
+  branch-retention cleanup after merge/close, commit signatures and base
+  freshness in the pre-push set, GitHub ruleset provisioning, and the waivers
+  section of the PR body (the waiver flow itself is not built).
 - **Model benchmark (Phase 0b).** `cf-eval bench` implements the benchmark: the
   candidates in `eval/benchmarks/fireworks.yaml` run through the real pipeline on
   the evaluation plans, with hidden acceptance tests and scored reports under
@@ -617,8 +706,9 @@ opencode version.
   reliability plans. Still to build: the kill matrix around the local
   commit itself and sandbox kills.
 - **RAG production index.** hnswlib is the default vector index (brute force
-  stays behind the same `VectorIndex` interface as the parity reference); FAISS
-  (IVF-PQ for collections over 5M chunks) is still pending. PDF/DOCX ingestion
+  stays behind the same `VectorIndex` interface and is selectable with
+  `rag.index: brute-force`); FAISS (IVF-PQ for collections over 5M chunks) is
+  still pending. PDF/DOCX ingestion
   is pending; the labeled retrieval evaluation set is started (`eval/rag/`)
   and grows to 200 queries per collection, and the adversarial conflict set is
   in place.
@@ -638,7 +728,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (625)
+tests/unit/                 # GoogleTest unit tests (648)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

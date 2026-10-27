@@ -25,6 +25,7 @@
 #include "cf/orch/dispatcher.hpp"
 #include "cf/orch/recovery.hpp"
 #include "cf/orch/run_process.hpp"
+#include "cf/orch/run_summary.hpp"
 #include "cf/orch/state_machine.hpp"
 #include "cf/plan/plan.hpp"
 #include "cf/rag/catalog.hpp"
@@ -62,15 +63,6 @@ Json gate_rows_json(const std::vector<store::GateResultRow>& rows) {
                          {"at", row.at}});
   }
   return gates;
-}
-
-Json defect_json(const store::DefectRecord& defect) {
-  return Json{{"id", defect.id},
-              {"milestone_id", defect.milestone_id},
-              {"status", defect.status},
-              {"severity", defect.severity},
-              {"attempts", defect.attempts},
-              {"body", Json::parse(defect.body_json, nullptr, false)}};
 }
 
 // Loads the profile registry; an empty or missing directory is not an error
@@ -647,75 +639,12 @@ int report_command(const std::filesystem::path& workspace, const std::string& ru
     err << store.error().code << ": " << store.error().message << "\n";
     return 2;
   }
-  auto run = (*store)->get_run(run_id);
-  if (!run) {
-    err << run.error().code << ": " << run.error().message << "\n";
-    return 1;
-  }
-  auto milestones = (*store)->list_milestones(run_id);
-  auto usd = (*store)->total_usd(run_id);
-  auto tokens = (*store)->total_tokens(run_id);
-  auto defects = (*store)->list_defects(run_id);
-  if (!milestones || !usd || !tokens || !defects) {
-    err << "cannot read the run store\n";
-    return 2;
-  }
-
   auto plan = plan::parse_plan_file(run_directory(workspace, run_id) / "plan.yaml");
-
-  // Milestone rows with their latest gate results.
-  std::map<std::string, bool, std::less<>> milestone_gates_passed;
-  Json milestone_rows = Json::array();
-  for (const auto& milestone : *milestones) {
-    Json row = milestone_json(milestone);
-    auto gates = (*store)->latest_gate_results(run_id, milestone.milestone_id);
-    row["gates"] = gates.has_value() ? gate_rows_json(*gates) : Json::array();
-    bool passed = gates.has_value() && !gates->empty();
-    if (gates.has_value()) {
-      for (const auto& gate : *gates) {
-        passed = passed && gate.passed;
-      }
-    } else {
-      passed = false;
-    }
-    milestone_gates_passed[milestone.milestone_id] = passed;
-    row["all_gates_passed"] = passed;
-    milestone_rows.push_back(std::move(row));
-  }
-
-  // Requirement traceability (requirement -> milestones -> gate status).
-  Json requirement_rows = Json::array();
-  if (plan.has_value()) {
-    std::map<std::string, std::vector<std::string>, std::less<>> by_requirement;
-    for (const auto& spec : plan->milestones) {
-      for (const auto& requirement : spec.requirements) {
-        by_requirement[requirement].push_back(spec.id);
-      }
-    }
-    for (const auto& [requirement, milestone_ids] : by_requirement) {
-      bool done = true;
-      bool gates_passed = true;
-      Json ids = Json::array();
-      for (const auto& id : milestone_ids) {
-        ids.push_back(id);
-        const auto state = std::find_if(
-            milestones->begin(), milestones->end(),
-            [&id](const store::MilestoneRecord& milestone) {
-              return milestone.milestone_id == id;
-            });
-        done = done && state != milestones->end() && state->state == "Done";
-        gates_passed = gates_passed && milestone_gates_passed[id];
-      }
-      requirement_rows.push_back(Json{{"requirement", requirement},
-                                      {"milestones", std::move(ids)},
-                                      {"milestones_done", done},
-                                      {"gates_passed", gates_passed}});
-    }
-  }
-
-  Json defect_rows = Json::array();
-  for (const auto& defect : *defects) {
-    defect_rows.push_back(defect_json(defect));
+  auto summary = orch::build_run_summary(
+      **store, run_id, plan.has_value() ? &*plan : nullptr);
+  if (!summary) {
+    err << summary.error().code << ": " << summary.error().message << "\n";
+    return summary.error().code == store::error_codes::kNotFound ? 1 : 2;
   }
 
   Json escalations = Json::array();
@@ -735,14 +664,15 @@ int report_command(const std::filesystem::path& workspace, const std::string& ru
   }
 
   const Json document = Json{
-      {"run", Json{{"id", run->run_id},
-                   {"state", run->state},
-                   {"plan_id", run->plan_id},
-                   {"created_at", run->created_at},
-                   {"cost", Json{{"usd", *usd}, {"tokens", *tokens}}}}},
-      {"milestones", std::move(milestone_rows)},
-      {"requirements", std::move(requirement_rows)},
-      {"defects", std::move(defect_rows)},
+      {"run", Json{{"id", summary->run.run_id},
+                   {"state", summary->run.state},
+                   {"plan_id", summary->run.plan_id},
+                   {"created_at", summary->run.created_at},
+                   {"cost",
+                    Json{{"usd", summary->usd}, {"tokens", summary->tokens}}}}},
+      {"milestones", summary->milestones},
+      {"requirements", summary->requirements},
+      {"defects", summary->defects},
       {"escalations", std::move(escalations)}};
 
   std::filesystem::create_directories(out_dir, ec);
@@ -764,45 +694,12 @@ int report_command(const std::filesystem::path& workspace, const std::string& ru
       err << "cannot write report.md\n";
       return 2;
     }
-    markdown << "# Run report: " << run->run_id << "\n\n";
-    markdown << "- State: " << run->state << "\n";
-    markdown << "- Plan: " << run->plan_id << "\n";
-    markdown << "- Cost: $" << *usd << ", " << *tokens << " tokens\n\n";
-    markdown << "## Milestones\n\n";
-    markdown << "| id | state | iterations | gates |\n|---|---|---|---|\n";
-    for (const auto& row : document["milestones"]) {
-      markdown << "| " << row["id"].get<std::string>() << " | "
-               << row["state"].get<std::string>() << " | "
-               << row["iterations"].get<unsigned>() << " | "
-               << (row["all_gates_passed"].get<bool>() ? "passed" : "not passed")
-               << " |\n";
-    }
-    markdown << "\n## Requirement traceability\n\n";
-    markdown << "| requirement | milestones | done | gates |\n|---|---|---|---|\n";
-    for (const auto& row : document["requirements"]) {
-      std::string ids;
-      for (const auto& id : row["milestones"]) {
-        if (!ids.empty()) {
-          ids += ", ";
-        }
-        ids += id.get<std::string>();
-      }
-      markdown << "| " << row["requirement"].get<std::string>() << " | " << ids
-               << " | " << (row["milestones_done"].get<bool>() ? "yes" : "no") << " | "
-               << (row["gates_passed"].get<bool>() ? "passed" : "not passed") << " |\n";
-    }
-    markdown << "\n## Defects\n\n";
-    if (document["defects"].empty()) {
-      markdown << "None.\n";
-    } else {
-      markdown << "| id | milestone | status | severity |\n|---|---|---|---|\n";
-      for (const auto& row : document["defects"]) {
-        markdown << "| " << row["id"].get<std::string>() << " | "
-                 << row["milestone_id"].get<std::string>() << " | "
-                 << row["status"].get<std::string>() << " | "
-                 << row["severity"].get<std::string>() << " |\n";
-      }
-    }
+    markdown << "# Run report: " << summary->run.run_id << "\n\n";
+    markdown << "- State: " << summary->run.state << "\n";
+    markdown << "- Plan: " << summary->run.plan_id << "\n";
+    markdown << "- Cost: $" << summary->usd << ", " << summary->tokens
+             << " tokens\n\n";
+    markdown << orch::render_run_summary_markdown(*summary);
     markdown << "\n## Escalations\n\n";
     if (document["escalations"].empty()) {
       markdown << "None.\n";
