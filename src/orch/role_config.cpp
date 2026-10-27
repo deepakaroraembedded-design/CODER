@@ -92,6 +92,30 @@ nlohmann::json build_role_config(const RoleConfigSpec& spec) {
   if (!spec.codeintel_db.empty()) {
     mcp_command.push_back("--codeintel-db=" + spec.codeintel_db);
   }
+  if (spec.rag_top_k.has_value()) {
+    mcp_command.push_back("--top-k=" + std::to_string(*spec.rag_top_k));
+  }
+  if (spec.rag_index.has_value()) {
+    mcp_command.push_back("--rag-index=" + *spec.rag_index);
+  }
+  if (spec.rag_bm25_weight.has_value()) {
+    mcp_command.push_back("--rag-bm25-weight=" +
+                          std::to_string(*spec.rag_bm25_weight));
+  }
+  if (spec.rag_vector_weight.has_value()) {
+    mcp_command.push_back("--rag-vector-weight=" +
+                          std::to_string(*spec.rag_vector_weight));
+  }
+  if (spec.rag_precedence.has_value() && !spec.rag_precedence->empty()) {
+    std::string joined;
+    for (const auto& type : *spec.rag_precedence) {
+      if (!joined.empty()) {
+        joined += ",";
+      }
+      joined += type;
+    }
+    mcp_command.push_back("--rag-precedence=" + joined);
+  }
   config["mcp"]["cf"] = Json{{"type", "local"},
                              {"command", std::move(mcp_command)},
                              {"enabled", true}};

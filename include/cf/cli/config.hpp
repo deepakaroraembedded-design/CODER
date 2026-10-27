@@ -4,8 +4,9 @@
 // is command-line flags > cf.yaml > built-in defaults. The parsed schema is
 // strict: an unknown key fails with CLI_CONFIG_INVALID naming the key, so a
 // configuration never silently half-applies; sections whose knobs have no
-// consumer yet (rag, reference_docs, gate coverage/mutation, github policies,
-// waiver deadlines) are rejected the same way until they are implemented.
+// consumer yet (reference_docs, gate coverage/mutation, github push_on and
+// branch retention, waiver deadlines) are rejected the same way until they
+// are implemented.
 #pragma once
 
 #include <cstdint>
@@ -94,6 +95,17 @@ struct FrameworkConfig {
     std::optional<std::uint32_t> escalation_business_days;
   };
   Approvals approvals;
+
+  struct Rag {
+    // "hnswlib" (default) or "brute-force" (design sections 6.3, 15).
+    std::optional<std::string> index;
+    std::optional<std::uint32_t> top_k;
+    std::optional<double> bm25_weight;
+    std::optional<double> vector_weight;
+    // Highest precedence first; missing types keep the built-in order.
+    std::optional<std::vector<std::string>> precedence;
+  };
+  Rag rag;
 
   struct Gates {
     std::optional<std::string> profiles_dir;

@@ -82,6 +82,11 @@ budget:
 approvals:
   design_approval: 5d
   escalation: 3d
+rag:
+  index: hnswlib
+  top_k: 12
+  hybrid: { bm25_weight: 0.4, vector_weight: 0.6 }
+  precedence: [design, policy, requirements, architecture, guideline, pattern, external_reference]
 gates:
   profiles_dir: /srv/cf/profiles
 review:
@@ -132,7 +137,13 @@ TEST_F(ConfigTest, LoadsTheFullSchema) {
   EXPECT_DOUBLE_EQ(*config->budget.max_wall_clock_hours, 24.0);
   EXPECT_EQ(*config->approvals.design_approval_business_days, 5u);
   EXPECT_EQ(*config->approvals.escalation_business_days, 3u);
-  EXPECT_EQ(*config->gates.profiles_dir, "/srv/cf/profiles");
+  EXPECT_EQ(*config->rag.index, "hnswlib");
+  EXPECT_EQ(*config->rag.top_k, 12u);
+  EXPECT_DOUBLE_EQ(*config->rag.bm25_weight, 0.4);
+  EXPECT_DOUBLE_EQ(*config->rag.vector_weight, 0.6);
+  ASSERT_EQ(config->rag.precedence->size(), 7u);
+  EXPECT_EQ(config->rag.precedence->front(), "design");
+  EXPECT_EQ(config->gates.profiles_dir, "/srv/cf/profiles");
   EXPECT_EQ(*config->review.diff_threshold_lines, 250u);
   EXPECT_DOUBLE_EQ(*config->sandbox.cpu, 8.0);
   EXPECT_DOUBLE_EQ(*config->sandbox.memory_gb, 16.0);
@@ -195,6 +206,27 @@ TEST_F(ConfigTest, UnknownRolesAndBadTypesAreRejected) {
   EXPECT_NE(type.error().message.find("max_usd_total"), std::string::npos);
 }
 
+TEST_F(ConfigTest, RejectsInvalidRagSettings) {
+  auto index = cf::cli::load_config(write_config("rag: {index: faiss}\n"));
+  ASSERT_FALSE(index.has_value());
+  EXPECT_NE(index.error().message.find("rag.index"), std::string::npos);
+
+  auto top_k = cf::cli::load_config(write_config("rag: {top_k: 0}\n"));
+  ASSERT_FALSE(top_k.has_value());
+  EXPECT_NE(top_k.error().message.find("rag.top_k"), std::string::npos);
+
+  auto weights = cf::cli::load_config(
+      write_config("rag: {hybrid: {bm25_weight: 0, vector_weight: 0}}\n"));
+  ASSERT_FALSE(weights.has_value());
+  EXPECT_NE(weights.error().message.find("rag.hybrid"), std::string::npos);
+
+  auto precedence = cf::cli::load_config(
+      write_config("rag: {precedence: [policy, policy]}\n"));
+  ASSERT_FALSE(precedence.has_value());
+  EXPECT_NE(precedence.error().message.find("rag.precedence"),
+            std::string::npos);
+}
+
 TEST_F(ConfigTest, ApplyConfigResolvesProvidersAndRoles) {
   auto config = cf::cli::load_config(write_config(kFull));
   ASSERT_TRUE(config.has_value()) << config.error().message;
@@ -238,6 +270,14 @@ TEST_F(ConfigTest, ApplyConfigResolvesProvidersAndRoles) {
   EXPECT_DOUBLE_EQ(*options.budget_wall_clock_hours, 24.0);
   EXPECT_EQ(*options.design_approval_business_days, 5u);
   EXPECT_EQ(*options.escalation_business_days, 3u);
+  EXPECT_EQ(*options.rag_index, "hnswlib");
+  EXPECT_EQ(*options.rag_top_k, 12u);
+  EXPECT_DOUBLE_EQ(*options.rag_bm25_weight, 0.4);
+  EXPECT_DOUBLE_EQ(*options.rag_vector_weight, 0.6);
+  EXPECT_EQ(*options.rag_precedence,
+            (std::vector<std::string>{"design", "policy", "requirements",
+                                      "architecture", "guideline", "pattern",
+                                      "external_reference"}));
   EXPECT_EQ(*options.review_diff_threshold_lines, 250u);
   EXPECT_DOUBLE_EQ(*options.sandbox_cpus, 8.0);
   EXPECT_DOUBLE_EQ(*options.sandbox_memory_gb, 16.0);

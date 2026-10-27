@@ -303,6 +303,11 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   if (!config_.patterns_dir.empty()) {
     spec.patterns_dir = sandboxed ? "/cf/catalog" : config_.patterns_dir;
   }
+  spec.rag_top_k = config_.rag_top_k;
+  spec.rag_index = config_.rag_index;
+  spec.rag_bm25_weight = config_.rag_bm25_weight;
+  spec.rag_vector_weight = config_.rag_vector_weight;
+  spec.rag_precedence = config_.rag_precedence;
   spec.calls_file = sandboxed ? "/cf/" + calls_file.filename().string()
                               : calls_file.string();
 

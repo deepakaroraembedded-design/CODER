@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -46,6 +47,12 @@ struct OpencodeFactoryConfig {
   std::string language;
   std::string designs_dir;
   std::string patterns_dir;  // pattern catalog (design section 6.2)
+  // RAG settings passed to the role's cf-mcp (design sections 6.3, 15).
+  std::optional<std::uint32_t> rag_top_k;
+  std::optional<std::string> rag_index;
+  std::optional<double> rag_bm25_weight;
+  std::optional<double> rag_vector_weight;
+  std::optional<std::vector<std::string>> rag_precedence;
   std::vector<std::string> coder_commands;  // profile agent commands
   std::vector<std::string> qa_commands;
   std::chrono::milliseconds start_timeout{30000};

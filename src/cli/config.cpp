@@ -1,5 +1,6 @@
 #include "cf/cli/config.hpp"
 
+#include <set>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -7,6 +8,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "cf/common/duration.hpp"
+#include "cf/rag/types.hpp"
 
 namespace cf::cli {
 namespace {
@@ -77,12 +79,12 @@ Status read_optional(const YAML::Node& node, std::string_view key,
 
 // Documented top-level sections this build does not consume yet.
 const std::vector<std::string_view> kUnsupportedTopLevel = {
-    "rag", "reference_docs",
+    "reference_docs",
 };
 
 const std::vector<std::string_view> kTopLevel = {
-    "run", "github", "providers", "models", "approvals", "budget", "gates",
-    "review", "sandbox",
+    "run", "github", "providers", "models", "approvals", "budget", "rag",
+    "gates", "review", "sandbox",
 };
 
 Status read_business_days(const YAML::Node& node, std::string_view key,
@@ -216,6 +218,9 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
       return tl::make_unexpected(status.error());
     }
     if (const YAML::Node pr = github["pr"]) {
+      if (!pr.IsMap()) {
+        return invalid("github.pr", "must be a mapping");
+      }
       auto checked = check_keys(pr, "github.pr",
                                 {"draft_until_done", "labels",
                                  "request_codeowners"});
@@ -369,6 +374,97 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
                                          config.approvals.escalation_business_days);
         !status) {
       return tl::make_unexpected(status.error());
+    }
+  }
+
+  if (const YAML::Node rag = root["rag"]) {
+    if (!rag.IsMap()) {
+      return invalid("rag", "must be a mapping");
+    }
+    auto checked = check_keys(rag, "rag",
+                              {"index", "top_k", "hybrid", "precedence"});
+    if (!checked) {
+      return tl::make_unexpected(checked.error());
+    }
+    if (auto status = read_optional(rag["index"], "rag.index", config.rag.index);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.rag.index.has_value() && *config.rag.index != "hnswlib" &&
+        *config.rag.index != "brute-force") {
+      return invalid("rag.index",
+                     "expected 'hnswlib' or 'brute-force'");
+    }
+    if (auto status = read_optional(rag["top_k"], "rag.top_k",
+                                    config.rag.top_k);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.rag.top_k.has_value() &&
+        (*config.rag.top_k == 0 || *config.rag.top_k > 1000)) {
+      return invalid("rag.top_k", "must be between 1 and 1000");
+    }
+    if (const YAML::Node hybrid = rag["hybrid"]) {
+      if (!hybrid.IsMap()) {
+        return invalid("rag.hybrid", "must be a mapping");
+      }
+      auto hybrid_checked =
+          check_keys(hybrid, "rag.hybrid", {"bm25_weight", "vector_weight"});
+      if (!hybrid_checked) {
+        return tl::make_unexpected(hybrid_checked.error());
+      }
+      if (auto status =
+              read_optional(hybrid["bm25_weight"], "rag.hybrid.bm25_weight",
+                            config.rag.bm25_weight);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
+      if (auto status =
+              read_optional(hybrid["vector_weight"], "rag.hybrid.vector_weight",
+                            config.rag.vector_weight);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
+      if ((config.rag.bm25_weight.has_value() &&
+           *config.rag.bm25_weight < 0.0) ||
+          (config.rag.vector_weight.has_value() &&
+           *config.rag.vector_weight < 0.0)) {
+        return invalid("rag.hybrid", "weights must not be negative");
+      }
+      if (config.rag.bm25_weight.has_value() &&
+          config.rag.vector_weight.has_value() &&
+          *config.rag.bm25_weight == 0.0 && *config.rag.vector_weight == 0.0) {
+        return invalid("rag.hybrid", "at least one weight must be positive");
+      }
+    }
+    if (auto status =
+            read_optional(rag["precedence"], "rag.precedence",
+                          config.rag.precedence);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.rag.precedence.has_value()) {
+      std::set<rag::DocType> seen;
+      for (const auto& name : *config.rag.precedence) {
+        const auto type = rag::doc_type_from_string(name);
+        if (!type) {
+          return invalid("rag.precedence",
+                         "unknown document type '" + name + "'");
+        }
+        if (!seen.insert(*type).second) {
+          return invalid("rag.precedence",
+                         "duplicate document type '" + name + "'");
+        }
+      }
+      for (const rag::DocType type :
+           {rag::DocType::Policy, rag::DocType::Requirements,
+            rag::DocType::Architecture, rag::DocType::Design,
+            rag::DocType::Guideline, rag::DocType::Pattern,
+            rag::DocType::ExternalReference}) {
+        if (seen.count(type) == 0) {
+          config.rag.precedence->push_back(std::string(rag::to_string(type)));
+        }
+      }
     }
   }
 
@@ -596,6 +692,21 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   if (config.approvals.escalation_business_days.has_value()) {
     options.escalation_business_days =
         *config.approvals.escalation_business_days;
+  }
+  if (config.rag.index.has_value()) {
+    options.rag_index = *config.rag.index;
+  }
+  if (config.rag.top_k.has_value()) {
+    options.rag_top_k = *config.rag.top_k;
+  }
+  if (config.rag.bm25_weight.has_value()) {
+    options.rag_bm25_weight = *config.rag.bm25_weight;
+  }
+  if (config.rag.vector_weight.has_value()) {
+    options.rag_vector_weight = *config.rag.vector_weight;
+  }
+  if (config.rag.precedence.has_value()) {
+    options.rag_precedence = *config.rag.precedence;
   }
   if (config.review.diff_threshold_lines.has_value()) {
     options.review_diff_threshold_lines = *config.review.diff_threshold_lines;

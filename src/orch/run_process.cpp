@@ -42,6 +42,27 @@ void anchor_binary(std::string& binary) {
   binary = path.string();
 }
 
+Result<rag::RetrieverOptions> retriever_options(const RunProcessConfig& config) {
+  rag::RetrieverOptions options;
+  if (config.rag_index.has_value()) {
+    options.hnsw = *config.rag_index != "brute-force";
+  }
+  if (config.rag_bm25_weight.has_value()) {
+    options.bm25_weight = *config.rag_bm25_weight;
+  }
+  if (config.rag_vector_weight.has_value()) {
+    options.vector_weight = *config.rag_vector_weight;
+  }
+  if (config.rag_precedence.has_value()) {
+    auto types = rag::doc_types_from_names(*config.rag_precedence);
+    if (!types) {
+      return tl::make_unexpected(types.error());
+    }
+    options.precedence = std::move(*types);
+  }
+  return options;
+}
+
 // The profile's agent commands (build system plus test framework), as the
 // comma-separated list the role prompts show.
 std::string agent_command_summary(const gates::Profile& profile,
@@ -139,7 +160,11 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   std::shared_ptr<rag::InMemoryRetriever> retriever;
   const std::filesystem::path designs_dir = config_.workspace_root / "designs";
   if (!config_.docs_dir.empty() || std::filesystem::is_directory(designs_dir)) {
-    retriever = std::make_shared<rag::InMemoryRetriever>();
+    auto options = retriever_options(config_);
+    if (!options) {
+      return tl::make_unexpected(options.error());
+    }
+    retriever = std::make_shared<rag::InMemoryRetriever>(*options);
     // Company documents plus approved design packages from earlier runs
     // (design section 6.2 step 7); the applicability filter keeps only the
     // ones scoped to this run's product and language.
@@ -188,6 +213,11 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
       factory_config.designs_dir = designs.string();
     }
     factory_config.patterns_dir = config_.patterns_dir;
+    factory_config.rag_top_k = config_.rag_top_k;
+    factory_config.rag_index = config_.rag_index;
+    factory_config.rag_bm25_weight = config_.rag_bm25_weight;
+    factory_config.rag_vector_weight = config_.rag_vector_weight;
+    factory_config.rag_precedence = config_.rag_precedence;
     const auto build =
         config_.profile.build_systems.find(config_.profile_build_system);
     if (build != config_.profile.build_systems.end()) {

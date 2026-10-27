@@ -294,9 +294,11 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
             types.push_back(*type);
           }
         }
-        auto hits = search_rag(dependencies, arguments.at("query").get<std::string>(),
-                               std::move(types),
-                               static_cast<std::uint32_t>(arguments.value("top_k", 8)));
+        auto hits = search_rag(
+            dependencies, arguments.at("query").get<std::string>(),
+            std::move(types),
+            static_cast<std::uint32_t>(
+                arguments.value("top_k", dependencies.default_top_k)));
         if (!hits) {
           return error_result(hits.error().code, hits.error().message);
         }

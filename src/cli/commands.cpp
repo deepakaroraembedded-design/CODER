@@ -228,9 +228,28 @@ Result<orch::DesignPackage> refine_or_load(const ExecuteOptions& options,
   // (design section 6.2 step 7); the applicability filter keeps only the
   // ones scoped to this plan's product.
   const std::filesystem::path designs_dir = options.workspace / "designs";
+  rag::RetrieverOptions retriever_options;
+  if (options.rag_index.has_value()) {
+    retriever_options.hnsw = *options.rag_index != "brute-force";
+  }
+  if (options.rag_bm25_weight.has_value()) {
+    retriever_options.bm25_weight = *options.rag_bm25_weight;
+  }
+  if (options.rag_vector_weight.has_value()) {
+    retriever_options.vector_weight = *options.rag_vector_weight;
+  }
+  if (options.rag_precedence.has_value()) {
+    auto types = rag::doc_types_from_names(*options.rag_precedence);
+    if (!types) {
+      return fail("ORCH_REFINE_FAILED", types.error().message);
+    }
+    retriever_options.precedence = std::move(*types);
+  }
+
   std::unique_ptr<rag::InMemoryRetriever> retriever;
   if (!options.docs_dir.empty() || std::filesystem::is_directory(designs_dir)) {
-    retriever = std::make_unique<rag::InMemoryRetriever>();
+    retriever =
+        std::make_unique<rag::InMemoryRetriever>(retriever_options);
     for (const auto& directory :
          {std::filesystem::path(options.docs_dir), designs_dir}) {
       if (directory.empty()) {
@@ -264,6 +283,9 @@ Result<orch::DesignPackage> refine_or_load(const ExecuteOptions& options,
 
   orch::DesignRefinerOptions refiner_options;
   refiner_options.model = model_id;
+  if (options.rag_top_k.has_value()) {
+    refiner_options.context_hits = *options.rag_top_k;
+  }
   orch::DesignRefiner refiner(*active, retriever.get(), std::move(refiner_options),
                               &catalog);
   auto package = refiner.refine(plan);
@@ -1205,6 +1227,11 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
       std::filesystem::is_directory(options.patterns_dir)) {
     config.patterns_dir = options.patterns_dir;
   }
+  config.rag_index = options.rag_index;
+  config.rag_top_k = options.rag_top_k;
+  config.rag_bm25_weight = options.rag_bm25_weight;
+  config.rag_vector_weight = options.rag_vector_weight;
+  config.rag_precedence = options.rag_precedence;
   config.profile = **profile;
   config.profile_language = effective.target.language;
   config.profile_build_system = effective.target.build_system;

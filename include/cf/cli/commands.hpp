@@ -144,6 +144,12 @@ struct ExecuteOptions {
   // approvals block overrides these defaults.
   std::optional<std::uint32_t> design_approval_business_days;
   std::optional<std::uint32_t> escalation_business_days;
+  // Retrieval settings (design sections 6.3, 15).
+  std::optional<std::string> rag_index;
+  std::optional<std::uint32_t> rag_top_k;
+  std::optional<double> rag_bm25_weight;
+  std::optional<double> rag_vector_weight;
+  std::optional<std::vector<std::string>> rag_precedence;
   std::optional<std::uint32_t> review_diff_threshold_lines;
   std::optional<double> sandbox_cpus;
   std::optional<double> sandbox_memory_gb;

@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,6 +44,13 @@ struct RunProcessConfig {
   std::string docs_dir;
   // Pattern catalog directory (design section 6.2); empty omits it.
   std::string patterns_dir;
+  // Retrieval settings (design sections 6.3, 15); unset keeps the built-in
+  // behaviour.
+  std::optional<std::string> rag_index;
+  std::optional<std::uint32_t> rag_top_k;
+  std::optional<double> rag_bm25_weight;
+  std::optional<double> rag_vector_weight;
+  std::optional<std::vector<std::string>> rag_precedence;
   std::vector<std::pair<std::string, std::string>> environment;
   std::chrono::milliseconds turn_timeout{600000};
 

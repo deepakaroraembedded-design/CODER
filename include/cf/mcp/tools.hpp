@@ -6,6 +6,7 @@
 // yet return TOOL_UNAVAILABLE instead of pretending to work.
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <optional>
@@ -73,6 +74,9 @@ struct ToolDependencies {
   std::string milestone_id;
   rag::QueryContext context;  // product/component/language/as_of for RAG
   rag::Retriever* retriever = nullptr;
+  // Default result count for search_guidelines when the call omits top_k
+  // (design section 15, rag.top_k).
+  std::uint32_t default_top_k = 8;
   store::RunStore* store = nullptr;
   // The curated pattern catalog (design section 6.2); get_pattern reads it
   // directly and falls back to the retrieval index when it is absent.

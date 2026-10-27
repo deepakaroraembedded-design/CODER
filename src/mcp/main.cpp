@@ -8,6 +8,7 @@
 // Every tools/call is appended as one JSON line to CF_MCP_CALLS_FILE when that
 // environment variable is set, so the orchestrator can observe the agent's
 // structured submissions. The Phase 0a harness spike lives in cf-mcp-spike.
+#include <cstdint>
 #include <cstdlib>
 #include <fstream>
 #include <memory>
@@ -71,6 +72,11 @@ int main(int argc, char** argv) {
   std::string product;
   std::string language;
   std::string name;
+  std::string rag_index = "hnswlib";
+  double rag_bm25_weight = 1.0;
+  double rag_vector_weight = 1.0;
+  std::string rag_precedence;
+  std::uint32_t top_k = 8;
   app.add_option("--role", role_text, "Agent role: coder, reviewer or qa")
       ->required();
   app.add_option("--run", run_id, "Run id");
@@ -89,6 +95,16 @@ int main(int argc, char** argv) {
   app.add_option("--language", language,
                  "Target language scope for RAG applicability");
   app.add_option("--name", name, "Server name reported to MCP");
+  app.add_option("--top-k", top_k,
+                 "Default number of results for search_guidelines (default 8)");
+  app.add_option("--rag-index", rag_index,
+                 "Vector index: hnswlib (default) or brute-force");
+  app.add_option("--rag-bm25-weight", rag_bm25_weight,
+                 "Hybrid BM25 weight (default 1.0)");
+  app.add_option("--rag-vector-weight", rag_vector_weight,
+                 "Hybrid vector weight (default 1.0)");
+  app.add_option("--rag-precedence", rag_precedence,
+                 "Comma-separated document precedence, highest first");
   CLI11_PARSE(app, argc, argv);
 
   spdlog::set_default_logger(spdlog::stderr_color_mt("cf-mcp"));
@@ -98,6 +114,46 @@ int main(int argc, char** argv) {
   if (!role) {
     spdlog::error("unknown role '{}': expected coder, reviewer or qa", role_text);
     return 2;
+  }
+  if (rag_index != "hnswlib" && rag_index != "brute-force") {
+    spdlog::error("--rag-index must be hnswlib or brute-force");
+    return 2;
+  }
+  if ((rag_bm25_weight < 0.0) || (rag_vector_weight < 0.0) ||
+      (rag_bm25_weight == 0.0 && rag_vector_weight == 0.0)) {
+    spdlog::error("hybrid weights must be non-negative with one positive");
+    return 2;
+  }
+  if (top_k == 0) {
+    spdlog::error("--top-k must be positive");
+    return 2;
+  }
+
+  cf::rag::RetrieverOptions retriever_options;
+  retriever_options.hnsw = rag_index != "brute-force";
+  retriever_options.bm25_weight = rag_bm25_weight;
+  retriever_options.vector_weight = rag_vector_weight;
+  if (!rag_precedence.empty()) {
+    std::vector<std::string> names;
+    std::size_t start = 0;
+    while (start <= rag_precedence.size()) {
+      const std::size_t comma = rag_precedence.find(',', start);
+      const std::size_t end =
+          comma == std::string::npos ? rag_precedence.size() : comma;
+      if (end > start) {
+        names.push_back(rag_precedence.substr(start, end - start));
+      }
+      if (comma == std::string::npos) {
+        break;
+      }
+      start = comma + 1;
+    }
+    auto types = cf::rag::doc_types_from_names(names);
+    if (!types) {
+      spdlog::error("invalid --rag-precedence: {}", types.error().message);
+      return 2;
+    }
+    retriever_options.precedence = std::move(*types);
   }
 
   std::vector<cf::rag::PatternEntry> catalog;
@@ -112,7 +168,8 @@ int main(int argc, char** argv) {
 
   std::shared_ptr<cf::rag::InMemoryRetriever> retriever;
   if (!docs_dir.empty() || !designs_dir.empty() || !catalog.empty()) {
-    retriever = std::make_shared<cf::rag::InMemoryRetriever>();
+    retriever =
+        std::make_shared<cf::rag::InMemoryRetriever>(retriever_options);
     for (const auto& directory : {docs_dir, designs_dir}) {
       if (directory.empty()) {
         continue;
@@ -171,6 +228,7 @@ int main(int argc, char** argv) {
   dependencies.context.product = product;
   dependencies.context.language = language;
   dependencies.retriever = retriever.get();
+  dependencies.default_top_k = top_k;
   dependencies.store = store.get();
   dependencies.patterns = &catalog;
   dependencies.symbols = symbols.get();

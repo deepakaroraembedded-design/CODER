@@ -31,6 +31,9 @@ enum class DocType {
 
 std::string_view to_string(DocType type);
 std::optional<DocType> doc_type_from_string(std::string_view text);
+// Parses a precedence list; every name must be a known document type.
+Result<std::vector<DocType>> doc_types_from_names(
+    const std::vector<std::string>& names);
 
 // Lower rank = higher precedence.
 int precedence_rank(DocType type);

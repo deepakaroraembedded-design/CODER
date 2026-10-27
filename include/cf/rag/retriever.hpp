@@ -31,6 +31,12 @@ struct RetrieverOptions {
   double bm25_b = 0.75;
   std::size_t rrf_k = 60;               // Reciprocal Rank Fusion constant
   std::size_t candidate_multiplier = 3; // candidates per ranking list
+  // Hybrid weights for the two rankings (design section 15, rag.hybrid).
+  double bm25_weight = 1.0;
+  double vector_weight = 1.0;
+  // Document-type precedence, highest first (design section 15,
+  // rag.precedence). Empty keeps the built-in order from types.hpp.
+  std::vector<DocType> precedence;
   // hnswlib is the default vector index (design section 6.3); false uses the
   // exact brute-force index (the parity reference and small collections).
   bool hnsw = true;

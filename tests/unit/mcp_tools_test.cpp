@@ -227,6 +227,26 @@ TEST_F(McpToolsTest, SearchUsesTheRunContextForScopedDocuments) {
   EXPECT_TRUE(without_context.structured["hits"].empty());
 }
 
+TEST_F(McpToolsTest, DefaultTopKAppliesToSearchGuidelines) {
+  cf::mcp::ToolDependencies dependencies;
+  dependencies.run_id = "R12";
+  dependencies.retriever = retriever_.get();
+  dependencies.default_top_k = 1;
+  const ToolRegistry limited = cf::mcp::build_tool_registry(std::move(dependencies));
+
+  const ToolResult result = limited.call(
+      ToolRole::Coder, "search_guidelines", Json{{"query", "registry"}});
+  ASSERT_FALSE(result.is_error) << result.text;
+  ASSERT_TRUE(result.structured["hits"].is_array());
+  EXPECT_EQ(result.structured["hits"].size(), 1u);
+
+  const ToolResult override_result = limited.call(
+      ToolRole::Coder, "search_guidelines",
+      Json{{"query", "registry"}, {"top_k", 5}});
+  ASSERT_FALSE(override_result.is_error) << override_result.text;
+  EXPECT_GT(override_result.structured["hits"].size(), 1u);
+}
+
 TEST_F(McpToolsTest, SearchGuidelinesHonoursTypeFilter) {
   const ToolResult result = registry_.call(
       ToolRole::Coder, "search_guidelines",

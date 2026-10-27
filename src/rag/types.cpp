@@ -26,6 +26,21 @@ std::optional<DocType> doc_type_from_string(std::string_view text) {
   return std::nullopt;
 }
 
+Result<std::vector<DocType>> doc_types_from_names(
+    const std::vector<std::string>& names) {
+  std::vector<DocType> types;
+  types.reserve(names.size());
+  for (const auto& name : names) {
+    const auto type = doc_type_from_string(name);
+    if (!type) {
+      return fail(error_codes::kInvalidDocument,
+                  "unknown document type '" + name + "'");
+    }
+    types.push_back(*type);
+  }
+  return types;
+}
+
 int precedence_rank(DocType type) {
   switch (type) {
     case DocType::Policy: return 0;

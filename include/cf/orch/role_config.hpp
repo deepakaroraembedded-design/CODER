@@ -6,6 +6,7 @@
 // its run/milestone identity and calls file.
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -40,6 +41,12 @@ struct RoleConfigSpec {
   std::string designs_dir;
   // Pattern catalog directory (design section 6.2); empty omits it.
   std::string patterns_dir;
+  // Retrieval policy forwarded to cf-mcp (design sections 6.3, 15).
+  std::optional<std::uint32_t> rag_top_k;
+  std::optional<std::string> rag_index;
+  std::optional<double> rag_bm25_weight;
+  std::optional<double> rag_vector_weight;
+  std::optional<std::vector<std::string>> rag_precedence;
   std::string calls_file;  // CF_MCP_CALLS_FILE for this role
 };
 

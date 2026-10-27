@@ -83,6 +83,25 @@ TEST(RoleConfigTest, CodeintelDbAddsTheFlagOnlyWhenSet) {
   EXPECT_EQ(without["mcp"]["cf"]["command"].size(), 10u);
 }
 
+TEST(RoleConfigTest, RagSettingsAreForwardedToMcp) {
+  RoleConfigSpec spec = base_spec("coder");
+  spec.rag_top_k = 12;
+  spec.rag_index = "brute-force";
+  spec.rag_bm25_weight = 0.4;
+  spec.rag_vector_weight = 0.6;
+  spec.rag_precedence = {"design", "policy", "requirements"};
+  const Json config = build_role_config(spec);
+  const Json command = config["mcp"]["cf"]["command"];
+  EXPECT_EQ(command[10], "--top-k=12");
+  EXPECT_EQ(command[11], "--rag-index=brute-force");
+  EXPECT_NE(command[12].get<std::string>().find("--rag-bm25-weight=0.4"),
+            std::string::npos);
+  EXPECT_NE(command[13].get<std::string>().find("--rag-vector-weight=0.6"),
+            std::string::npos);
+  EXPECT_EQ(command[14], "--rag-precedence=design,policy,requirements");
+  EXPECT_EQ(command.size(), 15u);
+}
+
 TEST(RoleConfigTest, ReviewerIsReadOnlyAndDefaultsToDeny) {
   RoleConfigSpec spec = base_spec("reviewer");
   spec.allowed_commands.clear();

@@ -20,11 +20,23 @@ bool is_requirement_conflict(DocType winner, DocType loser) {
   return false;
 }
 
+// The configured precedence list overrides the built-in type order; types it
+// does not name keep their relative built-in order after the listed ones.
+int ranked_precedence(DocType type, const std::vector<DocType>& order) {
+  for (std::size_t i = 0; i < order.size(); ++i) {
+    if (order[i] == type) {
+      return static_cast<int>(i);
+    }
+  }
+  return static_cast<int>(order.size()) + precedence_rank(type);
+}
+
 // Order used to pick a conflict-group winner: precedence first, then the more
 // specific scope, then the later effective date, then the retrieval score.
-bool beats(const Chunk& a, double score_a, const Chunk& b, double score_b) {
-  const int rank_a = precedence_rank(a.type);
-  const int rank_b = precedence_rank(b.type);
+bool beats(const Chunk& a, double score_a, const Chunk& b, double score_b,
+           const std::vector<DocType>& precedence) {
+  const int rank_a = ranked_precedence(a.type, precedence);
+  const int rank_b = ranked_precedence(b.type, precedence);
   if (rank_a != rank_b) {
     return rank_a < rank_b;
   }
@@ -42,8 +54,10 @@ bool beats(const Chunk& a, double score_a, const Chunk& b, double score_b) {
   return a.chunk_id < b.chunk_id;  // deterministic
 }
 
-std::string deciding_rule(const Chunk& winner, const Chunk& loser) {
-  if (precedence_rank(winner.type) != precedence_rank(loser.type)) {
+std::string deciding_rule(const Chunk& winner, const Chunk& loser,
+                          const std::vector<DocType>& precedence) {
+  if (ranked_precedence(winner.type, precedence) !=
+      ranked_precedence(loser.type, precedence)) {
     return "precedence: " + std::string(to_string(winner.type)) + " over " +
            std::string(to_string(loser.type));
   }
@@ -222,15 +236,15 @@ Result<std::vector<Hit>> InMemoryRetriever::search(const Query& query) const {
     vector_ranking = vector_index_->search(embedded->front(), candidates);
   }
 
-  // Reciprocal Rank Fusion (design section 6.3).
+  // Weighted Reciprocal Rank Fusion (design sections 6.3, 15).
   std::map<std::string, double, std::less<>> fused;
   for (std::size_t rank = 0; rank < bm25_ranking.size(); ++rank) {
     fused[bm25_ranking[rank].first] +=
-        1.0 / static_cast<double>(options_.rrf_k + rank + 1);
+        options_.bm25_weight / static_cast<double>(options_.rrf_k + rank + 1);
   }
   for (std::size_t rank = 0; rank < vector_ranking.size(); ++rank) {
     fused[vector_ranking[rank].first] +=
-        1.0 / static_cast<double>(options_.rrf_k + rank + 1);
+        options_.vector_weight / static_cast<double>(options_.rrf_k + rank + 1);
   }
 
   struct Candidate {
@@ -277,9 +291,11 @@ Result<std::vector<Hit>> InMemoryRetriever::search(const Query& query) const {
       continue;
     }
     std::vector<std::size_t> order = members;
-    std::sort(order.begin(), order.end(), [&applicable](std::size_t a, std::size_t b) {
-      return beats(*applicable[a].chunk, applicable[a].score, *applicable[b].chunk,
-                   applicable[b].score);
+    std::sort(order.begin(), order.end(), [&applicable, this](std::size_t a,
+                                                             std::size_t b) {
+      return beats(*applicable[a].chunk, applicable[a].score,
+                   *applicable[b].chunk, applicable[b].score,
+                   options_.precedence);
     });
     const std::size_t winner = order.front();
     const Candidate& winner_candidate = applicable[winner];
@@ -305,11 +321,12 @@ Result<std::vector<Hit>> InMemoryRetriever::search(const Query& query) const {
       dropped[loser] = true;
     }
     const Candidate& runner_up = applicable[order[1]];
-    hit.deciding_rule = deciding_rule(*winner_candidate.chunk, *runner_up.chunk);
-    // Two chunks of the same type, scope and effective date are never
-    // resolved automatically (design section 6.3 step 4).
-    if (precedence_rank(winner_candidate.chunk->type) ==
-            precedence_rank(runner_up.chunk->type) &&
+    hit.deciding_rule = deciding_rule(*winner_candidate.chunk, *runner_up.chunk,
+                                      options_.precedence);
+    // Two chunks of the same type (or same precedence), scope and effective
+    // date are never resolved automatically (design section 6.3 step 4).
+    if (ranked_precedence(winner_candidate.chunk->type, options_.precedence) ==
+            ranked_precedence(runner_up.chunk->type, options_.precedence) &&
         scope_specificity(winner_candidate.chunk->scope) ==
             scope_specificity(runner_up.chunk->scope) &&
         winner_candidate.chunk->effective_from == runner_up.chunk->effective_from) {

@@ -17,6 +17,7 @@ using cf::rag::DocType;
 using cf::rag::Hit;
 using cf::rag::InMemoryRetriever;
 using cf::rag::Query;
+using cf::rag::RetrieverOptions;
 
 // Deterministic bag-of-words embedding: cosine similarity approximates token
 // overlap, which is enough to exercise the vector half of hybrid retrieval.
@@ -40,6 +41,25 @@ class HashingEmbedder final : public cf::rag::Embedder {
 
  private:
   std::size_t dimension_;
+};
+
+// Ingestion embeds the first chunk as {1,0} and the second as {0,1}; the
+// query embeds as {0,1}. BM25 ranks the alpha chunk first, the vector half
+// ranks the beta chunk first, so the hybrid weights decide the winner.
+class SplitEmbedder final : public cf::rag::Embedder {
+ public:
+  cf::Result<std::vector<std::vector<float>>> embed(
+      const std::vector<std::string>& texts) override {
+    std::vector<std::vector<float>> out;
+    for (std::size_t i = 0; i < texts.size(); ++i) {
+      out.push_back(calls_++ == 0 ? std::vector<float>{1.0f, 0.0f}
+                                  : std::vector<float>{0.0f, 1.0f});
+    }
+    return out;
+  }
+
+ private:
+  std::size_t calls_ = 0;
 };
 
 Document make_document(const std::string& doc_id, DocType type,
@@ -244,6 +264,55 @@ TEST(RetrieverTest, PrecedenceResolvesTopicConflict) {
   ASSERT_EQ(hit.overridden_by.size(), 1u);
   EXPECT_EQ(hit.overridden_by[0], "guide@1#CG-5.1");
   EXPECT_NE(hit.deciding_rule.find("precedence"), std::string::npos);
+}
+
+TEST(RetrieverTest, ConfiguredPrecedenceOverridesTheBuiltInOrder) {
+  RetrieverOptions options;
+  options.precedence = {DocType::Guideline, DocType::Policy};
+  InMemoryRetriever retriever(options);
+  ASSERT_TRUE(retriever
+                  .add_chunk(make_chunk("policy", DocType::Policy,
+                                        "Line coverage must be at least 85 percent.",
+                                        "CG-5.1"))
+                  .has_value());
+  ASSERT_TRUE(retriever
+                  .add_chunk(make_chunk("guide", DocType::Guideline,
+                                        "Line coverage should be at least 70 percent.",
+                                        "CG-5.1"))
+                  .has_value());
+
+  Query query;
+  query.text = "line coverage percent";
+  const auto hits = retriever.search(query);
+  ASSERT_TRUE(hits.has_value()) << hits.error().message;
+  ASSERT_EQ(hits->size(), 1u);
+  EXPECT_EQ((*hits)[0].type, DocType::Guideline);
+  ASSERT_EQ((*hits)[0].overridden_by.size(), 1u);
+  EXPECT_EQ((*hits)[0].overridden_by[0], "policy@1#CG-5.1");
+}
+
+TEST(RetrieverTest, HybridWeightsChangeTheFusion) {
+  RetrieverOptions options;
+  options.hnsw = false;
+  options.bm25_weight = 1.0;
+  options.vector_weight = 1000.0;
+  InMemoryRetriever retriever(options);
+  auto embedder = std::make_shared<SplitEmbedder>();
+  retriever.set_embedder(embedder);
+  ASSERT_TRUE(retriever
+                  .add_chunk(make_chunk("a", DocType::Guideline, "alpha", ""))
+                  .has_value());
+  ASSERT_TRUE(retriever
+                  .add_chunk(make_chunk("b", DocType::Guideline, "beta", ""))
+                  .has_value());
+
+  Query query;
+  query.text = "alpha";
+  query.top_k = 2;
+  const auto hits = retriever.search(query);
+  ASSERT_TRUE(hits.has_value()) << hits.error().message;
+  ASSERT_EQ(hits->size(), 2u);
+  EXPECT_EQ((*hits)[0].chunk_id, "b@1#");  // vector half dominates
 }
 
 TEST(RetrieverTest, RequirementConflictsAreUnresolved) {
