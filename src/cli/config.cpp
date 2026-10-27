@@ -170,7 +170,7 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
       const std::string key = entry.first.as<std::string>();
       if (key == "app_id" || key == "installation_id" ||
           key == "private_key_ref" || key == "branch_prefix" ||
-          key == "protected_paths" || key == "max_file_mb") {
+          key == "protected_paths" || key == "max_file_mb" || key == "pr") {
         continue;
       }
       return unsupported("github." + key);
@@ -214,6 +214,33 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
                                     config.github.max_file_mb);
         !status) {
       return tl::make_unexpected(status.error());
+    }
+    if (const YAML::Node pr = github["pr"]) {
+      auto checked = check_keys(pr, "github.pr",
+                                {"draft_until_done", "labels",
+                                 "request_codeowners"});
+      if (!checked) {
+        return tl::make_unexpected(checked.error());
+      }
+      if (auto status =
+              read_optional(pr["draft_until_done"],
+                            "github.pr.draft_until_done",
+                            config.github.pr.draft_until_done);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
+      if (auto status = read_optional(pr["labels"], "github.pr.labels",
+                                      config.github.pr.labels);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
+      if (auto status =
+              read_optional(pr["request_codeowners"],
+                            "github.pr.request_codeowners",
+                            config.github.pr.request_codeowners);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
     }
   }
 
@@ -479,6 +506,17 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   }
   if (config.github.max_file_mb.has_value()) {
     options.github_max_file_mb = *config.github.max_file_mb;
+  }
+  if (config.github.pr.draft_until_done.has_value()) {
+    options.github_pr_draft_until_done =
+        *config.github.pr.draft_until_done;
+  }
+  if (config.github.pr.labels.has_value()) {
+    options.github_pr_labels = *config.github.pr.labels;
+  }
+  if (config.github.pr.request_codeowners.has_value()) {
+    options.github_pr_request_codeowners =
+        *config.github.pr.request_codeowners;
   }
 
   // Provider selection (design section 13.1: a run never mixes providers).

@@ -4,6 +4,8 @@
 #include <memory>
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 #include "cf/github/client.hpp"
 #include "fake_http_transport.hpp"
 
@@ -134,6 +136,17 @@ TEST_F(GithubClientTest, UpdatesUsePatch) {
   EXPECT_EQ(transport_->requests().front().method, "PATCH");
   EXPECT_NE(transport_->requests().front().body.find("\"state\":\"closed\""),
             std::string::npos);
+}
+
+TEST_F(GithubClientTest, AddsPullRequestLabels) {
+  transport_->script(200, R"([{"name": "cf-generated"}])");
+  const auto added = client_->add_labels("o", "r", 7, {"cf-generated"});
+  ASSERT_TRUE(added.has_value()) << added.error().message;
+  const auto& request = transport_->requests().front();
+  EXPECT_EQ(request.method, "POST");
+  EXPECT_EQ(request.url, "https://api.github.test/repos/o/r/issues/7/labels");
+  const auto payload = nlohmann::json::parse(request.body);
+  EXPECT_EQ(payload.at("labels").at(0).get<std::string>(), "cf-generated");
 }
 
 TEST_F(GithubClientTest, GetsAPullRequest) {

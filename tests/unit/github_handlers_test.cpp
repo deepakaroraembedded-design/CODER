@@ -195,6 +195,36 @@ TEST_F(GithubHandlersTest, PrCreateUsesTheOpMarkerAndDedupes) {
   EXPECT_EQ(transport_->requests().size(), 3u);  // only the GET, no second POST
 }
 
+TEST_F(GithubHandlersTest, PrCreateAppliesLabels) {
+  transport_->script(200, "[]");
+  transport_->script(201,
+                     R"({"number": 7, "html_url": "u", "state": "open", "body": "b",
+                         "draft": false, "head": {"ref": "cf/R12/integration"},
+                         "base": {"ref": "main"}})");
+  transport_->script(200, R"([{"name": "cf-generated"}])");
+  OperationRecord op;
+  op.op_id = "op_pr_labels";
+  op.kind = "pr_create";
+  op.input_json =
+      nlohmann::json{{"base", "main"},
+                     {"head", "cf/R12/integration"},
+                     {"title", "CF R12"},
+                     {"body", "summary"},
+                     {"draft", false},
+                     {"labels", nlohmann::json::array({"cf-generated"})}}
+          .dump();
+
+  PrCreateHandler handler(context());
+  const DispatchResult result = handler.perform(op);
+  ASSERT_EQ(result.outcome, DispatchOutcome::Confirmed) << result.detail;
+  ASSERT_EQ(transport_->requests().size(), 3u);
+  EXPECT_EQ(transport_->requests()[2].method, "POST");
+  EXPECT_NE(transport_->requests()[2].url.find("/repos/o/r/issues/7/labels"),
+            std::string::npos);
+  const auto payload = nlohmann::json::parse(transport_->requests()[2].body);
+  EXPECT_EQ(payload.at("labels").at(0).get<std::string>(), "cf-generated");
+}
+
 TEST_F(GithubHandlersTest, PrCreateClientErrorsFail) {
   transport_->script(200, "[]");
   transport_->script(422, R"({"message": "Validation Failed"})");

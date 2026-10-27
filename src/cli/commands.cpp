@@ -1288,6 +1288,16 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
     if (options.github_max_file_mb.has_value()) {
       config.github_pre_push.max_file_mb = *options.github_max_file_mb;
     }
+    if (options.github_pr_draft_until_done.has_value()) {
+      config.github_pr_draft_until_done = *options.github_pr_draft_until_done;
+    }
+    if (options.github_pr_labels.has_value()) {
+      config.github_pr_labels = *options.github_pr_labels;
+    }
+    if (options.github_pr_request_codeowners.has_value()) {
+      config.github_pr_request_codeowners =
+          *options.github_pr_request_codeowners;
+    }
     if (!options.github_app_id.empty() && !options.github_private_key_file.empty()) {
       std::ifstream key_file(options.github_private_key_file, std::ios::binary);
       if (!key_file) {

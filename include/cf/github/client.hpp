@@ -79,6 +79,11 @@ class Client {
   Result<PullRequest> get_pull_request(const std::string& owner,
                                        const std::string& repo, int64_t number);
 
+  // Adds labels to a pull request (the pull-request create/update payloads do
+  // not carry labels, design section 10.4.8). Idempotent on GitHub's side.
+  Status add_labels(const std::string& owner, const std::string& repo,
+                    int64_t number, const std::vector<std::string>& labels);
+
   // Requests reviewers on a pull request (design section 10.4.4): users are
   // GitHub logins, teams are slugs (the part after the org in CODEOWNERS).
   Status request_reviewers(const std::string& owner, const std::string& repo,

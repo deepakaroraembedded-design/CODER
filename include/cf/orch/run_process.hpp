@@ -98,6 +98,10 @@ struct RunProcessConfig {
   std::string github_remote = "origin";
   // Pre-push policy checked before every push (design section 10.4.6).
   github::PrePushConfig github_pre_push;
+  // Pull-request policy (design sections 10.4.4, 10.4.8).
+  bool github_pr_draft_until_done = true;
+  std::vector<std::string> github_pr_labels;
+  bool github_pr_request_codeowners = true;
   // Export defects to GitHub Issues alongside the PR flow (design 6.10).
   bool export_defects = true;
 };

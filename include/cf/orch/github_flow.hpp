@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "cf/git/repository.hpp"
 #include "cf/github/pre_push.hpp"
@@ -35,6 +36,12 @@ struct GithubFlowConfig {
   std::string title_prefix = "CF";
   // Runs on the exact commit before any push (design section 10.4.6).
   github::PrePushConfig pre_push;
+  // Pull-request policy (design sections 10.4.4, 10.4.8): when
+  // draft_until_done is false the PR opens ready; labels are applied to the
+  // PR; request_codeowners controls the ready-time reviewer request.
+  bool pr_draft_until_done = true;
+  std::vector<std::string> pr_labels;
+  bool pr_request_codeowners = true;
 };
 
 class GithubFlow {

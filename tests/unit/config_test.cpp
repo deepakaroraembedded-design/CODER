@@ -55,6 +55,10 @@ github:
   branch_prefix: "cf/"
   protected_paths: [".github/**", "CODEOWNERS", "deploy/**"]
   max_file_mb: 7
+  pr:
+    draft_until_done: false
+    labels: [cf-generated, automated]
+    request_codeowners: false
 providers:
   fireworks:
     base_url: https://api.fireworks.ai/inference/v1
@@ -102,6 +106,10 @@ TEST_F(ConfigTest, LoadsTheFullSchema) {
   EXPECT_EQ(*config->github.protected_paths,
             (std::vector<std::string>{".github/**", "CODEOWNERS", "deploy/**"}));
   EXPECT_EQ(*config->github.max_file_mb, 7u);
+  EXPECT_FALSE(*config->github.pr.draft_until_done);
+  EXPECT_EQ(*config->github.pr.labels,
+            (std::vector<std::string>{"cf-generated", "automated"}));
+  EXPECT_FALSE(*config->github.pr.request_codeowners);
 
   ASSERT_EQ(config->providers.size(), 2u);
   EXPECT_EQ(config->providers.at("local-vllm").base_url, "http://vllm-host:8000/v1");
@@ -204,6 +212,10 @@ TEST_F(ConfigTest, ApplyConfigResolvesProvidersAndRoles) {
   EXPECT_EQ(*options.github_protected_paths,
             (std::vector<std::string>{".github/**", "CODEOWNERS", "deploy/**"}));
   EXPECT_EQ(*options.github_max_file_mb, 7u);
+  EXPECT_FALSE(*options.github_pr_draft_until_done);
+  EXPECT_EQ(*options.github_pr_labels,
+            (std::vector<std::string>{"cf-generated", "automated"}));
+  EXPECT_FALSE(*options.github_pr_request_codeowners);
 
   // The default provider resolves its endpoints; role models resolve
   // against it (design section 13.1: never mixed).

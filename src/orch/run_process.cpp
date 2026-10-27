@@ -336,6 +336,10 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     flow_config.remote = config_.github_remote;
     flow_config.base_branch = config_.base_branch;
     flow_config.pre_push = config_.github_pre_push;
+    flow_config.pr_draft_until_done = config_.github_pr_draft_until_done;
+    flow_config.pr_labels = config_.github_pr_labels;
+    flow_config.pr_request_codeowners =
+        config_.github_pr_request_codeowners;
     github_flow = std::make_unique<GithubFlow>(store_, operation_dispatcher,
                                                repository_, std::move(flow_config));
     if (config_.export_defects) {

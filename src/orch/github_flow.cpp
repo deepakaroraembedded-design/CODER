@@ -11,6 +11,27 @@ namespace {
 
 using Json = nlohmann::json;
 
+std::string join_labels(const std::vector<std::string>& labels) {
+  std::string joined;
+  for (const auto& label : labels) {
+    joined += label;
+    joined.push_back('\n');
+  }
+  return joined;
+}
+
+std::vector<std::string> read_labels(const Json& input) {
+  std::vector<std::string> labels;
+  const auto node = input.find("labels");
+  if (node == input.end() || !node->is_array()) {
+    return labels;
+  }
+  for (const auto& label : *node) {
+    labels.push_back(label.get<std::string>());
+  }
+  return labels;
+}
+
 }  // namespace
 
 GithubFlow::GithubFlow(store::RunStore& store, Dispatcher& dispatcher,
@@ -214,7 +235,9 @@ Status GithubFlow::ensure_pr(std::string_view run_id, const plan::Plan& plan,
   }
   int64_t number = 0;
   std::string last_body;
+  std::vector<std::string> last_labels;
   bool last_ready = false;
+  bool last_request_codeowners = true;
   bool last_closed = false;
   store::UnixTime last_at = 0;
   for (const auto& operation : *operations) {
@@ -239,7 +262,9 @@ Status GithubFlow::ensure_pr(std::string_view run_id, const plan::Plan& plan,
     }
     last_at = operation.updated_at;
     last_body = input.value("body", "");
+    last_labels = read_labels(input);
     last_ready = input.value("mark_ready", false);
+    last_request_codeowners = input.value("request_codeowners", true);
     last_closed = input.value("state", "") == "closed";
   }
 
@@ -249,15 +274,20 @@ Status GithubFlow::ensure_pr(std::string_view run_id, const plan::Plan& plan,
     if (store_.find_operation_by_key(key).has_value()) {
       return {};
     }
+    const bool draft =
+        config_.pr_draft_until_done && run_state != RunState::Done;
     store::NewOperation intent;
     intent.idempotency_key = key;
     intent.kind = "pr_create";
-    intent.input_json = Json{{"base", config_.base_branch},
-                             {"head", head},
-                             {"title", config_.title_prefix + " " + std::string(run_id)},
-                             {"body", body},
-                             {"draft", true}}
-                            .dump();
+    intent.input_json =
+        Json{{"base", config_.base_branch},
+             {"head", head},
+             {"title", config_.title_prefix + " " + std::string(run_id)},
+             {"body", body},
+             {"draft", draft},
+             {"labels", config_.pr_labels},
+             {"request_codeowners", config_.pr_request_codeowners}}
+            .dump();
     intent.expected_json = "{}";
     const auto recorded = store_.record_intents(run_id, {intent}, now);
     if (!recorded && recorded.error().code != store::error_codes::kConflict) {
@@ -266,22 +296,33 @@ Status GithubFlow::ensure_pr(std::string_view run_id, const plan::Plan& plan,
     return {};
   }
 
-  const bool mark_ready = run_state == RunState::Done;
-  if (last_body == body && last_ready == mark_ready && !last_closed) {
+  const bool mark_ready =
+      config_.pr_draft_until_done && run_state == RunState::Done;
+  if (last_body == body && last_ready == mark_ready &&
+      last_labels == config_.pr_labels &&
+      last_request_codeowners == config_.pr_request_codeowners &&
+      !last_closed) {
     return {};  // the pull request already shows the intended state
   }
   const std::string key = cf::idempotency_key(
       run_id, "", "pr_update",
       cf::sha256_hex(std::to_string(number) + "|" + body +
-                     (mark_ready ? "|ready" : "")));
+                     (mark_ready ? "|ready" : "") + "|" +
+                     join_labels(config_.pr_labels) + "|" +
+                     (config_.pr_request_codeowners ? "reviewers" : "none")));
   if (store_.find_operation_by_key(key).has_value()) {
     return {};
   }
   store::NewOperation intent;
   intent.idempotency_key = key;
   intent.kind = "pr_update";
-  intent.input_json = Json{{"number", number}, {"body", body}, {"mark_ready", mark_ready}}
-                          .dump();
+  intent.input_json =
+      Json{{"number", number},
+           {"body", body},
+           {"mark_ready", mark_ready},
+           {"labels", config_.pr_labels},
+           {"request_codeowners", config_.pr_request_codeowners}}
+          .dump();
   intent.expected_json = "{}";
   const auto recorded = store_.record_intents(run_id, {intent}, now);
   if (!recorded && recorded.error().code != store::error_codes::kConflict) {

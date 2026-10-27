@@ -19,6 +19,7 @@ using cf::github::ClientOptions;
 using cf::orch::DispatchOutcome;
 using cf::orch::DispatchResult;
 using cf::orch::GithubHandlerContext;
+using cf::orch::PrCreateHandler;
 using cf::orch::PrUpdateHandler;
 using cf::store::OperationRecord;
 using cf::test::ScriptedHttpTransport;
@@ -155,6 +156,58 @@ TEST(PrReviewersTest, MissingCodeownersFileIsFine) {
   const DispatchResult result = handler.perform(pr_update_op(true));
   EXPECT_EQ(result.outcome, DispatchOutcome::Confirmed) << result.detail;
   EXPECT_EQ(transport.requests().size(), 4u);  // no reviewer request
+}
+
+TEST(PrReviewersTest, RequestCodeownersCanBeDisabled) {
+  ScriptedHttpTransport transport;
+  transport.script(200, kPrJson);
+  Client client = make_client(transport);
+  GithubHandlerContext context;
+  context.client = &client;
+  context.owner = "acme";
+  context.repo = "product-y";
+  PrUpdateHandler handler(context);
+
+  OperationRecord op = pr_update_op(true);
+  op.input_json = nlohmann::json{{"number", 7},
+                                 {"body", "milestones: M3 done"},
+                                 {"mark_ready", true},
+                                 {"request_codeowners", false}}
+                      .dump();
+  const DispatchResult result = handler.perform(op);
+  ASSERT_EQ(result.outcome, DispatchOutcome::Confirmed) << result.detail;
+  EXPECT_EQ(transport.requests().size(), 1u);  // update only
+}
+
+TEST(PrReviewersTest, ReadyAtCreationRequestsCodeowners) {
+  ScriptedHttpTransport transport;
+  transport.script(200, "[]");  // no existing PR
+  transport.script(201, kPrJson);
+  transport.script(200, "* @alice\n");
+  transport.script(201, R"({"number": 7})");
+  Client client = make_client(transport);
+  GithubHandlerContext context;
+  context.client = &client;
+  context.owner = "acme";
+  context.repo = "product-y";
+  PrCreateHandler handler(context);
+
+  OperationRecord op;
+  op.op_id = "op_pr_ready";
+  op.kind = "pr_create";
+  op.input_json =
+      nlohmann::json{{"base", "main"},
+                     {"head", "cf/R1/integration"},
+                     {"title", "CF R1"},
+                     {"body", "summary"},
+                     {"draft", false},
+                     {"request_codeowners", true}}
+          .dump();
+  const DispatchResult result = handler.perform(op);
+  ASSERT_EQ(result.outcome, DispatchOutcome::Confirmed) << result.detail;
+  ASSERT_EQ(transport.requests().size(), 4u);
+  const auto payload = nlohmann::json::parse(transport.requests()[3].body);
+  EXPECT_EQ(payload.at("reviewers").at(0).get<std::string>(), "alice");
 }
 
 TEST(PrReviewersTest, DraftUpdateDoesNotRequestReviewers) {

@@ -43,6 +43,13 @@ struct FrameworkConfig {
     std::optional<std::string> branch_prefix;
     std::optional<std::vector<std::string>> protected_paths;
     std::optional<std::uint64_t> max_file_mb;
+    // Pull-request policy (design sections 10.4.4, 10.4.8, 15).
+    struct Pr {
+      std::optional<bool> draft_until_done;
+      std::optional<std::vector<std::string>> labels;
+      std::optional<bool> request_codeowners;
+    };
+    Pr pr;
   };
   Github github;
 

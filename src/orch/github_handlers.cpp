@@ -70,6 +70,19 @@ Json parse_or_object(const std::string& text) {
   return parsed.is_discarded() ? Json::object() : parsed;
 }
 
+Status apply_labels(const GithubHandlerContext& context, int64_t number,
+                    const Json& input) {
+  const auto labels = input.find("labels");
+  if (labels == input.end() || !labels->is_array() || labels->empty()) {
+    return {};
+  }
+  std::vector<std::string> names;
+  for (const auto& label : *labels) {
+    names.push_back(label.get<std::string>());
+  }
+  return context.client->add_labels(context.owner, context.repo, number, names);
+}
+
 }  // namespace
 
 PushHandler::PushHandler(GithubHandlerContext context) : context_(std::move(context)) {}
@@ -152,6 +165,19 @@ DispatchResult PrCreateHandler::sync(const store::OperationRecord& op,
   }
   for (const auto& pr : *existing) {
     if (github::Client::body_has_marker(pr.body, op.op_id)) {
+      // The PR exists; make sure labels and any ready-time reviewer request
+      // from the intent landed too.
+      auto labelled = apply_labels(context_, pr.number, input);
+      if (!labelled) {
+        return classify(labelled.error());
+      }
+      if (!input.value("draft", true) &&
+          input.value("request_codeowners", false)) {
+        auto reviewers = request_codeowners_reviewers(context_, pr.number);
+        if (!reviewers) {
+          return classify(reviewers.error());
+        }
+      }
       return confirmed(Json{{"number", pr.number}, {"html_url", pr.html_url}}.dump());
     }
   }
@@ -166,6 +192,16 @@ DispatchResult PrCreateHandler::sync(const store::OperationRecord& op,
       input.value("base", "main"), body, input.value("draft", true));
   if (!created) {
     return classify(created.error());
+  }
+  auto labelled = apply_labels(context_, created->number, input);
+  if (!labelled) {
+    return classify(labelled.error());
+  }
+  if (!input.value("draft", true) && input.value("request_codeowners", false)) {
+    auto reviewers = request_codeowners_reviewers(context_, created->number);
+    if (!reviewers) {
+      return classify(reviewers.error());
+    }
   }
   return confirmed(
       Json{{"number", created->number}, {"html_url", created->html_url}}.dump());
@@ -262,7 +298,11 @@ DispatchResult PrUpdateHandler::perform(const store::OperationRecord& op) {
   if (!updated) {
     return classify(updated.error());
   }
-  if (mark_ready) {
+  auto labelled = apply_labels(context_, number, input);
+  if (!labelled) {
+    return classify(labelled.error());
+  }
+  if (mark_ready && input.value("request_codeowners", true)) {
     auto reviewers = request_codeowners_reviewers(context_, number);
     if (!reviewers) {
       return classify(reviewers.error());
@@ -282,9 +322,14 @@ DispatchResult PrUpdateHandler::reconcile(const store::OperationRecord& op) {
     return classify(pr.error());
   }
   if (github::Client::body_has_marker(pr->body, op.op_id)) {
-    // The update landed; make sure the ready transition also requested the
-    // CODEOWNERS reviewers (idempotent, so a repeat is harmless).
-    if (input.value("mark_ready", false) && !pr->draft) {
+    // The update landed; make sure the labels and the ready transition also
+    // landed (all idempotent, so a repeat is harmless).
+    auto labelled = apply_labels(context_, number, input);
+    if (!labelled) {
+      return classify(labelled.error());
+    }
+    if (input.value("mark_ready", false) && !pr->draft &&
+        input.value("request_codeowners", true)) {
       auto reviewers = request_codeowners_reviewers(context_, number);
       if (!reviewers) {
         return classify(reviewers.error());

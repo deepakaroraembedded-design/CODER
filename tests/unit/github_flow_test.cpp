@@ -9,6 +9,7 @@
 #include <memory>
 #include <string>
 
+#include <nlohmann/json.hpp>
 #include <unistd.h>
 
 #include "cf/orch/github_flow.hpp"
@@ -182,6 +183,39 @@ TEST_F(GithubFlowTest, PushesMilestonesAndOpensADraftPullRequest) {
   ASSERT_TRUE(again.has_value());
   EXPECT_EQ(*again, 0u);
   EXPECT_EQ(transport_->requests().size(), 2u);
+}
+
+TEST_F(GithubFlowTest, AppliesThePullRequestPolicy) {
+  transport_->script(200, "[]");
+  transport_->script(201,
+                     R"({"number": 7, "html_url": "u", "state": "open", "body": "b",
+                         "draft": false, "head": {"ref": "cf/R12/integration"},
+                         "base": {"ref": "main"}})");
+
+  GithubFlowConfig config;
+  config.owner = "o";
+  config.repo = "r";
+  config.pr_draft_until_done = false;
+  config.pr_labels = {"cf-generated", "automated"};
+  config.pr_request_codeowners = false;
+  GithubFlow flow(*store_, *dispatcher_, *repository_, config);
+
+  const auto synced = flow.sync("R12", plan_, RunState::Executing, epoch_, now_);
+  ASSERT_TRUE(synced.has_value()) << synced.error().message;
+
+  auto operations = store_->list_operations("R12", {});
+  ASSERT_TRUE(operations.has_value());
+  const cf::store::OperationRecord* create = nullptr;
+  for (const auto& op : *operations) {
+    if (op.kind == "pr_create") {
+      create = &op;
+    }
+  }
+  ASSERT_NE(create, nullptr);
+  const auto input = nlohmann::json::parse(create->input_json);
+  EXPECT_FALSE(input.at("draft").get<bool>());
+  EXPECT_EQ(input.at("labels").at(0).get<std::string>(), "cf-generated");
+  EXPECT_FALSE(input.at("request_codeowners").get<bool>());
 }
 
 TEST_F(GithubFlowTest, PrePushRejectionRefusesThePush) {

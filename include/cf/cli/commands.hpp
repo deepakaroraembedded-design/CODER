@@ -126,6 +126,9 @@ struct ExecuteOptions {
   std::optional<std::string> github_branch_prefix;
   std::optional<std::vector<std::string>> github_protected_paths;
   std::optional<std::uint64_t> github_max_file_mb;
+  std::optional<bool> github_pr_draft_until_done;
+  std::optional<std::vector<std::string>> github_pr_labels;
+  std::optional<bool> github_pr_request_codeowners;
   // Tests inject a transport; production uses cpr.
   cf::llm::HttpTransport* github_transport = nullptr;
 

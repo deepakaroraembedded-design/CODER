@@ -201,6 +201,23 @@ Result<PullRequest> Client::update_pull_request(const std::string& owner,
   return parse_pull_request(*response);
 }
 
+Status Client::add_labels(const std::string& owner, const std::string& repo,
+                          int64_t number,
+                          const std::vector<std::string>& labels) {
+  if (labels.empty()) {
+    return {};
+  }
+  auto response = request(
+      "POST",
+      "/repos/" + owner + "/" + repo + "/issues/" + std::to_string(number) +
+          "/labels",
+      Json{{"labels", labels}});
+  if (!response) {
+    return tl::make_unexpected(response.error());
+  }
+  return {};
+}
+
 Result<Issue> Client::create_issue(const std::string& owner, const std::string& repo,
                                    const std::string& title, const std::string& body,
                                    const std::vector<std::string>& labels) {
