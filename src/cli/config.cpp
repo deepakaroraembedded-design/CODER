@@ -168,7 +168,9 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
   if (const YAML::Node github = root["github"]) {
     for (const auto& entry : github) {
       const std::string key = entry.first.as<std::string>();
-      if (key == "app_id" || key == "installation_id" || key == "private_key_ref") {
+      if (key == "app_id" || key == "installation_id" ||
+          key == "private_key_ref" || key == "branch_prefix" ||
+          key == "protected_paths" || key == "max_file_mb") {
         continue;
       }
       return unsupported("github." + key);
@@ -195,6 +197,23 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
       return invalid("github.private_key_ref",
                      "secret manager references are not resolvable in this "
                      "build; use a PEM file path");
+    }
+    if (auto status = read_optional(github["branch_prefix"],
+                                    "github.branch_prefix",
+                                    config.github.branch_prefix);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (auto status = read_optional(github["protected_paths"],
+                                    "github.protected_paths",
+                                    config.github.protected_paths);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (auto status = read_optional(github["max_file_mb"], "github.max_file_mb",
+                                    config.github.max_file_mb);
+        !status) {
+      return tl::make_unexpected(status.error());
     }
   }
 
@@ -451,6 +470,15 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   }
   if (config.github.private_key_ref.has_value()) {
     options.github_private_key_file = *config.github.private_key_ref;
+  }
+  if (config.github.branch_prefix.has_value()) {
+    options.github_branch_prefix = *config.github.branch_prefix;
+  }
+  if (config.github.protected_paths.has_value()) {
+    options.github_protected_paths = *config.github.protected_paths;
+  }
+  if (config.github.max_file_mb.has_value()) {
+    options.github_max_file_mb = *config.github.max_file_mb;
   }
 
   // Provider selection (design section 13.1: a run never mixes providers).

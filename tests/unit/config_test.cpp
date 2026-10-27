@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include <unistd.h>
 
@@ -51,6 +52,9 @@ github:
   app_id: "12345"
   installation_id: "67890"
   private_key_ref: /srv/keys/github-app.pem
+  branch_prefix: "cf/"
+  protected_paths: [".github/**", "CODEOWNERS", "deploy/**"]
+  max_file_mb: 7
 providers:
   fireworks:
     base_url: https://api.fireworks.ai/inference/v1
@@ -94,6 +98,10 @@ TEST_F(ConfigTest, LoadsTheFullSchema) {
   EXPECT_EQ(*config->github.app_id, "12345");
   EXPECT_EQ(*config->github.installation_id, "67890");
   EXPECT_EQ(*config->github.private_key_ref, "/srv/keys/github-app.pem");
+  EXPECT_EQ(*config->github.branch_prefix, "cf/");
+  EXPECT_EQ(*config->github.protected_paths,
+            (std::vector<std::string>{".github/**", "CODEOWNERS", "deploy/**"}));
+  EXPECT_EQ(*config->github.max_file_mb, 7u);
 
   ASSERT_EQ(config->providers.size(), 2u);
   EXPECT_EQ(config->providers.at("local-vllm").base_url, "http://vllm-host:8000/v1");
@@ -192,6 +200,10 @@ TEST_F(ConfigTest, ApplyConfigResolvesProvidersAndRoles) {
   EXPECT_EQ(options.profiles_dir, "/srv/cf/profiles");
   EXPECT_EQ(options.github_app_id, "12345");
   EXPECT_EQ(options.github_private_key_file, "/srv/keys/github-app.pem");
+  EXPECT_EQ(*options.github_branch_prefix, "cf/");
+  EXPECT_EQ(*options.github_protected_paths,
+            (std::vector<std::string>{".github/**", "CODEOWNERS", "deploy/**"}));
+  EXPECT_EQ(*options.github_max_file_mb, 7u);
 
   // The default provider resolves its endpoints; role models resolve
   // against it (design section 13.1: never mixed).

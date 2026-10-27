@@ -14,6 +14,7 @@
 #include <string_view>
 
 #include "cf/git/repository.hpp"
+#include "cf/github/pre_push.hpp"
 #include "cf/orch/dispatcher.hpp"
 #include "cf/orch/github_handlers.hpp"
 #include "cf/orch/state_machine.hpp"
@@ -22,12 +23,18 @@
 
 namespace cf::orch {
 
+namespace github_error_codes {
+inline constexpr const char* kPrePushRejected = "ORCH_PRE_PUSH_REJECTED";
+}  // namespace github_error_codes
+
 struct GithubFlowConfig {
   std::string owner;
   std::string repo;
   std::string remote = "origin";
   std::string base_branch = "main";
   std::string title_prefix = "CF";
+  // Runs on the exact commit before any push (design section 10.4.6).
+  github::PrePushConfig pre_push;
 };
 
 class GithubFlow {

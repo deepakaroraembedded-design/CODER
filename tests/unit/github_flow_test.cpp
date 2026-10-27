@@ -58,6 +58,7 @@ class GithubFlowTest : public ::testing::Test {
     write_file(dir_ / "repo" / "README.md", "initial\n");
     cf::git::CommitTrailers init;
     init.run_id = "R12";
+    init.milestone_id = "M1";
     init.op_id = "op_init";
     ASSERT_TRUE(repository_
                     ->commit_paths(dir_ / "repo", {"README.md"}, "chore: init", init)
@@ -181,6 +182,34 @@ TEST_F(GithubFlowTest, PushesMilestonesAndOpensADraftPullRequest) {
   ASSERT_TRUE(again.has_value());
   EXPECT_EQ(*again, 0u);
   EXPECT_EQ(transport_->requests().size(), 2u);
+}
+
+TEST_F(GithubFlowTest, PrePushRejectionRefusesThePush) {
+  write_file(dir_ / "repo" / "CODEOWNERS", "* @team\n");
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.milestone_id = "M1";
+  trailers.op_id = "op_bad";
+  auto bad = repository_->commit_paths(dir_ / "repo", {"CODEOWNERS"},
+                                       "chore: owners", trailers);
+  ASSERT_TRUE(bad.has_value()) << bad.error().message;
+  ASSERT_TRUE(repository_
+                  ->command({"branch", "-f", "cf-local/R12/M1/coder", *bad})
+                  .has_value());
+
+  const auto synced = flow_->sync("R12", plan_, RunState::Executing, epoch_, now_);
+  ASSERT_FALSE(synced.has_value());
+  EXPECT_EQ(synced.error().code,
+            cf::orch::github_error_codes::kPrePushRejected);
+  EXPECT_NE(synced.error().message.find("CODEOWNERS"), std::string::npos);
+
+  // Nothing was intended or pushed (design section 10.4.6).
+  auto operations = store_->list_operations("R12", {});
+  ASSERT_TRUE(operations.has_value());
+  EXPECT_TRUE(operations->empty());
+  auto remote = repository_->remote_branch_sha("origin", "cf/R12/M1");
+  ASSERT_TRUE(remote.has_value());
+  EXPECT_TRUE(remote->empty());
 }
 
 TEST_F(GithubFlowTest, EscalationPushesABranchAndCommentsOnThePullRequest) {

@@ -17,6 +17,7 @@
 #include "cf/codeintel/backend.hpp"
 #include "cf/common/process.hpp"
 #include "cf/git/repository.hpp"
+#include "cf/github/pre_push.hpp"
 #include "cf/llm/client.hpp"
 #include "cf/orch/driver.hpp"
 #include "cf/orch/opencode_factory.hpp"
@@ -95,6 +96,8 @@ struct RunProcessConfig {
   std::string github_owner;
   std::string github_repo;
   std::string github_remote = "origin";
+  // Pre-push policy checked before every push (design section 10.4.6).
+  github::PrePushConfig github_pre_push;
   // Export defects to GitHub Issues alongside the PR flow (design 6.10).
   bool export_defects = true;
 };

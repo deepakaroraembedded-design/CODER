@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "cf/cli/commands.hpp"
 #include "cf/common/result.hpp"
@@ -38,6 +39,10 @@ struct FrameworkConfig {
     // A filesystem path to the PEM. secretmanager:// references are rejected
     // at load time (not resolvable in this build).
     std::optional<std::string> private_key_ref;
+    // Pre-push policy (design sections 10.4.6, 15).
+    std::optional<std::string> branch_prefix;
+    std::optional<std::vector<std::string>> protected_paths;
+    std::optional<std::uint64_t> max_file_mb;
   };
   Github github;
 

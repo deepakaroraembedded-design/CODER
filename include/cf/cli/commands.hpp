@@ -12,6 +12,7 @@
 #include <optional>
 #include <ostream>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -121,6 +122,10 @@ struct ExecuteOptions {
   std::string github_installation_id;
   std::string github_private_key_file;
   std::string github_token;  // fallback: a static token
+  // Pre-push policy (design section 10.4.6); unset fields keep the defaults.
+  std::optional<std::string> github_branch_prefix;
+  std::optional<std::vector<std::string>> github_protected_paths;
+  std::optional<std::uint64_t> github_max_file_mb;
   // Tests inject a transport; production uses cpr.
   cf::llm::HttpTransport* github_transport = nullptr;
 

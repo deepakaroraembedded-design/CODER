@@ -1272,6 +1272,22 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
     config.github_owner = options.github_owner;
     config.github_repo = options.github_repo;
     config.github_token = options.github_token;
+    if (options.github_branch_prefix.has_value()) {
+      config.github_pre_push.branch_prefix = *options.github_branch_prefix;
+    }
+    if (options.github_protected_paths.has_value()) {
+      // The standard protected paths stay protected; the config adds to
+      // them (design section 10.4.6).
+      for (const auto& path : *options.github_protected_paths) {
+        auto& paths = config.github_pre_push.protected_paths;
+        if (std::find(paths.begin(), paths.end(), path) == paths.end()) {
+          paths.push_back(path);
+        }
+      }
+    }
+    if (options.github_max_file_mb.has_value()) {
+      config.github_pre_push.max_file_mb = *options.github_max_file_mb;
+    }
     if (!options.github_app_id.empty() && !options.github_private_key_file.empty()) {
       std::ifstream key_file(options.github_private_key_file, std::ios::binary);
       if (!key_file) {

@@ -254,6 +254,7 @@ TEST(OpencodeSandboxTest, SandboxedRunProcessReachesDone) {
   write_file(dir / "repo" / "README.md", "initial\n");
   cf::git::CommitTrailers init;
   init.run_id = "R12";
+  init.milestone_id = "M1";
   init.op_id = "op_init";
   ASSERT_TRUE(repository
                   ->commit_paths(dir / "repo", {"README.md"}, "chore: init", init)

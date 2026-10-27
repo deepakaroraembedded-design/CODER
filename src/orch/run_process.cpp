@@ -335,6 +335,7 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     flow_config.repo = config_.github_repo;
     flow_config.remote = config_.github_remote;
     flow_config.base_branch = config_.base_branch;
+    flow_config.pre_push = config_.github_pre_push;
     github_flow = std::make_unique<GithubFlow>(store_, operation_dispatcher,
                                                repository_, std::move(flow_config));
     if (config_.export_defects) {
@@ -363,6 +364,30 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     if (github_flow) {
       auto synced = github_flow->sync(config_.run_id, plan_, state, epoch, now);
       if (!synced) {
+        // A pre-push check is a local policy gate (design section 10.4.6):
+        // refuse the push and escalate so a human decides, rather than
+        // failing the process in a non-terminal state.
+        if (synced.error().code == github_error_codes::kPrePushRejected &&
+            (state == RunState::Executing ||
+             state == RunState::SystemValidation)) {
+          if (state == RunState::SystemValidation) {
+            const auto reopened =
+                machine.apply(RunEvent::SystemDefectsFiled, {}, now);
+            if (!reopened) {
+              return tl::make_unexpected(reopened.error());
+            }
+          }
+          const auto applied = machine.apply(RunEvent::NoProgress, {}, now);
+          if (!applied) {
+            return tl::make_unexpected(applied.error());
+          }
+          if (!config_.orchestrator.escalation_dir.empty()) {
+            (void)write_escalation_bundle(store_, config_.run_id,
+                                          config_.orchestrator.escalation_dir,
+                                          synced.error().message, now);
+          }
+          return *applied;
+        }
         return tl::make_unexpected(synced.error());
       }
     }

@@ -178,6 +178,7 @@ class FaultInjectionTest : public ::testing::Test {
     write_file(dir_ / "repo" / "README.md", "initial\n");
     cf::git::CommitTrailers trailers;
     trailers.run_id = "R12";
+    trailers.milestone_id = "M1";
     trailers.op_id = "op_init";
     auto c0 = repository_->commit_paths(dir_ / "repo", {"README.md"}, "chore: init",
                                         trailers);

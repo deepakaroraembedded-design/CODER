@@ -737,6 +737,7 @@ TEST_F(CliTest, ExecuteCommandDrivesTheRunToDone) {
   write_file(dir_ / "repo" / "README.md", "initial\n");
   cf::git::CommitTrailers trailers;
   trailers.run_id = "R12";
+  trailers.milestone_id = "M1";
   trailers.op_id = "op_init";
   ASSERT_TRUE(repository
                   ->commit_paths(dir_ / "repo", {"README.md"}, "chore: init", trailers)

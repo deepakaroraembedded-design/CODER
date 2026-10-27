@@ -29,12 +29,29 @@ Status GithubFlow::ensure_push(std::string_view run_id,
     // Nothing to push (for example a milestone with no coder branch yet).
     return {};
   }
+
   const std::string key = cf::idempotency_key(
       run_id, milestone_id, "push", cf::sha256_hex(branch + "|" + *commit));
   const auto existing = store_.find_operation_by_key(key);
   if (existing.has_value()) {
     return {};  // already intended (and possibly performed)
   }
+
+  // Design section 10.4.6: run the pre-push checks on the exact commit before
+  // any intent is recorded or any network call is made.
+  auto findings =
+      github::check_pre_push(repository_, branch, *commit, config_.pre_push);
+  if (!findings) {
+    return tl::make_unexpected(findings.error());
+  }
+  if (!findings->empty()) {
+    std::string reason = "pre-push checks failed for " + branch + ":";
+    for (const auto& finding : *findings) {
+      reason += " " + finding.check + " (" + finding.message + ");";
+    }
+    return fail(github_error_codes::kPrePushRejected, reason);
+  }
+
   auto remote_sha = repository_.remote_branch_sha(config_.remote, branch);
   const std::string old = remote_sha.has_value() ? *remote_sha : std::string();
 
