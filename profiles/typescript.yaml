@@ -1,0 +1,66 @@
+# TypeScript / JavaScript toolchain profile (design section 6.7.2).
+#
+# Trusted commands only: each step is an argument list executed with no shell.
+# Placeholders: {src_dir}, {build_dir}, {standard}, {standard_number},
+# {standard_var}, {changed_files...} and the stage-3 coverage/mutation values.
+id: typescript
+image: cf-toolchain-typescript:2026.10
+codeintel_backend: tree-sitter
+
+languages:
+  typescript:
+    standard_var: NODE_VERSION
+    guardrails:
+      steps:
+        - [semgrep, --config, "{rules_dir}/semgrep/typescript.yaml", --error, "{changed_files...}"]
+    format:
+      steps:
+        - [prettier, --check, "{changed_files...}"]
+  javascript:
+    standard_var: NODE_VERSION
+    guardrails:
+      steps:
+        - [semgrep, --config, "{rules_dir}/semgrep/javascript.yaml", --error, "{changed_files...}"]
+    format:
+      steps:
+        - [prettier, --check, "{changed_files...}"]
+
+build_systems:
+  npm:
+    steps:
+      - [npm, ci]
+      - [npm, run, build]
+    agent_commands: [npm, npx]
+  pnpm:
+    steps:
+      - [pnpm, install, --frozen-lockfile]
+      - [pnpm, run, build]
+    agent_commands: [pnpm, npx]
+
+test_frameworks:
+  vitest:
+    steps: [[npx, vitest, run]]
+    report: junit
+    languages: [typescript, javascript]
+  jest:
+    steps: [[npx, jest, --ci]]
+    report: junit
+    languages: [typescript, javascript]
+
+common:
+  analysis:
+    steps:
+      - [eslint, "{src_dir}"]
+      - [npx, tsc, --noEmit]
+  runtime: { presets: [] }
+  coverage:
+    tool: c8
+    line: 0.85
+    branch: 0.75
+    format: lcov
+    report: "{build_dir}/coverage/lcov.info"
+    steps:
+      - [npx, c8, --reporter=lcov, "--report-dir={build_dir}/coverage", npm, test]
+  mutation: { tool: stryker, min_score: 0.60 }
+
+exec_from_source: []

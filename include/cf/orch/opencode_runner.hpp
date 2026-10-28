@@ -78,6 +78,9 @@ struct OpencodeRunnerOptions {
   std::string continuation_message =
       "Proceed with the task as specified. Do not ask questions. Finish by "
       "calling the submission tool.";
+  // Review findings of these severities block the milestone (design
+  // sections 8.2, 15).
+  std::vector<std::string> blocking_severities = {"blocker", "major"};
   // Versioned role templates (prompts/<role>.md); embedded defaults apply
   // when the directory is not provided.
   PromptLibrary prompts = PromptLibrary::defaults();

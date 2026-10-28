@@ -114,6 +114,41 @@ TEST_F(GitTest, CommitCarriesTrailers) {
   EXPECT_EQ(*head, *sha);
 }
 
+TEST_F(GitTest, SignedCommitsCarryAnSshSignature) {
+  const auto key = dir_ / "signing-key";
+  cf::process::ProcessRequest request;
+  request.argv = {"ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key.string()};
+  const auto generated = executor_->run(request);
+  if (!generated.launched || generated.exit_code != 0) {
+    GTEST_SKIP() << "ssh-keygen with SSH signing support is not available: "
+                 << generated.error << generated.stderr_text;
+  }
+  ASSERT_TRUE(repo_->set_signing_key(key).has_value());
+
+  write_file(dir_ / "repo" / "signed.txt", "signed\n");
+  CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.op_id = "op_signed";
+  auto sha = repo_->commit_paths(dir_ / "repo", {"signed.txt"}, "feat: signed",
+                                 trailers);
+  ASSERT_TRUE(sha.has_value()) << sha.error().message;
+
+  auto raw = repo_->command({"cat-file", "-p", *sha});
+  ASSERT_TRUE(raw.has_value()) << raw.error().message;
+  EXPECT_NE(raw->find("gpgsig -----BEGIN SSH SIGNATURE-----"), std::string::npos);
+
+  // The earlier commit predates the key and stays unsigned.
+  auto unsigned_raw = repo_->command({"cat-file", "-p", initial_sha_});
+  ASSERT_TRUE(unsigned_raw.has_value());
+  EXPECT_EQ(unsigned_raw->find("gpgsig"), std::string::npos);
+}
+
+TEST_F(GitTest, MissingSigningKeyIsRejected) {
+  const auto missing = repo_->set_signing_key(dir_ / "nope");
+  ASSERT_FALSE(missing.has_value());
+  EXPECT_EQ(missing.error().code, cf::git::error_codes::kSigningKey);
+}
+
 TEST_F(GitTest, CommitRejectsEscapingPaths) {
   const auto parent = repo_->commit_paths(dir_ / "repo", {"../evil.txt"}, "x", {});
   ASSERT_FALSE(parent.has_value());
@@ -270,6 +305,37 @@ TEST_F(GitTest, FindCommitByTrailerWalksBack) {
 
   auto unknown = repo_->find_commit_by_trailer("HEAD", "CF-Op", "op_missing");
   ASSERT_FALSE(unknown.has_value());
+}
+
+TEST_F(GitTest, ChecksAncestryAndFetchesTheBase) {
+  const auto remote = dir_ / "remote.git";
+  cf::process::ProcessRequest bare;
+  bare.argv = {"git", "init", "--bare", remote.string()};
+  const auto created_remote = executor_->run(bare);
+  ASSERT_TRUE(created_remote.launched && created_remote.exit_code == 0)
+      << created_remote.stderr_text;
+  ASSERT_TRUE(repo_
+                  ->command({"remote", "add", "origin", remote.string()})
+                  .has_value());
+  ASSERT_TRUE(repo_->command({"push", "origin", "main"}).has_value());
+
+  write_file(dir_ / "repo" / "next.txt", "next\n");
+  CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.op_id = "op_next";
+  ASSERT_TRUE(repo_
+                  ->commit_paths(dir_ / "repo", {"next.txt"}, "feat: next", trailers)
+                  .has_value());
+  ASSERT_TRUE(repo_->command({"push", "origin", "main"}).has_value());
+  ASSERT_TRUE(repo_->fetch("origin", "main").has_value());
+
+  auto ancestor =
+      repo_->is_ancestor("refs/remotes/origin/main", initial_sha_);
+  ASSERT_TRUE(ancestor.has_value());
+  EXPECT_FALSE(*ancestor);
+  ancestor = repo_->is_ancestor(initial_sha_, "refs/remotes/origin/main");
+  ASSERT_TRUE(ancestor.has_value());
+  EXPECT_TRUE(*ancestor);
 }
 
 TEST_F(GitTest, MergeSquashIntegratesABranch) {

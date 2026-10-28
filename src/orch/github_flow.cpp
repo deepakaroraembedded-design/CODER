@@ -59,6 +59,36 @@ Status GithubFlow::ensure_push(std::string_view run_id,
     return {};  // already intended (and possibly performed)
   }
 
+  // Check 8: the integration branch must be rebased on the latest base
+  // branch. Fetch the base and refuse a stale push; the run escalates
+  // instead of pushing code that was never gated on the current base.
+  const std::string integration = "cf/" + std::string(run_id) + "/integration";
+  if (branch == integration && !config_.base_branch.empty()) {
+    auto base_sha =
+        repository_.remote_branch_sha(config_.remote, config_.base_branch);
+    if (!base_sha) {
+      return tl::make_unexpected(base_sha.error());
+    }
+    if (!base_sha->empty()) {
+      auto fetched = repository_.fetch(config_.remote, config_.base_branch);
+      if (!fetched) {
+        return fetched;
+      }
+      const std::string base_ref = "refs/remotes/" + config_.remote + "/" +
+                                   config_.base_branch;
+      auto ancestor = repository_.is_ancestor(base_ref, *commit);
+      if (!ancestor) {
+        return tl::make_unexpected(ancestor.error());
+      }
+      if (!*ancestor) {
+        return fail(github_error_codes::kPrePushRejected,
+                    "base branch '" + config_.base_branch +
+                        "' moved since integration; rebase the integration "
+                        "branch and re-run the gates");
+      }
+    }
+  }
+
   // Design section 10.4.6: run the pre-push checks on the exact commit before
   // any intent is recorded or any network call is made.
   auto findings =
@@ -96,7 +126,7 @@ Status GithubFlow::ensure_push(std::string_view run_id,
 Result<std::string> GithubFlow::build_pr_body(std::string_view run_id,
                                              const plan::Plan& plan,
                                              RunState run_state) const {
-  auto summary = build_run_summary(store_, run_id, &plan);
+  auto summary = build_run_summary(store_, run_id, &plan, config_.run_dir);
   if (!summary) {
     return tl::make_unexpected(summary.error());
   }
@@ -279,8 +309,12 @@ Status GithubFlow::ensure_pr(std::string_view run_id, const plan::Plan& plan,
     if (store_.find_operation_by_key(key).has_value()) {
       return {};
     }
+    // A PR may open at Done when run_done pushes are disabled (for example
+    // after a crash): it still must not open or become ready for review.
+    const bool ready_at_creation =
+        run_state == RunState::Done && config_.push_on_run_done;
     const bool draft =
-        config_.pr_draft_until_done && run_state != RunState::Done;
+        config_.pr_draft_until_done && !ready_at_creation;
     store::NewOperation intent;
     intent.idempotency_key = key;
     intent.kind = "pr_create";
@@ -301,8 +335,9 @@ Status GithubFlow::ensure_pr(std::string_view run_id, const plan::Plan& plan,
     return {};
   }
 
-  const bool mark_ready =
-      config_.pr_draft_until_done && run_state == RunState::Done;
+  const bool mark_ready = config_.pr_draft_until_done &&
+                          run_state == RunState::Done &&
+                          config_.push_on_run_done;
   if (last_body == *body && last_ready == mark_ready &&
       last_labels == config_.pr_labels &&
       last_request_codeowners == config_.pr_request_codeowners &&
@@ -346,7 +381,11 @@ Result<std::size_t> GithubFlow::sync(std::string_view run_id, const plan::Plan& 
       continue;
     }
     any_done = true;
-    // The milestone checkpoint branch, then the integration branch.
+    // The milestone checkpoint branch, then the integration branch
+    // (design section 10.4.4; github.push_on selects the events).
+    if (!config_.push_on_milestone_done) {
+      continue;
+    }
     auto ensured = ensure_push(run_id, spec.id, "cf/" + std::string(run_id) + "/" + spec.id,
                                "cf-local/" + std::string(run_id) + "/" + spec.id + "/coder",
                                now);
@@ -354,7 +393,10 @@ Result<std::size_t> GithubFlow::sync(std::string_view run_id, const plan::Plan& 
       return tl::make_unexpected(ensured.error());
     }
   }
-  if (any_done) {
+  const bool push_integration =
+      (config_.push_on_milestone_done && any_done) ||
+      (config_.push_on_run_done && run_state == RunState::Done);
+  if (push_integration) {
     auto integration =
         ensure_push(run_id, "", "cf/" + std::string(run_id) + "/integration",
                     "cf/" + std::string(run_id) + "/integration", now);
@@ -367,9 +409,11 @@ Result<std::size_t> GithubFlow::sync(std::string_view run_id, const plan::Plan& 
     }
   }
   if (run_state == RunState::Escalated) {
-    auto escalated = ensure_escalation(run_id, now);
-    if (!escalated) {
-      return tl::make_unexpected(escalated.error());
+    if (config_.push_on_escalation) {
+      auto escalated = ensure_escalation(run_id, now);
+      if (!escalated) {
+        return tl::make_unexpected(escalated.error());
+      }
     }
   } else if (run_state == RunState::Aborted) {
     auto aborted = ensure_abort(run_id, plan, run_state, now);

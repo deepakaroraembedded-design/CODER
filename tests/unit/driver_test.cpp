@@ -115,6 +115,50 @@ test_frameworks:
   gtest: { steps: [[true]], languages: [cpp] }
 )yaml";
 
+const char* kFailingGuardrailProfile = R"yaml(
+id: test-profile
+image: test-image
+languages:
+  cpp:
+    standard_var: CMAKE_CXX_STANDARD
+    guardrails:
+      steps:
+        - [sh, -c, "echo 'src/m3.cpp:42: banned API [cf-swt-c-7]' >&2; false"]
+    format: { steps: [[true]] }
+build_systems:
+  cmake:
+    steps: [[true]]
+test_frameworks:
+  gtest: { steps: [[true]], languages: [cpp] }
+)yaml";
+
+const char* kStageThreeProfile = R"yaml(
+id: test-profile
+image: test-image
+languages:
+  cpp:
+    standard_var: CMAKE_CXX_STANDARD
+    guardrails: { steps: [[true]] }
+    format: { steps: [[true]] }
+build_systems:
+  cmake:
+    steps: [[true]]
+test_frameworks:
+  gtest: { steps: [[true]], languages: [cpp] }
+common:
+  coverage:
+    tool: cov
+    line: 0.85
+    branch: 0.75
+    steps:
+      - [sh, -c, "test {coverage_line} = 85 && test {coverage_branch} = 75"]
+  mutation:
+    tool: mut
+    min_score: 0.60
+    steps:
+      - [sh, -c, "test {mutation_min_score} = 0.60"]
+)yaml";
+
 class DriverTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -883,6 +927,131 @@ TEST_F(DriverTest, TheFixBriefCarriesTheFailingGateFindings) {
   EXPECT_NE(runner.briefs.back().find("Failing gates from the last run"),
             std::string::npos);
   EXPECT_NE(runner.briefs.back().find("build"), std::string::npos);
+}
+
+TEST_F(DriverTest, RebasesIntegrationAndRegatesTheNewHead) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp", "code\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_,
+                         executor_, runner, store_.get());
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+  ASSERT_TRUE(driver.run(MilestonePhase::Integrate, "M3").completed);
+
+  // The base moves forward after the integration.
+  write_file(dir_ / "repo" / "base-moved.txt", "new base\n");
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.milestone_id = "M1";
+  trailers.op_id = "op_base_moved";
+  ASSERT_TRUE(repository_
+                  ->commit_paths(dir_ / "repo", {"base-moved.txt"},
+                                 "chore: base moved", trailers)
+                  .has_value());
+
+  ASSERT_TRUE(driver.rebase_integration_onto("main").has_value());
+  const auto gates = driver.run_integration_gates("main");
+  ASSERT_TRUE(gates.has_value()) << gates.error().message;
+  EXPECT_TRUE(gates->passed);
+
+  const auto head = repository_->head_sha(driver.integration_worktree());
+  ASSERT_TRUE(head.has_value());
+  const auto ancestor = repository_->is_ancestor("main", *head);
+  ASSERT_TRUE(ancestor.has_value());
+  EXPECT_TRUE(*ancestor);
+  const auto rows = store_->list_gate_results("R12", *head);
+  ASSERT_TRUE(rows.has_value());
+  EXPECT_FALSE(rows->empty());
+  for (const auto& row : *rows) {
+    EXPECT_EQ(row.milestone_id, "integration");
+  }
+}
+
+TEST_F(DriverTest, StageThreeGatesReceiveTheProfileThresholds) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp", "code\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kStageThreeProfile), *repository_,
+                         executor_, runner, store_.get());
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+  const GateOutcome gates = driver.run_gates("M3");
+  EXPECT_TRUE(gates.passed);
+  bool coverage = false;
+  bool mutation = false;
+  for (const auto& result : gates.report.results) {
+    coverage = coverage || result.gate == "coverage";
+    mutation = mutation || result.gate == "mutation";
+    if (result.gate == "coverage" || result.gate == "mutation") {
+      EXPECT_TRUE(result.passed) << result.gate;
+    }
+  }
+  EXPECT_TRUE(coverage);
+  EXPECT_TRUE(mutation);
+}
+
+TEST_F(DriverTest, AHumanWaiverLetsAFailedGatePass) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp", "code\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kFailingGuardrailProfile), *repository_,
+                         executor_, runner, store_.get());
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+
+  const GateOutcome without_waiver = driver.run_gates("M3");
+  ASSERT_FALSE(without_waiver.passed);
+
+  cf::store::WaiverRecord waiver;
+  waiver.run_id = "R12";
+  waiver.milestone_id = "M3";
+  waiver.rule = "guardrails";
+  waiver.scope = "*";
+  waiver.justification = "Known legacy API for the compatibility window";
+  waiver.approved_by = "alice";
+  waiver.at = now_;
+  auto recorded = store_->record_waiver(waiver);
+  ASSERT_TRUE(recorded.has_value()) << recorded.error().message;
+  EXPECT_EQ(recorded->milestone_id, "M3");
+
+  const GateOutcome waived = driver.run_gates("M3");
+  EXPECT_TRUE(waived.passed);
+  bool found = false;
+  for (const auto& result : waived.report.results) {
+    if (result.gate == "guardrails") {
+      EXPECT_TRUE(result.waived);
+      found = true;
+    }
+  }
+  EXPECT_TRUE(found);
+
+  // The integration commit records the waiver (design section 10.4.5).
+  const TurnResult integrated = driver.run(MilestonePhase::Integrate, "M3");
+  ASSERT_TRUE(integrated.completed) << integrated.detail;
+  auto head = repository_->head_sha(driver.integration_worktree());
+  ASSERT_TRUE(head.has_value());
+  auto message = repository_->commit_message(*head);
+  ASSERT_TRUE(message.has_value());
+  EXPECT_NE(message->find("CF-Waivers: guardrails@*"), std::string::npos);
 }
 
 TEST_F(DriverTest, TestRepairRunsQaAgainstTheIntegrationAndCommits) {

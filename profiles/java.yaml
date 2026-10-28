@@ -1,0 +1,55 @@
+# Java toolchain profile (design section 6.7.2).
+#
+# Trusted commands only: each step is an argument list executed with no shell.
+# Placeholders: {src_dir}, {build_dir}, {standard}, {standard_number},
+# {standard_var}, {changed_files...} and the stage-3 coverage/mutation values.
+id: java
+image: cf-toolchain-java:2026.10
+codeintel_backend: tree-sitter
+
+languages:
+  java:
+    standard_var: JAVA_VERSION
+    guardrails:
+      steps:
+        - [semgrep, --config, "{rules_dir}/semgrep/java.yaml", --error, "{changed_files...}"]
+    format:
+      steps:
+        - [google-java-format, --dry-run, --set-exit-if-changed, "{changed_files...}"]
+
+build_systems:
+  maven:
+    steps:
+      - [mvn, -q, -DskipTests, package]
+    agent_commands: [mvn]
+  gradle:
+    steps:
+      - [./gradlew, --no-daemon, build, -x, test]
+    agent_commands: [./gradlew, gradle]
+
+test_frameworks:
+  junit5:
+    steps: [[mvn, -q, test]]
+    report: junit
+    languages: [java]
+  junit5-gradle:
+    steps: [[./gradlew, --no-daemon, test]]
+    report: junit
+    languages: [java]
+
+common:
+  analysis:
+    steps:
+      - [mvn, -q, -DskipTests, verify]
+  runtime: { presets: [] }
+  coverage:
+    tool: jacoco
+    line: 0.85
+    branch: 0.75
+    format: jacoco-xml
+    report: "{build_dir}/jacoco.xml"
+    steps:
+      - [bash, "{rules_dir}/scripts/java-coverage.sh", "{src_dir}", "{build_dir}"]
+  mutation: { tool: pit, min_score: 0.60 }
+
+exec_from_source: []

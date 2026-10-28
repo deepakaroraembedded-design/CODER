@@ -38,6 +38,8 @@ inline constexpr const char* kTimeout = "LLM_TIMEOUT";
 inline constexpr const char* kHttpError = "LLM_HTTP_ERROR";
 inline constexpr const char* kRetryExhausted = "LLM_RETRY_EXHAUSTED";
 inline constexpr const char* kInvalidResponse = "LLM_INVALID_RESPONSE";
+inline constexpr const char* kArchiveKey = "LLM_ARCHIVE_KEY";
+inline constexpr const char* kArchiveInvalid = "LLM_ARCHIVE_INVALID";
 }  // namespace error_codes
 
 struct Usage {
@@ -61,6 +63,7 @@ struct ChatMessage {
 struct CallContext {
   std::string run_id;
   std::string role;
+  std::string milestone_id;
   std::string prompt_ref;  // artifact reference for the archived prompt
 };
 
@@ -156,6 +159,12 @@ struct ClientOptions {
   std::chrono::milliseconds max_backoff{30000};
   int max_concurrency = 4;  // per role (design section 6.6)
   std::map<std::string, ModelPrice, std::less<>> prices;
+  // Encrypted prompt/response archive (design sections 6.11, 14). Empty
+  // disables archiving; the key is read from archive_key_env as 64 hex
+  // characters (32 bytes). The archive is gzip-compressed and AES-256-GCM
+  // encrypted.
+  std::filesystem::path archive_dir;
+  std::string archive_key_env = "CF_ARCHIVE_KEY";
 };
 
 struct CallRecord {
@@ -173,6 +182,25 @@ struct CallRecord {
 
 using UsageCallback = std::function<void(const CallRecord&)>;
 using SleepFunction = std::function<void(std::chrono::milliseconds)>;
+
+// One archived chat/embedding call, decrypted and decompressed.
+struct ArchivedCall {
+  std::string call_id;
+  std::string run_id;
+  std::string role;
+  std::string milestone_id;
+  std::string model;
+  std::string base_url;
+  std::string path;
+  nlohmann::json request;
+  nlohmann::json response;
+  long status = 0;
+  Usage usage;
+  int64_t at = 0;
+};
+
+// Reads and verifies an archive file. The key comes from CF_ARCHIVE_KEY.
+Result<ArchivedCall> read_archived_call(const std::filesystem::path& path);
 
 class FireworksClient {
  public:

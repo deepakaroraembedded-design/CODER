@@ -25,12 +25,47 @@ find_package(tl-expected CONFIG REQUIRED)
 find_package(CLI11 CONFIG REQUIRED)
 find_package(GTest CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(SQLiteCpp CONFIG REQUIRED)
 find_package(cpr CONFIG REQUIRED)
 find_package(yaml-cpp CONFIG REQUIRED)
 find_package(hnswlib CONFIG REQUIRED)
 find_package(unofficial-tree-sitter CONFIG REQUIRED)
 find_package(Threads REQUIRED)
+
+# Optional Clang LibTooling back end for C/C++ code intelligence (design
+# section 6.5). Set LLVM_DIR/Clang_DIR (or CMAKE_PREFIX_PATH) to a Clang 17
+# installation to enable it; otherwise the tree-sitter fallback is used.
+# LLVM's prebuilt CMake exports reference zstd/terminfo imported targets even
+# when the matching development symlinks are not installed. Point those
+# targets at the runtime libraries when necessary; LibTooling only needs to
+# link them, not include their headers.
+if(NOT TARGET zstd::libzstd_shared)
+  find_file(CF_ZSTD_SHARED_LIBRARY NAMES libzstd.so.1
+    PATHS /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu)
+  if(CF_ZSTD_SHARED_LIBRARY)
+    add_library(zstd::libzstd_shared SHARED IMPORTED)
+    set_target_properties(zstd::libzstd_shared PROPERTIES
+      IMPORTED_LOCATION "${CF_ZSTD_SHARED_LIBRARY}")
+  endif()
+endif()
+if(NOT TARGET Terminfo::terminfo)
+  find_file(CF_TERMINFO_SHARED_LIBRARY NAMES libtinfo.so.6
+    PATHS /usr/lib/x86_64-linux-gnu /lib/x86_64-linux-gnu)
+  if(CF_TERMINFO_SHARED_LIBRARY)
+    add_library(Terminfo::terminfo SHARED IMPORTED)
+    set_target_properties(Terminfo::terminfo PROPERTIES
+      IMPORTED_LOCATION "${CF_TERMINFO_SHARED_LIBRARY}")
+  endif()
+endif()
+
+option(CF_ENABLE_CLANG_CODEINTEL "Build the Clang LibTooling back end when available" ON)
+if(CF_ENABLE_CLANG_CODEINTEL)
+  find_package(LLVM 17 CONFIG QUIET)
+  if(LLVM_FOUND)
+    find_package(Clang 17 CONFIG QUIET)
+  endif()
+endif()
 
 # Warnings apply to framework code only, never to third-party headers.
 add_library(cf_project_options INTERFACE)
@@ -39,6 +74,7 @@ target_compile_options(cf_project_options INTERFACE
 
 # cf-common: shared utilities (Result contract, hashing, process execution)
 add_library(cf_common STATIC
+  src/common/archive.cpp
   src/common/hash.cpp
   src/common/process.cpp)
 target_include_directories(cf_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
@@ -46,7 +82,20 @@ target_link_libraries(cf_common PUBLIC
   cf_project_options
   tl::expected
   OpenSSL::Crypto
+  ZLIB::ZLIB
   Threads::Threads)
+
+# cf-telemetry: structured JSON logging with run/milestone/agent/trace context
+# (design sections 6.11, 14)
+add_library(cf_telemetry STATIC
+  src/telemetry/logging.cpp
+  src/telemetry/metrics.cpp)
+target_link_libraries(cf_telemetry PUBLIC
+  cf_project_options
+  cf_common
+  cf_llm
+  nlohmann_json::nlohmann_json
+  spdlog::spdlog)
 
 # cf-agents: opencode adapter (HTTP + SSE client)
 add_library(cf_agents STATIC
@@ -63,6 +112,7 @@ add_library(cf_mcp_stdio STATIC
   src/mcp/stdio_server.cpp)
 target_link_libraries(cf_mcp_stdio PUBLIC
   cf_common
+  cf_telemetry
   nlohmann_json::nlohmann_json
   spdlog::spdlog)
 
@@ -72,6 +122,7 @@ add_library(cf_mcp_tools STATIC
 target_link_libraries(cf_mcp_tools PUBLIC
   cf_common
   cf_codeintel
+  cf_gates
   cf_rag
   cf_store
   nlohmann_json::nlohmann_json)
@@ -83,6 +134,7 @@ target_link_libraries(cf-mcp PRIVATE
   cf_codeintel
   cf_rag
   cf_store
+  cf_llm
   CLI11::CLI11
   spdlog::spdlog)
 
@@ -129,8 +181,11 @@ add_library(cf_orch STATIC
   src/orch/github_flow.cpp
   src/orch/run_summary.cpp
   src/orch/defect_export.cpp
-  src/orch/codeintel_sync.cpp)
+  src/orch/codeintel_sync.cpp
+  src/orch/waivers.cpp
+  src/orch/metrics.cpp)
 target_link_libraries(cf_orch PUBLIC
+  cf_telemetry
   cf_store
   cf_plan
   cf_gates
@@ -148,7 +203,8 @@ target_link_libraries(cf_llm PUBLIC
   cf_common
   cpr::cpr
   nlohmann_json::nlohmann_json
-  spdlog::spdlog)
+  spdlog::spdlog
+  OpenSSL::Crypto)
 
 # cf-plan: implementation plan parser and validator (design section 6.2)
 add_library(cf_plan STATIC
@@ -168,6 +224,7 @@ add_library(cf_eval STATIC
   src/eval/hidden.cpp
   src/eval/run_executor.cpp)
 target_link_libraries(cf_eval PUBLIC
+  cf_telemetry
   cf_common
   cf_plan
   cf_store
@@ -214,6 +271,23 @@ add_library(tree_sitter_python_grammar STATIC
   third_party/tree-sitter-python/src/scanner.c)
 add_library(tree_sitter_go_grammar STATIC
   third_party/tree-sitter-go/src/parser.c)
+add_library(tree_sitter_typescript_grammar STATIC
+  third_party/tree-sitter-typescript/typescript/src/parser.c
+  third_party/tree-sitter-typescript/typescript/src/scanner.c)
+target_include_directories(tree_sitter_typescript_grammar PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-typescript/typescript/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-typescript/common)
+add_library(tree_sitter_tsx_grammar STATIC
+  third_party/tree-sitter-typescript/tsx/src/parser.c
+  third_party/tree-sitter-typescript/tsx/src/scanner.c)
+target_include_directories(tree_sitter_tsx_grammar PUBLIC
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-typescript/tsx/src
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tree-sitter-typescript/common)
+add_library(tree_sitter_java_grammar STATIC
+  third_party/tree-sitter-java/src/parser.c)
+add_library(tree_sitter_cpp_grammar STATIC
+  third_party/tree-sitter-cpp/src/parser.c
+  third_party/tree-sitter-cpp/src/scanner.c)
 
 # cf-codeintel: code intelligence (design section 6.5)
 add_library(cf_codeintel STATIC
@@ -225,6 +299,9 @@ add_library(cf_codeintel STATIC
   src/codeintel/grammar_c.cpp
   src/codeintel/grammar_python.cpp
   src/codeintel/grammar_go.cpp
+  src/codeintel/grammar_typescript.cpp
+  src/codeintel/grammar_java.cpp
+  src/codeintel/grammar_cpp.cpp
   src/codeintel/treesitter_backend.cpp)
 target_link_libraries(cf_codeintel PUBLIC
   cf_common
@@ -232,7 +309,73 @@ target_link_libraries(cf_codeintel PUBLIC
   unofficial::tree-sitter::tree-sitter
   tree_sitter_c_grammar
   tree_sitter_python_grammar
-  tree_sitter_go_grammar)
+  tree_sitter_go_grammar
+  tree_sitter_typescript_grammar
+  tree_sitter_tsx_grammar
+  tree_sitter_java_grammar
+  tree_sitter_cpp_grammar)
+if(LLVM_FOUND AND Clang_FOUND)
+  target_sources(cf_codeintel PRIVATE src/codeintel/clang_backend.cpp)
+  set_source_files_properties(src/codeintel/clang_backend.cpp PROPERTIES
+    COMPILE_OPTIONS "-fno-rtti")
+  target_include_directories(cf_codeintel SYSTEM PRIVATE
+    ${LLVM_INCLUDE_DIRS}
+    ${CLANG_INCLUDE_DIRS})
+  target_compile_definitions(cf_codeintel PUBLIC CF_HAS_CLANG=1)
+  target_compile_definitions(cf_codeintel PRIVATE
+    CF_CLANG_RESOURCE_DIR="${LLVM_LIBRARY_DIR}/clang/${LLVM_VERSION_MAJOR}")
+  target_link_libraries(cf_codeintel PUBLIC
+    clangTooling
+    clangFrontend
+    clangSerialization
+    clangDriver
+    clangParse
+    clangSema
+    clangAnalysis
+    clangAST
+    clangBasic
+    clangLex
+    clangEdit
+    clangSupport)
+  message(STATUS "cf-codeintel: Clang LibTooling back end enabled (${LLVM_PACKAGE_VERSION})")
+
+  # Company guardrail checks (design section 6.7.1). The pinned LLVM package is
+  # static, so use a small clang-tidy-compatible driver rather than relying on
+  # clang-tidy's plugin loader.
+  add_library(cf_tidy STATIC src/tidy/checks.cpp)
+  target_link_libraries(cf_tidy PUBLIC
+    cf_common
+    cf_project_options
+    yaml-cpp::yaml-cpp
+    clangTooling
+    clangFrontend
+    clangSerialization
+    clangDriver
+    clangParse
+    clangSema
+    clangAnalysis
+    clangAST
+    clangBasic
+    clangLex
+    clangEdit
+    clangSupport)
+  target_include_directories(cf_tidy SYSTEM PRIVATE
+    ${LLVM_INCLUDE_DIRS}
+    ${CLANG_INCLUDE_DIRS})
+  target_compile_definitions(cf_tidy PUBLIC CF_HAS_TIDY=1)
+  target_compile_definitions(cf_tidy PRIVATE
+    CF_CLANG_RESOURCE_DIR="${LLVM_LIBRARY_DIR}/clang/${LLVM_VERSION_MAJOR}")
+  set_source_files_properties(src/tidy/checks.cpp PROPERTIES
+    COMPILE_OPTIONS "-fno-rtti")
+
+  add_executable(cf-tidy src/tidy/main.cpp)
+  target_link_libraries(cf-tidy PRIVATE cf_tidy cf_project_options)
+  set_source_files_properties(src/tidy/main.cpp PROPERTIES
+    COMPILE_OPTIONS "-fno-rtti")
+else()
+  message(STATUS "cf-codeintel: Clang LibTooling back end disabled; tree-sitter fallback only")
+  message(STATUS "cf-codeintel: cf-tidy company checks disabled")
+endif()
 
 # cf-sandbox: Docker and daemon-free namespace executors (design section 6.8)
 add_library(cf_sandbox STATIC
@@ -246,6 +389,7 @@ add_library(cf_github STATIC
   src/github/client.cpp
   src/github/codeowners.cpp
   src/github/pre_push.cpp
+  src/github/rulesets.cpp
   src/github/secrets.cpp
   src/github/app_auth.cpp
   src/github/licenses.cpp)
@@ -261,6 +405,7 @@ add_library(cf_cli STATIC
   src/cli/commands.cpp
   src/cli/config.cpp)
 target_link_libraries(cf_cli PUBLIC
+  cf_telemetry
   cf_common
   cf_store
   cf_plan
@@ -268,6 +413,9 @@ target_link_libraries(cf_cli PUBLIC
   cf_orch
   cf_git
   cf_codeintel
+  cf_refmirror
+  cf_llm
+  cf_rag
   nlohmann_json::nlohmann_json
   yaml-cpp::yaml-cpp)
 
@@ -277,8 +425,10 @@ target_link_libraries(cf PRIVATE cf_cli CLI11::CLI11)
 # cf-refmirror: offline reference documentation mirroring (design 6.3.1)
 add_library(cf_refmirror STATIC
   src/refmirror/manifest.cpp
-  src/refmirror/mirror.cpp)
+  src/refmirror/mirror.cpp
+  src/refmirror/versions.cpp)
 target_link_libraries(cf_refmirror PUBLIC
+  cf_telemetry
   cf_common
   cf_rag
   yaml-cpp::yaml-cpp

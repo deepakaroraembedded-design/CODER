@@ -37,10 +37,23 @@ struct OpencodeFactoryConfig {
   std::string mcp_command;  // path to the cf-mcp binary
   std::string db_path;      // run store
   std::string docs_dir;
+  // Offline reference documentation and pinned versions for cf-mcp
+  // (design section 6.3.1).
+  std::string reference_docs_dir;
+  std::string reference_versions_file;
   // The run's code intelligence index (design section 6.5); the role's
   // cf-mcp gets it via --codeintel-db. Empty: no index (no back end for the
   // plan's language).
   std::string codeintel_db;
+  // Toolchain profile copy in the run directory and the target combination,
+  // for the agent-side run_checks dry run (design section 9.1).
+  std::string profile_path;
+  // Rules directory as seen by the role server (/cf/rules when sandboxed).
+  std::string rules_dir;
+  std::string profile_build_system;
+  std::string profile_test_framework;
+  std::string target_standard;
+  std::string standard_var;
   // RAG applicability context and approved design packages for the role's
   // cf-mcp (design sections 6.2, 6.3).
   std::string product;
@@ -53,6 +66,11 @@ struct OpencodeFactoryConfig {
   std::optional<double> rag_bm25_weight;
   std::optional<double> rag_vector_weight;
   std::optional<std::vector<std::string>> rag_precedence;
+  // Embeddings passed through to the role's cf-mcp (design section 6.3).
+  std::string embeddings_model;
+  std::string embeddings_base_url;
+  std::string embeddings_api_key_env = "FIREWORKS_API_KEY";
+  std::uint32_t waiver_deadline_business_days = 2;
   std::vector<std::string> coder_commands;  // profile agent commands
   std::vector<std::string> qa_commands;
   std::chrono::milliseconds start_timeout{30000};

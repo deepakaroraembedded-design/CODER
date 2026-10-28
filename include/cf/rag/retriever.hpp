@@ -40,6 +40,10 @@ struct RetrieverOptions {
   // hnswlib is the default vector index (design section 6.3); false uses the
   // exact brute-force index (the parity reference and small collections).
   bool hnsw = true;
+  // Observes one latency sample per search in milliseconds (design section
+  // 14: cf_rag_latency_ms). The callback must be thread-safe when the
+  // retriever is shared.
+  std::function<void(std::int64_t)> on_search_latency_ms;
 };
 
 class Retriever {

@@ -44,6 +44,9 @@ struct PullRequest {
   std::string base_branch;
   std::string body;
   bool draft = false;
+  // ISO-8601 timestamps from GitHub; empty while open/not merged.
+  std::string merged_at;
+  std::string closed_at;
 };
 
 struct Issue {
@@ -110,6 +113,11 @@ class Client {
   // error mapping.
   Status delete_comment(const std::string& owner, const std::string& repo,
                         int64_t comment_id);
+
+  // Deletes a branch. A branch that is already gone is not an error, so
+  // retention cleanup is idempotent (design section 10.4.9).
+  Status delete_branch(const std::string& owner, const std::string& repo,
+                       const std::string& branch);
 
   Result<Issue> create_issue(const std::string& owner, const std::string& repo,
                              const std::string& title, const std::string& body,

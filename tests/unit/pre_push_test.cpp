@@ -44,9 +44,10 @@ class PrePushTest : public ::testing::Test {
     cf::git::CommitTrailers init;
     init.run_id = "R12";
     init.op_id = "op_init";
-    ASSERT_TRUE(repository_
-                    ->commit_paths(dir_ / "repo", {"README.md"}, "chore: init", init)
-                    .has_value());
+    auto initial =
+        repository_->commit_paths(dir_ / "repo", {"README.md"}, "chore: init", init);
+    ASSERT_TRUE(initial.has_value()) << initial.error().message;
+    initial_sha_ = *initial;
   }
 
   void TearDown() override {
@@ -76,6 +77,7 @@ class PrePushTest : public ::testing::Test {
   std::filesystem::path dir_;
   cf::process::LocalProcessExecutor executor_;
   std::unique_ptr<cf::git::Repository> repository_;
+  std::string initial_sha_;
 };
 
 TEST_F(PrePushTest, CleanCommitPasses) {
@@ -194,6 +196,53 @@ TEST_F(PrePushTest, NewDependenciesAreCheckedAgainstTheAllowList) {
   for (const auto& finding : *findings2) {
     EXPECT_NE(finding.check, "license") << finding.message;
   }
+}
+
+TEST_F(PrePushTest, UnsignedCommitsAreRejectedWhenSignaturesAreRequired) {
+  write_file(dir_ / "repo" / "src" / "unsigned.cpp", "x\n");
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.milestone_id = "M3";
+  trailers.op_id = "op_unsigned";
+  const std::string sha = commit({"src/unsigned.cpp"}, "feat: unsigned", trailers);
+
+  PrePushConfig config;
+  config.require_signatures = true;
+  config.base_branch = initial_sha_;
+  auto findings = check_pre_push(*repository_, "cf/R12/M3", sha, config);
+  ASSERT_TRUE(findings.has_value()) << findings.error().message;
+  EXPECT_TRUE(has_finding(*findings, "signature"));
+  for (const auto& finding : *findings) {
+    if (finding.check == "signature") {
+      EXPECT_NE(finding.message.find(sha.substr(0, 12)), std::string::npos);
+    }
+  }
+}
+
+TEST_F(PrePushTest, SignedCommitsPassTheSignatureCheck) {
+  const auto key = dir_ / "signing-key";
+  cf::process::ProcessRequest request;
+  request.argv = {"ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key.string()};
+  const auto generated = executor_.run(request);
+  if (!generated.launched || generated.exit_code != 0) {
+    GTEST_SKIP() << "ssh-keygen with SSH signing support is not available: "
+                 << generated.error << generated.stderr_text;
+  }
+  ASSERT_TRUE(repository_->set_signing_key(key).has_value());
+
+  write_file(dir_ / "repo" / "src" / "signed.cpp", "x\n");
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.milestone_id = "M3";
+  trailers.op_id = "op_signed";
+  const std::string sha = commit({"src/signed.cpp"}, "feat: signed", trailers);
+
+  PrePushConfig config;
+  config.require_signatures = true;
+  config.base_branch = initial_sha_;
+  auto findings = check_pre_push(*repository_, "cf/R12/M3", sha, config);
+  ASSERT_TRUE(findings.has_value()) << findings.error().message;
+  EXPECT_FALSE(has_finding(*findings, "signature"));
 }
 
 TEST_F(PrePushTest, MissingTrailersAreRejected) {

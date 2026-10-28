@@ -234,6 +234,45 @@ TEST_F(OpencodeRunnerTest, ReviewVerdictMapsToChangesRequested) {
   EXPECT_EQ(outcome->summary, "factory not used");
 }
 
+TEST_F(OpencodeRunnerTest, MinorReviewFindingsDoNotBlockByDefault) {
+  FakeSessionDriver driver;
+  driver.on_prompt = [this](const std::string&) {
+    append_call(calls_file_,
+                Json{{"tool", "submit_review"},
+                     {"arguments",
+                      Json{{"verdict_json",
+                            Json{{"verdict", "CHANGES_REQUESTED"},
+                                 {"summary", "style only"},
+                                 {"findings",
+                                  Json::array({Json{{"severity", "minor"},
+                                                    {"summary", "nit"}}})}}}}}});
+  };
+  OpencodeAgentRunner runner(driver, options_);
+  auto outcome = runner.run_turn(request(cf::orch::MilestonePhase::Review, "reviewer"));
+  ASSERT_TRUE(outcome.has_value()) << outcome.error().message;
+  EXPECT_FALSE(outcome->changes_requested);
+}
+
+TEST_F(OpencodeRunnerTest, CustomBlockingSeveritiesAreHonoured) {
+  options_.blocking_severities = {"minor"};
+  FakeSessionDriver driver;
+  driver.on_prompt = [this](const std::string&) {
+    append_call(calls_file_,
+                Json{{"tool", "submit_review"},
+                     {"arguments",
+                      Json{{"verdict_json",
+                            Json{{"verdict", "APPROVED"},
+                                 {"summary", "minor issue"},
+                                 {"findings",
+                                  Json::array({Json{{"severity", "minor"},
+                                                    {"summary", "nit"}}})}}}}}});
+  };
+  OpencodeAgentRunner runner(driver, options_);
+  auto outcome = runner.run_turn(request(cf::orch::MilestonePhase::Review, "reviewer"));
+  ASSERT_TRUE(outcome.has_value()) << outcome.error().message;
+  EXPECT_TRUE(outcome->changes_requested);
+}
+
 TEST_F(OpencodeRunnerTest, FiledDefectFailsExitCriteria) {
   FakeSessionDriver driver;
   driver.on_prompt = [this](const std::string&) {

@@ -1,6 +1,8 @@
 // cf-agents: opencode adapter implementation (design section 6.6).
 #include "cf/agents/opencode_client.hpp"
 
+#include "cf/common/archive.hpp"
+
 #include <atomic>
 #include <cctype>
 #include <cstdint>
@@ -65,6 +67,81 @@ struct HttpResponse {
   unsigned status = 0;
   std::string body;
 };
+
+bool archiveable_path(std::string_view path) {
+  // Health probes and idle polling are operational noise, not agent turns.
+  return path != "/global/health" && path != "/session/status";
+}
+
+Json parse_body(std::string_view body) {
+  if (body.empty()) {
+    return Json();
+  }
+  Json parsed = Json::parse(body, nullptr, false);
+  return parsed.is_discarded() ? Json(std::string(body)) : parsed;
+}
+
+void archive_http_call(const OpencodeClientOptions& options,
+                       std::string_view method, std::string_view path,
+                       std::string_view request, const HttpResponse& response) {
+  if (options.archive_dir.empty() || !archiveable_path(path)) {
+    return;
+  }
+  auto key = cf::common::archive::key_from_env(options.archive_key_env);
+  if (!key) {
+    return;
+  }
+  const Json document = {
+      {"version", 1},
+      {"kind", "opencode-http"},
+      {"call_id", cf::common::archive::new_id("oc_")},
+      {"run_id", options.run_id},
+      {"role", options.role},
+      {"milestone_id", options.milestone_id},
+      {"method", std::string(method)},
+      {"path", std::string(path)},
+      {"request", parse_body(request)},
+      {"response", parse_body(response.body)},
+      {"status", response.status},
+      {"at", std::chrono::duration_cast<std::chrono::seconds>(
+                 std::chrono::system_clock::now().time_since_epoch())
+                 .count()}};
+  const std::filesystem::path file =
+      options.archive_dir / (document["call_id"].get<std::string>() + ".cfar");
+  if (!cf::common::archive::write_encrypted(file, *key, document.dump())) {
+    spdlog::warn("cannot archive opencode call {} at {}",
+                 document["call_id"].get<std::string>(), file.string());
+  }
+}
+
+void archive_event(const OpencodeClientOptions& options,
+                   const OpencodeEvent& event) {
+  if (options.archive_dir.empty()) {
+    return;
+  }
+  auto key = cf::common::archive::key_from_env(options.archive_key_env);
+  if (!key) {
+    return;
+  }
+  const std::string event_id = cf::common::archive::new_id("oc_event_");
+  const Json document = {
+      {"version", 1},
+      {"kind", "opencode-event"},
+      {"call_id", event_id},
+      {"run_id", options.run_id},
+      {"role", options.role},
+      {"milestone_id", options.milestone_id},
+      {"event_id", event.id},
+      {"event_type", event.type},
+      {"event", event.raw},
+      {"at", std::chrono::duration_cast<std::chrono::seconds>(
+                 std::chrono::system_clock::now().time_since_epoch())
+                 .count()}};
+  const std::filesystem::path file = options.archive_dir / (event_id + ".cfar");
+  if (!cf::common::archive::write_encrypted(file, *key, document.dump())) {
+    spdlog::warn("cannot archive opencode event {} at {}", event_id, file.string());
+  }
+}
 
 // Synchronous-style request built from asynchronous Beast operations: the
 // stream's expiry timer only fires while the io_context runs, so timeouts
@@ -199,6 +276,7 @@ class SseEventStream final : public EventStream {
   SseEventStream(OpencodeClientOptions options, std::string path)
       : options_(std::move(options)), path_(std::move(path)),
         parser_([this](const OpencodeEvent& event) {
+          archive_event(options_, event);
           EventStream::Callback callback;
           {
             std::lock_guard<std::mutex> lock(callback_mutex_);
@@ -464,6 +542,7 @@ Result<Json> OpencodeClient::get(std::string_view path) const {
   if (!response) {
     return tl::make_unexpected(response.error());
   }
+  archive_http_call(impl_->options, "GET", path, "", *response);
   if (response->status < 200 || response->status >= 300) {
     return fail(error_codes::kHttpError,
                 "HTTP " + std::to_string(response->status) + " for GET " +
@@ -479,6 +558,7 @@ Result<Json> OpencodeClient::post(std::string_view path, const Json& body) const
   if (!response) {
     return tl::make_unexpected(response.error());
   }
+  archive_http_call(impl_->options, "POST", path, payload, *response);
   if (response->status < 200 || response->status >= 300) {
     return fail(error_codes::kHttpError,
                 "HTTP " + std::to_string(response->status) + " for POST " +
@@ -495,6 +575,7 @@ Result<Json> OpencodeClient::health(std::chrono::milliseconds timeout) const {
   if (!response) {
     return tl::make_unexpected(response.error());
   }
+  archive_http_call(impl_->options, "GET", "/global/health", "", *response);
   if (response->status < 200 || response->status >= 300) {
     return fail(error_codes::kHttpError,
                 "HTTP " + std::to_string(response->status) +

@@ -4,8 +4,9 @@
 
 namespace cf::rag {
 
-FireworksEmbedder::FireworksEmbedder(llm::FireworksClient& client, std::string model)
-    : client_(client), model_(std::move(model)) {}
+FireworksEmbedder::FireworksEmbedder(llm::FireworksClient& client,
+                                     std::string model, std::string run_id)
+    : client_(client), model_(std::move(model)), run_id_(std::move(run_id)) {}
 
 Result<std::vector<std::vector<float>>> FireworksEmbedder::embed(
     const std::vector<std::string>& texts) {
@@ -15,6 +16,7 @@ Result<std::vector<std::vector<float>>> FireworksEmbedder::embed(
   llm::EmbedRequest request;
   request.model = model_;
   request.input = texts;
+  request.context.run_id = run_id_;
   request.context.role = "rag";
   auto response = client_.embed(request);
   if (!response) {

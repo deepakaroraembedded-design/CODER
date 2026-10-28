@@ -95,6 +95,7 @@ enum class MilestoneEvent {
   InterfaceChanged,              // a shared interface changed (6.13.3)
   GatesRerun,
   HumanResolved,                 // a person resolved the escalation
+  WaiverGranted,                 // a human waiver covers the failing gate
 };
 
 std::string_view to_string(RunState state);

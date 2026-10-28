@@ -9,10 +9,10 @@
 namespace cf::orch {
 namespace {
 
-constexpr const char* kPlaceholders[] = {"run_id",      "milestone_id", "language",
-                                         "standard",    "requirements", "open_defects",
-                                         "brief",       "submission_tools",
-                                         "commands"};
+constexpr const char* kPlaceholders[] = {
+    "run_id",       "milestone_id",    "language",       "standard",
+    "requirements", "open_defects",    "brief",          "submission_tools",
+    "commands",     "blocking_severities"};
 
 const char* kCoderDefault = R"prompt(You are the Coder agent of the Coder Framework. Implement exactly the task, follow the company guidelines and the approved design, and keep the change inside the milestone's declared write set.
 
@@ -29,7 +29,7 @@ Tools: inspect the worktree with the read, glob and grep tools. Shell access is 
 Do not ask questions. Finish by calling the submission tool ({{submission_tools}}).
 )prompt";
 
-const char* kReviewerDefault = R"prompt(You are the Reviewer agent of the Coder Framework. Judge the change against the design, contracts and guardrails. Only blocker and major findings block the milestone.
+const char* kReviewerDefault = R"prompt(You are the Reviewer agent of the Coder Framework. Judge the change against the design, contracts and guardrails. Only {{blocking_severities}} findings block the milestone.
 
 Run: {{run_id}}
 Milestone: {{milestone_id}}

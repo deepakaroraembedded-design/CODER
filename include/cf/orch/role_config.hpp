@@ -30,6 +30,10 @@ struct RoleConfigSpec {
   std::string milestone_id;
   std::string db_path;
   std::string docs_dir;
+  // Offline reference documentation and its pinned version map (design
+  // section 6.3.1); empty omits them.
+  std::string reference_docs_dir;
+  std::string reference_versions_file;
   // The run's cf-codeintel symbol index (design section 6.5); empty omits
   // the --codeintel-db flag.
   std::string codeintel_db;
@@ -47,7 +51,21 @@ struct RoleConfigSpec {
   std::optional<double> rag_bm25_weight;
   std::optional<double> rag_vector_weight;
   std::optional<std::vector<std::string>> rag_precedence;
+  // Embeddings for the role's hybrid retriever (design section 6.3).
+  std::string embeddings_model;
+  std::string embeddings_base_url;
+  std::string embeddings_api_key_env;
+  std::uint32_t waiver_deadline_business_days = 0;  // 0: omit the flag
   std::string calls_file;  // CF_MCP_CALLS_FILE for this role
+  // Agent-side gate dry run (run_checks, design section 9.1). Empty
+  // profile_path leaves the tool unavailable.
+  std::string profile_path;
+  std::string rules_dir;
+  std::string check_build_dir;
+  std::string profile_build_system;
+  std::string profile_test_framework;
+  std::string target_standard;
+  std::string standard_var;
 };
 
 nlohmann::json build_role_config(const RoleConfigSpec& spec);

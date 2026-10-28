@@ -9,6 +9,7 @@
 
 #include <unistd.h>
 
+#include "cf/gates/profile.hpp"
 #include "cf/mcp/tools.hpp"
 
 namespace {
@@ -17,6 +18,20 @@ using cf::mcp::ToolRegistry;
 using cf::mcp::ToolRole;
 using cf::mcp::ToolResult;
 using Json = nlohmann::json;
+
+const char* kCheckProfile = R"yaml(
+id: check-profile
+image: test-image
+languages:
+  cpp:
+    standard_var: CMAKE_CXX_STANDARD
+    format: { steps: [[true]] }
+    guardrails: { steps: [[true]] }
+build_systems:
+  cmake: { steps: [[true]] }
+test_frameworks:
+  gtest: { steps: [[true]], languages: [cpp] }
+)yaml";
 
 std::filesystem::path make_temp_dir() {
   static std::atomic<int> counter{0};
@@ -52,16 +67,33 @@ class McpToolsTest : public ::testing::Test {
     add_document("patterns", cf::rag::DocType::Pattern,
                  "# Pattern catalog\n\nPAT-STRATEGY Strategy pattern with std::function.\n");
 
+    auto profile = cf::gates::load_profile_string(kCheckProfile);
+    ASSERT_TRUE(profile.has_value()) << profile.error().message;
+    gate_context_ = std::make_unique<cf::mcp::GateCheckContext>();
+    gate_context_->profile = std::move(*profile);
+    gate_context_->language = "cpp";
+    gate_context_->build_system = "cmake";
+    gate_context_->test_framework = "gtest";
+    gate_context_->standard = "c++20";
+    gate_context_->standard_var = "CMAKE_CXX_STANDARD";
+    gate_context_->worktree = dir_ / "worktree";
+    std::filesystem::create_directories(gate_context_->worktree);
+    gate_context_->build_dir = dir_ / "build";
+    gate_context_->step_timeout = std::chrono::milliseconds(5000);
+    gate_context_->executor = &executor_;
+
     cf::mcp::ToolDependencies dependencies;
     dependencies.run_id = "R12";
     dependencies.milestone_id = "M3";
     dependencies.retriever = retriever_.get();
     dependencies.store = store_.get();
+    dependencies.gate_checks = gate_context_.get();
     registry_ = cf::mcp::build_tool_registry(std::move(dependencies));
   }
 
   void TearDown() override {
 
+    gate_context_.reset();
     retriever_.reset();
     store_.reset();
     std::error_code ec;
@@ -69,10 +101,10 @@ class McpToolsTest : public ::testing::Test {
   }
 
   void add_document(const std::string& doc_id, cf::rag::DocType type,
-                    const std::string& text) {
+                    const std::string& text, const std::string& version = "1") {
     cf::rag::Document document;
     document.doc_id = doc_id;
-    document.version = "1";
+    document.version = version;
     document.type = type;
     document.text = text;
     document.source = "repo://docs/" + doc_id + ".md";
@@ -96,6 +128,8 @@ class McpToolsTest : public ::testing::Test {
   std::filesystem::path dir_;
   std::unique_ptr<cf::store::RunStore> store_;
   std::unique_ptr<cf::rag::InMemoryRetriever> retriever_;
+  cf::process::LocalProcessExecutor executor_;
+  std::unique_ptr<cf::mcp::GateCheckContext> gate_context_;
   ToolRegistry registry_;
 };
 
@@ -114,6 +148,101 @@ TEST_F(McpToolsTest, ListForRoleFiltersTools) {
     EXPECT_TRUE(has_tool(role, "get_document"));
     EXPECT_TRUE(has_tool(role, "list_defects"));
   }
+}
+
+TEST_F(McpToolsTest, LookupReferenceUsesThePinnedProjectVersion) {
+  add_document("boost", cf::rag::DocType::ExternalReference,
+               "# Boost Asio\n\nAsio provides asynchronous I/O.", "1.88.0");
+  add_document("boost", cf::rag::DocType::ExternalReference,
+               "# Boost Asio\n\nAsio provides asynchronous I/O and coroutines.",
+               "1.89.0");
+
+  std::map<std::string, std::string, std::less<>> pinned;
+  pinned["boost"] = "1.89.0";
+  cf::mcp::ToolDependencies dependencies;
+  dependencies.run_id = "R12";
+  dependencies.retriever = retriever_.get();
+  dependencies.store = store_.get();
+  dependencies.reference_versions = &pinned;
+  const ToolRegistry registry =
+      cf::mcp::build_tool_registry(std::move(dependencies));
+
+  const ToolResult pinned_hit = registry.call(
+      ToolRole::Coder, "lookup_reference",
+      Json{{"query", "async I/O"}, {"library", "boost"}});
+  ASSERT_FALSE(pinned_hit.is_error) << pinned_hit.text;
+  ASSERT_TRUE(pinned_hit.structured["covered"].get<bool>());
+  ASSERT_FALSE(pinned_hit.structured["hits"].empty());
+  for (const auto& hit : pinned_hit.structured["hits"]) {
+    EXPECT_EQ(hit["version"], "1.89.0");
+  }
+
+  const ToolResult explicit_old = registry.call(
+      ToolRole::Coder, "lookup_reference",
+      Json{{"query", "async I/O"}, {"library", "boost"}, {"version", "1.88.0"}});
+  ASSERT_FALSE(explicit_old.is_error) << explicit_old.text;
+  ASSERT_FALSE(explicit_old.structured["hits"].empty());
+  for (const auto& hit : explicit_old.structured["hits"]) {
+    EXPECT_EQ(hit["version"], "1.88.0");
+  }
+}
+
+TEST_F(McpToolsTest, RequestWaiverRecordsAPendingHumanDecision) {
+  cf::mcp::ToolDependencies dependencies;
+  dependencies.run_id = "R12";
+  dependencies.milestone_id = "M3";
+  dependencies.role = "coder";
+  dependencies.store = store_.get();
+  dependencies.waiver_deadline_business_days = 2;
+  const ToolRegistry registry =
+      cf::mcp::build_tool_registry(std::move(dependencies));
+
+  const ToolResult result = registry.call(
+      ToolRole::Coder, "request_waiver",
+      Json{{"rule", "guardrails"},
+           {"scope", "src/a.cpp:42"},
+           {"justification", "legacy API kept for the window"}});
+  ASSERT_FALSE(result.is_error) << result.text;
+  EXPECT_EQ(result.structured["status"], "PENDING");
+  EXPECT_EQ(result.structured["requested_by"], "coder");
+  EXPECT_GT(result.structured["deadline_at"].get<int64_t>(), 0);
+
+  auto requests = store_->list_waiver_requests("R12", "M3");
+  ASSERT_TRUE(requests.has_value());
+  ASSERT_EQ(requests->size(), 1u);
+  EXPECT_EQ((*requests)[0].rule, "guardrails");
+  EXPECT_EQ((*requests)[0].status, "PENDING");
+
+  const ToolResult denied = registry.call(
+      ToolRole::Reviewer, "request_waiver",
+      Json{{"rule", "guardrails"}, {"scope", "x"}, {"justification", "y"}});
+  EXPECT_TRUE(denied.is_error);
+  EXPECT_EQ(denied.structured["code"], "TOOL_DENIED");
+}
+
+TEST_F(McpToolsTest, RunChecksDryRunsTheTrustedProfile) {
+  const ToolResult result = registry_.call(
+      ToolRole::Coder, "run_checks", Json{{"scope", "build,format"}});
+  ASSERT_FALSE(result.is_error) << result.text;
+  EXPECT_TRUE(result.structured["passed"].get<bool>());
+  ASSERT_EQ(result.structured["results"].size(), 2u);
+  EXPECT_EQ(result.structured["results"][0]["gate"], "build");
+  EXPECT_EQ(result.structured["results"][1]["gate"], "format");
+
+  const ToolResult denied = registry_.call(
+      ToolRole::Reviewer, "run_checks", Json{{"scope", "format"}});
+  ASSERT_TRUE(denied.is_error);
+  EXPECT_EQ(denied.structured["code"], "TOOL_DENIED");
+}
+
+TEST_F(McpToolsTest, RunChecksIsUnavailableWithoutAProfile) {
+  cf::mcp::ToolDependencies dependencies;
+  dependencies.run_id = "R12";
+  const ToolRegistry registry = cf::mcp::build_tool_registry(std::move(dependencies));
+  const ToolResult result =
+      registry.call(ToolRole::Coder, "run_checks", Json::object());
+  ASSERT_TRUE(result.is_error);
+  EXPECT_EQ(result.structured["code"], "TOOL_UNAVAILABLE");
 }
 
 TEST_F(McpToolsTest, DeniedAndUnknownToolsReturnStructuredErrors) {
@@ -588,6 +717,33 @@ TEST_F(McpCodeIntelTest, GetContextPacksAroundTheSeed) {
   // The caller edge earns a one-line note (main is not an indexed symbol).
   EXPECT_NE(result.text.find("called from main (src/main.c:12)"),
             std::string::npos);
+}
+
+TEST_F(McpCodeIntelTest, GetContextIncludesAdrAndContractContext) {
+  auto retriever = std::make_unique<cf::rag::InMemoryRetriever>();
+  cf::rag::Document adr;
+  adr.doc_id = "ADR-001";
+  adr.version = "1";
+  adr.type = cf::rag::DocType::Design;
+  adr.text = "# ADR-001 Registry design\n\nregistry_open uses the strategy pattern.";
+  adr.source = "repo://docs/ADR-001.md";
+  ASSERT_TRUE(retriever->add_document(adr).has_value());
+
+  cf::mcp::ToolDependencies dependencies;
+  dependencies.run_id = "R12";
+  dependencies.symbols = symbols_.get();
+  dependencies.retriever = retriever.get();
+  const ToolRegistry registry =
+      cf::mcp::build_tool_registry(std::move(dependencies));
+
+  const ToolResult result =
+      registry.call(ToolRole::Coder, "get_context",
+                    Json{{"task_id", "registry_open"}, {"token_budget", 4000}});
+  ASSERT_FALSE(result.is_error) << result.text;
+  EXPECT_NE(result.text.find("Design context"), std::string::npos);
+  EXPECT_NE(result.text.find("ADR-001"), std::string::npos);
+  ASSERT_TRUE(result.structured.contains("design_context"));
+  EXPECT_EQ(result.structured["design_context"][0]["doc_id"], "ADR-001");
 }
 
 TEST_F(McpCodeIntelTest, GetContextUnknownSeedIsNotFound) {

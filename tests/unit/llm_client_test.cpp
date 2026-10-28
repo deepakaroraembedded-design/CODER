@@ -4,8 +4,10 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <chrono>
 #include <deque>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -14,6 +16,7 @@
 #include <vector>
 
 #include <nlohmann/json.hpp>
+#include <unistd.h>
 
 #include "cf/llm/client.hpp"
 
@@ -158,10 +161,52 @@ class LlmClientTest : public ::testing::Test {
     request.model = "test-model";
     request.messages.push_back(cf::llm::ChatMessage{
         "user", "do the task", Json(), "", ""});
-    request.context = {"R12", "coder", "artifact://runs/R12/prompts/1"};
+    request.context = {"R12", "coder", "", "artifact://runs/R12/prompts/1"};
     return request;
   }
 };
+
+TEST_F(LlmClientTest, ArchivesEncryptedPromptsAndResponses) {
+  class KeyGuard {
+   public:
+    KeyGuard() {
+      setenv("CF_ARCHIVE_KEY",
+             "00112233445566778899aabbccddeeff"
+             "00112233445566778899aabbccddeeff",
+             1);
+    }
+    ~KeyGuard() { unsetenv("CF_ARCHIVE_KEY"); }
+  } key_guard;
+
+  const auto dir = std::filesystem::temp_directory_path() /
+                   ("cf_llm_archive_" + std::to_string(::getpid()));
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+
+  ClientOptions options = base_options();
+  options.archive_dir = dir;
+  FakeTransport* transport = nullptr;
+  std::vector<CallRecord> records;
+  auto client = make_client(transport, options, &records);
+  transport->script(ScriptedResponse{false, "", 200, chat_success_body().dump(), {}});
+  auto response = client->chat(chat_request());
+  ASSERT_TRUE(response.has_value()) << response.error().message;
+  ASSERT_EQ(records.size(), 1u);
+  ASSERT_FALSE(records[0].prompt_ref.empty());
+
+  auto archived = cf::llm::read_archived_call(records[0].prompt_ref);
+  ASSERT_TRUE(archived.has_value()) << archived.error().message;
+  EXPECT_EQ(archived->run_id, "R12");
+  EXPECT_EQ(archived->role, "coder");
+  EXPECT_EQ(archived->model, "test-model");
+  EXPECT_EQ(archived->status, 200);
+  EXPECT_EQ(archived->request["model"], "test-model");
+  EXPECT_TRUE(archived->response.contains("choices"));
+  EXPECT_EQ(archived->usage.prompt_tokens, 100);
+  EXPECT_EQ(archived->usage.completion_tokens, 20);
+
+  std::filesystem::remove_all(dir, ec);
+}
 
 TEST_F(LlmClientTest, ChatParsesContentToolCallsAndUsage) {
   FakeTransport* transport = nullptr;
@@ -310,7 +355,7 @@ TEST_F(LlmClientTest, EmbedParsesVectors) {
   EmbedRequest request;
   request.model = "test-model";
   request.input = {"alpha", "beta"};
-  request.context = {"R12", "planner", ""};
+  request.context = {"R12", "planner", "", ""};
   auto response = client->embed(request);
   ASSERT_TRUE(response.has_value()) << response.error().message;
   ASSERT_EQ(response->embeddings.size(), 2u);

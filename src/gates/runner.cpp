@@ -1,7 +1,9 @@
 #include "cf/gates/runner.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <set>
+#include <sstream>
 #include <thread>
 #include <utility>
 
@@ -52,6 +54,251 @@ int severity_rank(const std::string& severity) {
     return 1;
   }
   return 2;
+}
+
+Result<CoverageTotals> parse_coverage(std::string_view format,
+                                      std::string_view content) {
+  CoverageTotals totals;
+  if (format == "go-cover") {
+    std::uint64_t statements = 0;
+    std::uint64_t covered = 0;
+    std::istringstream lines{std::string(content)};
+    for (std::string line; std::getline(lines, line);) {
+      const std::size_t space = line.rfind(' ');
+      if (space == std::string::npos) {
+        continue;
+      }
+      const std::size_t previous = line.rfind(' ', space - 1);
+      if (previous == std::string::npos) {
+        continue;
+      }
+      try {
+        const std::uint64_t count = std::stoull(line.substr(space + 1));
+        const std::uint64_t statements_in_line =
+            std::stoull(line.substr(previous + 1, space - previous - 1));
+        statements += statements_in_line;
+        if (count > 0) {
+          covered += statements_in_line;
+        }
+      } catch (const std::exception&) {
+        continue;
+      }
+    }
+    totals.line = statements == 0 ? 1.0
+                                  : static_cast<double>(covered) / statements;
+    return totals;
+  }
+  if (format == "coverage-json") {
+    const Json document = Json::parse(content.data(), content.data() + content.size(),
+                                     nullptr, false);
+    if (document.is_discarded() || !document.is_object()) {
+      return fail(error_codes::kCoverageReport, "coverage JSON is invalid");
+    }
+    const auto totals_it = document.find("totals");
+    if (totals_it == document.end() || !totals_it->is_object()) {
+      return fail(error_codes::kCoverageReport, "coverage JSON has no totals");
+    }
+    const auto number = [&totals_it](const char* key) -> double {
+      const auto it = totals_it->find(key);
+      return it != totals_it->end() && it->is_number() ? it->get<double>() : 0.0;
+    };
+    const double statements = number("num_statements");
+    const double covered_lines = number("covered_lines");
+    totals.line = statements == 0.0 ? 1.0 : covered_lines / statements;
+    const double branches = number("num_branches");
+    const double covered_branches = number("covered_branches");
+    totals.has_branch = branches > 0.0;
+    totals.branch = !totals.has_branch ? 0.0 : covered_branches / branches;
+    return totals;
+  }
+  if (format == "llvm-cov-json") {
+    const Json document = Json::parse(content.data(), content.data() + content.size(),
+                                     nullptr, false);
+    if (document.is_discarded() || !document.is_object()) {
+      return fail(error_codes::kCoverageReport, "llvm-cov JSON is invalid");
+    }
+    const auto data = document.find("data");
+    if (data == document.end() || !data->is_array() || data->empty()) {
+      return fail(error_codes::kCoverageReport, "llvm-cov JSON has no data");
+    }
+    const auto totals_it = data->front().find("totals");
+    if (totals_it == data->front().end() || !totals_it->is_object()) {
+      return fail(error_codes::kCoverageReport, "llvm-cov JSON has no totals");
+    }
+    const auto counter = [&totals_it](const char* key, std::uint64_t& covered,
+                                      std::uint64_t& count) -> bool {
+      const auto node = totals_it->find(key);
+      if (node == totals_it->end() || !node->is_object()) {
+        return false;
+      }
+      covered = node->value("covered", std::uint64_t{0});
+      count = node->value("count", std::uint64_t{0});
+      return true;
+    };
+    std::uint64_t covered = 0;
+    std::uint64_t count = 0;
+    if (!counter("lines", covered, count)) {
+      return fail(error_codes::kCoverageReport, "llvm-cov JSON has no line totals");
+    }
+    totals.line = count == 0 ? 1.0 : static_cast<double>(covered) / count;
+    if (counter("branches", covered, count)) {
+      totals.has_branch = count > 0;
+      totals.branch = count == 0 ? 0.0 : static_cast<double>(covered) / count;
+    }
+    return totals;
+  }
+  if (format == "jacoco-xml") {
+    std::uint64_t line_missed = 0;
+    std::uint64_t line_covered = 0;
+    std::uint64_t branch_missed = 0;
+    std::uint64_t branch_covered = 0;
+    bool saw_branch = false;
+    const std::string text(content);
+    std::size_t position = 0;
+    while ((position = text.find("<counter ", position)) != std::string::npos) {
+      const std::size_t end = text.find("/>", position);
+      if (end == std::string::npos) {
+        break;
+      }
+      const std::string tag = text.substr(position, end - position);
+      const auto attribute = [&tag](const std::string& name) -> std::uint64_t {
+        const std::string needle = name + "=\"";
+        const std::size_t at = tag.find(needle);
+        if (at == std::string::npos) {
+          return 0;
+        }
+        const std::size_t begin = at + needle.size();
+        const std::size_t close = tag.find('"', begin);
+        if (close == std::string::npos) {
+          return 0;
+        }
+        try {
+          return std::stoull(tag.substr(begin, close - begin));
+        } catch (const std::exception&) {
+          return 0;
+        }
+      };
+      if (tag.find("type=\"LINE\"") != std::string::npos) {
+        line_missed += attribute("missed");
+        line_covered += attribute("covered");
+      } else if (tag.find("type=\"BRANCH\"") != std::string::npos) {
+        branch_missed += attribute("missed");
+        branch_covered += attribute("covered");
+        saw_branch = true;
+      }
+      position = end;
+    }
+    const std::uint64_t line_total = line_missed + line_covered;
+    totals.line = line_total == 0 ? 1.0
+                                  : static_cast<double>(line_covered) / line_total;
+    totals.has_branch = saw_branch;
+    const std::uint64_t branch_total = branch_missed + branch_covered;
+    totals.branch = !saw_branch || branch_total == 0
+                        ? 0.0
+                        : static_cast<double>(branch_covered) / branch_total;
+    if (saw_branch && branch_total == 0) {
+      totals.branch = 1.0;
+    }
+    return totals;
+  }
+  if (format == "lcov") {
+    std::uint64_t lines_found = 0;
+    std::uint64_t lines_hit = 0;
+    std::uint64_t branches_found = 0;
+    std::uint64_t branches_hit = 0;
+    bool saw_branch_record = false;
+    std::istringstream stream{std::string(content)};
+    for (std::string line; std::getline(stream, line);) {
+      const auto number = [&line](std::string_view prefix) -> std::uint64_t {
+        if (line.rfind(prefix, 0) != 0) {
+          return 0;
+        }
+        try {
+          return std::stoull(line.substr(prefix.size()));
+        } catch (const std::exception&) {
+          return 0;
+        }
+      };
+      if (line.rfind("LF:", 0) == 0) {
+        lines_found += number("LF:");
+      } else if (line.rfind("LH:", 0) == 0) {
+        lines_hit += number("LH:");
+      } else if (line.rfind("BRF:", 0) == 0) {
+        branches_found += number("BRF:");
+        saw_branch_record = true;
+      } else if (line.rfind("BRH:", 0) == 0) {
+        branches_hit += number("BRH:");
+        saw_branch_record = true;
+      }
+    }
+    totals.line = lines_found == 0 ? 1.0
+                                   : static_cast<double>(lines_hit) / lines_found;
+    totals.has_branch = saw_branch_record;
+    if (saw_branch_record) {
+      totals.branch = branches_found == 0
+                          ? 1.0
+                          : static_cast<double>(branches_hit) / branches_found;
+    }
+    return totals;
+  }
+  return fail(error_codes::kCoverageReport,
+              "unknown coverage report format '" + std::string(format) + "'");
+}
+
+void check_coverage(const GateDefinition& gate, const GateRunOptions& options,
+                    GateResult& result) {
+  if (gate.coverage.format.empty() || gate.coverage.report.empty()) {
+    return;
+  }
+  GateStep report_step;
+  report_step.argv = {gate.coverage.report};
+  auto expanded = expand_step(report_step, options.step_context);
+  if (!expanded || expanded->empty()) {
+    result.passed = false;
+    result.findings.push_back(
+        GateFinding{gate.name, "error", "cannot expand the coverage report path"});
+    return;
+  }
+  std::filesystem::path path = expanded->front();
+  if (path.is_relative()) {
+    path = std::filesystem::path(options.working_directory) / path;
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    result.passed = false;
+    result.findings.push_back(GateFinding{
+        gate.name, "error", "cannot read the coverage report " + path.string()});
+    return;
+  }
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  auto totals = parse_coverage(gate.coverage.format, buffer.str());
+  if (!totals) {
+    result.passed = false;
+    result.findings.push_back(
+        GateFinding{gate.name, "error", totals.error().message});
+    return;
+  }
+  if (gate.coverage.line > 0.0 && totals->line + 1e-9 < gate.coverage.line) {
+    result.passed = false;
+    result.findings.push_back(
+        GateFinding{gate.name, "error",
+                    "line coverage " + std::to_string(totals->line) +
+                        " is below " + std::to_string(gate.coverage.line)});
+  }
+  if (gate.coverage.branch > 0.0) {
+    if (!totals->has_branch) {
+      result.passed = false;
+      result.findings.push_back(GateFinding{
+          gate.name, "error", "the coverage report has no branch data"});
+    } else if (totals->branch + 1e-9 < gate.coverage.branch) {
+      result.passed = false;
+      result.findings.push_back(
+          GateFinding{gate.name, "error",
+                      "branch coverage " + std::to_string(totals->branch) +
+                          " is below " + std::to_string(gate.coverage.branch)});
+    }
+  }
 }
 
 GateResult run_gate(const GateDefinition& gate, ProcessExecutor& executor,
@@ -105,6 +352,9 @@ GateResult run_gate(const GateDefinition& gate, ProcessExecutor& executor,
     }
   }
 
+  if (result.passed) {
+    check_coverage(gate, options, result);
+  }
   result.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - start)
                            .count();
@@ -199,6 +449,7 @@ std::string GateReport::to_json() const {
     json_results.push_back(Json{{"gate", result.gate},
                                 {"passed", result.passed},
                                 {"skipped", result.skipped},
+                                {"waived", result.waived},
                                 {"duration_ms", result.duration_ms},
                                 {"findings", std::move(findings)}});
   }
@@ -208,6 +459,11 @@ std::string GateReport::to_json() const {
                              {"duplicate_findings_removed", duplicate_findings_removed},
                              {"findings_truncated", findings_truncated}};
   return document.dump();
+}
+
+Result<CoverageTotals> parse_coverage_report(std::string_view format,
+                                             std::string_view content) {
+  return parse_coverage(format, content);
 }
 
 GateRunner::GateRunner(ProcessExecutor& executor) : executor_(executor) {}
@@ -294,17 +550,29 @@ Result<std::vector<GateDefinition>> build_gate_plan(const Profile& profile,
   }
 
   std::vector<GateDefinition> plan;
-  plan.push_back(GateDefinition{"build", GateStage::Prerequisites, build_it->second.steps});
+  plan.push_back(GateDefinition{"build", GateStage::Prerequisites, build_it->second.steps, true, {}});
   plan.push_back(
-      GateDefinition{"format", GateStage::Cheap, language_it->second.format.steps});
+      GateDefinition{"format", GateStage::Cheap, language_it->second.format.steps, true, {}});
   plan.push_back(GateDefinition{"guardrails", GateStage::Cheap,
-                                language_it->second.guardrails.steps});
+                                language_it->second.guardrails.steps, true, {}});
   const auto analysis = profile.common.find("analysis");
   if (analysis != profile.common.end()) {
-    plan.push_back(GateDefinition{"analysis", GateStage::Cheap, analysis->second.steps});
+    plan.push_back(GateDefinition{"analysis", GateStage::Cheap, analysis->second.steps, true, {}});
   }
   plan.push_back(
-      GateDefinition{"tests", GateStage::Cheap, framework_it->second.steps});
+      GateDefinition{"tests", GateStage::Cheap, framework_it->second.steps, true, {}});
+  // Stage 3 runs only when every prerequisite and cheap gate passed. A
+  // profile without steps has no coverage/mutation runner configured.
+  if (!profile.coverage.steps.empty()) {
+    plan.push_back(GateDefinition{
+        "coverage", GateStage::Expensive, profile.coverage.steps, true,
+        CoverageCheck{profile.coverage.format, profile.coverage.report,
+                      profile.coverage.line, profile.coverage.branch}});
+  }
+  if (!profile.mutation.steps.empty()) {
+    plan.push_back(GateDefinition{"mutation", GateStage::Expensive,
+                                  profile.mutation.steps, true, {}});
+  }
   return plan;
 }
 

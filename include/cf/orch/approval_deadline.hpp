@@ -20,10 +20,17 @@ namespace cf::orch {
 struct ApprovalDeadlines {
   std::uint32_t design_approval_business_days = 5;
   std::uint32_t escalation_business_days = 3;
+  // A pending waiver request is refused after this many business days
+  // (design section 12.1). Recorded on the run so every command sees the
+  // same value.
+  std::uint32_t waiver_business_days = 2;
 };
 
 // Adds whole business days (Monday-Friday), preserving the time of day.
 store::UnixTime add_business_days(store::UnixTime start, std::uint32_t days);
+
+// Whole business days elapsed between two instants (0 when now <= start).
+std::uint32_t business_days_between(store::UnixTime start, store::UnixTime now);
 
 // The deadline of the run's current waiting state, or nullopt when the run is
 // not waiting for a person.

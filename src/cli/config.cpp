@@ -1,5 +1,6 @@
 #include "cf/cli/config.hpp"
 
+#include <algorithm>
 #include <set>
 #include <string_view>
 #include <utility>
@@ -78,13 +79,11 @@ Status read_optional(const YAML::Node& node, std::string_view key,
 }
 
 // Documented top-level sections this build does not consume yet.
-const std::vector<std::string_view> kUnsupportedTopLevel = {
-    "reference_docs",
-};
+const std::vector<std::string_view> kUnsupportedTopLevel = {};
 
 const std::vector<std::string_view> kTopLevel = {
     "run", "github", "providers", "models", "approvals", "budget", "rag",
-    "gates", "review", "sandbox",
+    "reference_docs", "gates", "review", "sandbox",
 };
 
 Status read_business_days(const YAML::Node& node, std::string_view key,
@@ -171,8 +170,10 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
     for (const auto& entry : github) {
       const std::string key = entry.first.as<std::string>();
       if (key == "app_id" || key == "installation_id" ||
-          key == "private_key_ref" || key == "branch_prefix" ||
-          key == "protected_paths" || key == "max_file_mb" || key == "pr") {
+          key == "private_key_ref" || key == "signing_key_ref" ||
+          key == "branch_prefix" || key == "protected_paths" ||
+          key == "max_file_mb" || key == "push_on" ||
+          key == "branch_retention_days" || key == "pr") {
         continue;
       }
       return unsupported("github." + key);
@@ -200,6 +201,18 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
                      "secret manager references are not resolvable in this "
                      "build; use a PEM file path");
     }
+    if (auto status = read_optional(github["signing_key_ref"],
+                                    "github.signing_key_ref",
+                                    config.github.signing_key_ref);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.github.signing_key_ref.has_value() &&
+        config.github.signing_key_ref->find("secretmanager://") == 0) {
+      return invalid("github.signing_key_ref",
+                     "secret manager references are not resolvable in this "
+                     "build; use an SSH private key file path");
+    }
     if (auto status = read_optional(github["branch_prefix"],
                                     "github.branch_prefix",
                                     config.github.branch_prefix);
@@ -216,6 +229,39 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
                                     config.github.max_file_mb);
         !status) {
       return tl::make_unexpected(status.error());
+    }
+    if (auto status = read_optional(github["branch_retention_days"],
+                                    "github.branch_retention_days",
+                                    config.github.branch_retention_days);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (github["push_on"]) {
+      std::vector<std::string> push_on;
+      if (auto status =
+              read_into(github["push_on"], "github.push_on", push_on);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
+      if (push_on.empty()) {
+        return invalid("github.push_on",
+                       "must name at least one of milestone_done, run_done, "
+                       "escalation");
+      }
+      std::vector<std::string> deduped;
+      for (const auto& event : push_on) {
+        if (event != "milestone_done" && event != "run_done" &&
+            event != "escalation") {
+          return invalid("github.push_on",
+                         "unknown push event '" + event +
+                             "' (expected milestone_done, run_done or "
+                             "escalation)");
+        }
+        if (std::find(deduped.begin(), deduped.end(), event) == deduped.end()) {
+          deduped.push_back(event);
+        }
+      }
+      config.github.push_on = std::move(deduped);
     }
     if (const YAML::Node pr = github["pr"]) {
       if (!pr.IsMap()) {
@@ -285,7 +331,8 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
   }
 
   if (const YAML::Node models = root["models"]) {
-    auto checked = check_keys(models, "models", {"default_provider", "roles"});
+    auto checked = check_keys(models, "models",
+                              {"default_provider", "roles", "embeddings"});
     if (!checked) {
       return tl::make_unexpected(checked.error());
     }
@@ -347,6 +394,57 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
         config.models.roles[role] = std::move(role_model);
       }
     }
+    if (const YAML::Node embeddings = models["embeddings"]) {
+      if (!embeddings.IsMap()) {
+        return invalid("models.embeddings",
+                       "must be a mapping of provider to embedding model");
+      }
+      for (const auto& entry : embeddings) {
+        const std::string provider = entry.first.as<std::string>();
+        const YAML::Node node = entry.second;
+        if (!node.IsMap()) {
+          return invalid("models.embeddings." + provider, "must be a mapping");
+        }
+        auto keys = check_keys(node, "models.embeddings." + provider,
+                               {"model", "dim", "index"});
+        if (!keys) {
+          return tl::make_unexpected(keys.error());
+        }
+        FrameworkConfig::EmbeddingModel embedding;
+        if (auto status = read_into(node["model"],
+                                    "models.embeddings." + provider + ".model",
+                                    embedding.model);
+            !status) {
+          return tl::make_unexpected(status.error());
+        }
+        if (embedding.model.empty()) {
+          return invalid("models.embeddings." + provider + ".model",
+                         "is required");
+        }
+        if (auto status = read_optional(node["dim"],
+                                        "models.embeddings." + provider + ".dim",
+                                        embedding.dim);
+            !status) {
+          return tl::make_unexpected(status.error());
+        }
+        if (embedding.dim.has_value() && *embedding.dim == 0) {
+          return invalid("models.embeddings." + provider + ".dim",
+                         "must be positive");
+        }
+        if (auto status = read_optional(node["index"],
+                                        "models.embeddings." + provider + ".index",
+                                        embedding.index);
+            !status) {
+          return tl::make_unexpected(status.error());
+        }
+        if (embedding.index.has_value() && *embedding.index != "hosted" &&
+            *embedding.index != "local") {
+          return invalid("models.embeddings." + provider + ".index",
+                         "must be 'hosted' or 'local'");
+        }
+        config.models.embeddings[provider] = std::move(embedding);
+      }
+    }
   }
 
   if (const YAML::Node approvals = root["approvals"]) {
@@ -355,11 +453,8 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
     }
     for (const auto& entry : approvals) {
       const std::string key = entry.first.as<std::string>();
-      if (key == "design_approval" || key == "escalation") {
+      if (key == "design_approval" || key == "escalation" || key == "waiver") {
         continue;
-      }
-      if (key == "waiver") {
-        return unsupported("approvals.waiver");
       }
       return unknown_key(key, "approvals");
     }
@@ -374,6 +469,67 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
                                          config.approvals.escalation_business_days);
         !status) {
       return tl::make_unexpected(status.error());
+    }
+    if (auto status = read_business_days(approvals["waiver"], "approvals.waiver",
+                                         config.approvals.waiver_business_days);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+  }
+
+  if (const YAML::Node reference = root["reference_docs"]) {
+    if (!reference.IsMap()) {
+      return invalid("reference_docs", "must be a mapping");
+    }
+    auto checked = check_keys(reference, "reference_docs",
+                              {"manifest", "index_version", "version_source",
+                               "on_missing_version"});
+    if (!checked) {
+      return tl::make_unexpected(checked.error());
+    }
+    if (auto status = read_optional(reference["manifest"], "reference_docs.manifest",
+                                    config.reference_docs.manifest);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (!config.reference_docs.manifest.has_value()) {
+      return invalid("reference_docs.manifest",
+                     "is required when reference_docs is configured");
+    }
+    if (auto status = read_optional(reference["index_version"],
+                                    "reference_docs.index_version",
+                                    config.reference_docs.index_version);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.reference_docs.index_version.has_value() &&
+        *config.reference_docs.index_version != "pinned_at_run_start") {
+      return invalid("reference_docs.index_version",
+                     "only 'pinned_at_run_start' is supported");
+    }
+    if (auto status = read_optional(reference["version_source"],
+                                    "reference_docs.version_source",
+                                    config.reference_docs.version_source);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.reference_docs.version_source.has_value() &&
+        *config.reference_docs.version_source != "auto" &&
+        *config.reference_docs.version_source != "none") {
+      return invalid("reference_docs.version_source",
+                     "must be 'auto' or 'none'");
+    }
+    if (auto status = read_optional(reference["on_missing_version"],
+                                    "reference_docs.on_missing_version",
+                                    config.reference_docs.on_missing_version);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.reference_docs.on_missing_version.has_value() &&
+        *config.reference_docs.on_missing_version != "report" &&
+        *config.reference_docs.on_missing_version != "fail") {
+      return invalid("reference_docs.on_missing_version",
+                     "must be 'report' or 'fail'");
     }
   }
 
@@ -514,7 +670,8 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
   if (const YAML::Node gates = root["gates"]) {
     for (const auto& entry : gates) {
       const std::string key = entry.first.as<std::string>();
-      if (key == "profiles_dir") {
+      if (key == "profiles_dir" || key == "profile" || key == "coverage" ||
+          key == "mutation") {
         continue;
       }
       return unsupported("gates." + key);
@@ -524,12 +681,86 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
         !status) {
       return tl::make_unexpected(status.error());
     }
+    if (auto status = read_optional(gates["profile"], "gates.profile",
+                                    config.gates.profile);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.gates.profile.has_value() && config.gates.profile->empty()) {
+      return invalid("gates.profile", "must not be empty; use 'auto'");
+    }
+    if (const YAML::Node coverage = gates["coverage"]) {
+      if (!coverage.IsMap()) {
+        return invalid("gates.coverage", "must be a mapping");
+      }
+      auto checked = check_keys(coverage, "gates.coverage",
+                                {"line", "branch", "scope"});
+      if (!checked) {
+        return tl::make_unexpected(checked.error());
+      }
+      if (auto status = read_optional(coverage["line"], "gates.coverage.line",
+                                      config.gates.coverage.line);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
+      if (auto status = read_optional(coverage["branch"], "gates.coverage.branch",
+                                      config.gates.coverage.branch);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
+      if (auto status = read_optional(coverage["scope"], "gates.coverage.scope",
+                                      config.gates.coverage.scope);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
+      if (config.gates.coverage.line.has_value() &&
+          (*config.gates.coverage.line < 0.0 ||
+           *config.gates.coverage.line > 1.0)) {
+        return invalid("gates.coverage.line", "must be between 0 and 1");
+      }
+      if (config.gates.coverage.branch.has_value() &&
+          (*config.gates.coverage.branch < 0.0 ||
+           *config.gates.coverage.branch > 1.0)) {
+        return invalid("gates.coverage.branch", "must be between 0 and 1");
+      }
+      if (config.gates.coverage.scope.has_value() &&
+          *config.gates.coverage.scope != "changed" &&
+          *config.gates.coverage.scope != "all") {
+        return invalid("gates.coverage.scope", "must be 'changed' or 'all'");
+      }
+    }
+    if (const YAML::Node mutation = gates["mutation"]) {
+      if (!mutation.IsMap()) {
+        return invalid("gates.mutation", "must be a mapping");
+      }
+      auto checked = check_keys(mutation, "gates.mutation",
+                                {"enabled", "min_score"});
+      if (!checked) {
+        return tl::make_unexpected(checked.error());
+      }
+      if (auto status = read_optional(mutation["enabled"], "gates.mutation.enabled",
+                                      config.gates.mutation.enabled);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
+      if (auto status = read_optional(mutation["min_score"],
+                                      "gates.mutation.min_score",
+                                      config.gates.mutation.min_score);
+          !status) {
+        return tl::make_unexpected(status.error());
+      }
+      if (config.gates.mutation.min_score.has_value() &&
+          (*config.gates.mutation.min_score < 0.0 ||
+           *config.gates.mutation.min_score > 1.0)) {
+        return invalid("gates.mutation.min_score", "must be between 0 and 1");
+      }
+    }
   }
 
   if (const YAML::Node review = root["review"]) {
     for (const auto& entry : review) {
       const std::string key = entry.first.as<std::string>();
-      if (key == "diff_threshold_lines") {
+      if (key == "diff_threshold_lines" || key == "blocking_severities") {
         continue;
       }
       return unsupported("review." + key);
@@ -540,12 +771,28 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
         !status) {
       return tl::make_unexpected(status.error());
     }
+    if (auto status = read_optional(review["blocking_severities"],
+                                    "review.blocking_severities",
+                                    config.review.blocking_severities);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.review.blocking_severities.has_value()) {
+      for (const auto& severity : *config.review.blocking_severities) {
+        if (severity != "blocker" && severity != "major" &&
+            severity != "minor" && severity != "nit") {
+          return invalid("review.blocking_severities",
+                         "unknown severity '" + severity + "'");
+        }
+      }
+    }
   }
 
   if (const YAML::Node sandbox = root["sandbox"]) {
     for (const auto& entry : sandbox) {
       const std::string key = entry.first.as<std::string>();
-      if (key == "cpu" || key == "memory_gb" || key == "job_timeout_min") {
+      if (key == "cpu" || key == "memory_gb" || key == "job_timeout_min" ||
+          key == "network") {
         continue;
       }
       return unsupported("sandbox." + key);
@@ -566,6 +813,16 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
         !status) {
       return tl::make_unexpected(status.error());
     }
+    if (auto status = read_optional(sandbox["network"], "sandbox.network",
+                                    config.sandbox.network);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.sandbox.network.has_value() &&
+        *config.sandbox.network != "deny") {
+      return invalid("sandbox.network",
+                     "gate jobs are network-isolated; only 'deny' is accepted");
+    }
   }
 
   return config;
@@ -585,6 +842,21 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   if (config.gates.profiles_dir.has_value()) {
     options.profiles_dir = *config.gates.profiles_dir;
   }
+  if (config.gates.profile.has_value()) {
+    options.profile_id = *config.gates.profile;
+  }
+  if (config.gates.coverage.line.has_value()) {
+    options.coverage_line = *config.gates.coverage.line;
+  }
+  if (config.gates.coverage.branch.has_value()) {
+    options.coverage_branch = *config.gates.coverage.branch;
+  }
+  if (config.gates.mutation.enabled.has_value()) {
+    options.mutation_enabled = *config.gates.mutation.enabled;
+  }
+  if (config.gates.mutation.min_score.has_value()) {
+    options.mutation_min_score = *config.gates.mutation.min_score;
+  }
   if (config.github.app_id.has_value()) {
     options.github_app_id = *config.github.app_id;
   }
@@ -594,6 +866,9 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   if (config.github.private_key_ref.has_value()) {
     options.github_private_key_file = *config.github.private_key_ref;
   }
+  if (config.github.signing_key_ref.has_value()) {
+    options.github_signing_key_file = *config.github.signing_key_ref;
+  }
   if (config.github.branch_prefix.has_value()) {
     options.github_branch_prefix = *config.github.branch_prefix;
   }
@@ -602,6 +877,12 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   }
   if (config.github.max_file_mb.has_value()) {
     options.github_max_file_mb = *config.github.max_file_mb;
+  }
+  if (config.github.push_on.has_value()) {
+    options.github_push_on = *config.github.push_on;
+  }
+  if (config.github.branch_retention_days.has_value()) {
+    options.branch_retention_days = *config.github.branch_retention_days;
   }
   if (config.github.pr.draft_until_done.has_value()) {
     options.github_pr_draft_until_done =
@@ -625,6 +906,45 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
     }
     options.provider_base_url = provider->second.base_url;
     options.api_key_env = provider->second.api_key_env;
+  }
+
+  // Embeddings (design sections 6.3, 15): use the default provider's entry,
+  // a provider starting with its name (local-vllm -> local-vllm-embed), or
+  // the only entry.
+  if (!config.models.embeddings.empty()) {
+    auto embedding = config.models.embeddings.end();
+    const auto exact =
+        config.models.embeddings.find(config.models.default_provider);
+    if (exact != config.models.embeddings.end()) {
+      embedding = exact;
+    } else {
+      const std::string prefix = config.models.default_provider + "-";
+      for (auto it = config.models.embeddings.begin();
+           it != config.models.embeddings.end(); ++it) {
+        if (it->first.rfind(prefix, 0) == 0) {
+          embedding = it;
+          break;
+        }
+      }
+      if (embedding == config.models.embeddings.end() &&
+          config.models.embeddings.size() == 1) {
+        embedding = config.models.embeddings.begin();
+      }
+    }
+    if (embedding == config.models.embeddings.end()) {
+      return invalid("models.embeddings",
+                     "no entry for the default provider '" +
+                         config.models.default_provider + "'");
+    }
+    const auto provider = config.providers.find(embedding->first);
+    if (provider == config.providers.end()) {
+      return invalid("models.embeddings." + embedding->first,
+                     "has no entry in providers");
+    }
+    options.embeddings_model = embedding->second.model;
+    options.embeddings_dim = embedding->second.dim;
+    options.embeddings_base_url = provider->second.base_url;
+    options.embeddings_api_key_env = provider->second.api_key_env;
   }
 
   // Role models: when the config names any, all three agent roles must
@@ -693,6 +1013,20 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
     options.escalation_business_days =
         *config.approvals.escalation_business_days;
   }
+  if (config.approvals.waiver_business_days.has_value()) {
+    options.waiver_business_days = *config.approvals.waiver_business_days;
+  }
+  if (config.reference_docs.manifest.has_value()) {
+    options.reference_docs_manifest = *config.reference_docs.manifest;
+  }
+  if (config.reference_docs.version_source.has_value()) {
+    options.reference_docs_version_source =
+        *config.reference_docs.version_source;
+  }
+  if (config.reference_docs.on_missing_version.has_value()) {
+    options.reference_docs_on_missing_version =
+        *config.reference_docs.on_missing_version;
+  }
   if (config.rag.index.has_value()) {
     options.rag_index = *config.rag.index;
   }
@@ -710,6 +1044,9 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   }
   if (config.review.diff_threshold_lines.has_value()) {
     options.review_diff_threshold_lines = *config.review.diff_threshold_lines;
+  }
+  if (config.review.blocking_severities.has_value()) {
+    options.review_blocking_severities = *config.review.blocking_severities;
   }
   if (config.sandbox.cpu.has_value()) {
     options.sandbox_cpus = *config.sandbox.cpu;

@@ -58,6 +58,12 @@ CREATE TABLE IF NOT EXISTS llm_calls (
   response_ref      TEXT,
   at                INT
 );
+CREATE TABLE IF NOT EXISTS rag_latency (
+  id         INTEGER PRIMARY KEY,
+  run_id     TEXT,
+  latency_ms INT,
+  at         INT
+);
 CREATE TABLE IF NOT EXISTS gate_results (
   id           INTEGER PRIMARY KEY,
   run_id       TEXT,
@@ -77,6 +83,32 @@ CREATE TABLE IF NOT EXISTS defects (
   fingerprint TEXT,
   body_json   TEXT,
   attempts    INT
+);
+-- Human waivers of gate rules (design section 10.2)
+CREATE TABLE IF NOT EXISTS waivers (
+  waiver_id     TEXT PRIMARY KEY,
+  run_id        TEXT,
+  milestone_id  TEXT,
+  rule          TEXT,
+  scope         TEXT,
+  justification TEXT,
+  approved_by   TEXT,
+  at            INT,
+  UNIQUE (run_id, rule, scope)
+);
+-- Agent waiver requests awaiting a human (design section 12.1)
+CREATE TABLE IF NOT EXISTS waiver_requests (
+  id            TEXT PRIMARY KEY,
+  run_id        TEXT,
+  milestone_id  TEXT,
+  rule          TEXT,
+  scope         TEXT,
+  justification TEXT,
+  requested_by  TEXT,
+  status        TEXT,
+  requested_at  INT,
+  deadline_at   INT,
+  UNIQUE (run_id, milestone_id, rule, scope)
 );
 CREATE TABLE IF NOT EXISTS doc_versions (
   doc_id      TEXT,
@@ -140,7 +172,10 @@ CREATE TABLE IF NOT EXISTS reviews (
 CREATE INDEX IF NOT EXISTS idx_transitions_run ON transitions(run_id);
 CREATE INDEX IF NOT EXISTS idx_operations_run_state ON operations(run_id, state);
 CREATE INDEX IF NOT EXISTS idx_llm_calls_run ON llm_calls(run_id);
+CREATE INDEX IF NOT EXISTS idx_rag_latency_run ON rag_latency(run_id);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_run ON checkpoints(run_id, milestone_id);
+CREATE INDEX IF NOT EXISTS idx_waivers_run ON waivers(run_id);
+CREATE INDEX IF NOT EXISTS idx_waiver_requests_run ON waiver_requests(run_id);
 )sql";
 
 constexpr const char* kOperationColumns =
@@ -312,7 +347,9 @@ UnixTime unix_now() {
       .count();
 }
 
-std::string new_op_id() {
+namespace {
+
+std::string random_id(std::string_view prefix) {
   unsigned char bytes[8] = {0};
   if (RAND_bytes(bytes, sizeof(bytes)) != 1) {
     std::random_device rd;
@@ -321,14 +358,18 @@ std::string new_op_id() {
     }
   }
   static constexpr char kHex[] = "0123456789abcdef";
-  std::string out = "op_";
-  out.reserve(2 + sizeof(bytes) * 2);
+  std::string out(prefix);
+  out.reserve(prefix.size() + sizeof(bytes) * 2);
   for (unsigned char b : bytes) {
     out.push_back(kHex[b >> 4]);
     out.push_back(kHex[b & 0x0f]);
   }
   return out;
 }
+
+}  // namespace
+
+std::string new_op_id() { return random_id("op_"); }
 
 struct RunStore::Impl {
   Impl(const std::filesystem::path& db_path)
@@ -854,6 +895,32 @@ Result<std::vector<GateResultRow>> RunStore::list_gate_results(
   });
 }
 
+Result<std::vector<GateResultRow>> RunStore::list_all_gate_results(
+    std::string_view run_id) const {
+  return sql_guard("list_all_gate_results",
+                   [&]() -> Result<std::vector<GateResultRow>> {
+    SQLite::Statement stmt(
+        impl_->db,
+        "SELECT id, run_id, milestone_id, commit_sha, gate, passed, report_ref, at "
+        "FROM gate_results WHERE run_id = ? ORDER BY id");
+    stmt.bind(1, std::string(run_id));
+    std::vector<GateResultRow> out;
+    while (stmt.executeStep()) {
+      GateResultRow row;
+      row.id = stmt.getColumn("id").getInt64();
+      row.run_id = stmt.getColumn("run_id").getString();
+      row.milestone_id = stmt.getColumn("milestone_id").getString();
+      row.commit_sha = stmt.getColumn("commit_sha").getString();
+      row.gate = stmt.getColumn("gate").getString();
+      row.passed = stmt.getColumn("passed").getInt() != 0;
+      row.report_ref = stmt.getColumn("report_ref").getString();
+      row.at = stmt.getColumn("at").getInt64();
+      out.push_back(std::move(row));
+    }
+    return out;
+  });
+}
+
 Result<bool> RunStore::all_gates_passed(std::string_view run_id,
                                         std::string_view commit_sha) const {
   return sql_guard("all_gates_passed", [&]() -> Result<bool> {
@@ -1009,6 +1076,299 @@ Status RunStore::set_defect_status(std::string_view id, std::string_view status,
       return fail(error_codes::kNotFound, "defect not found: " + std::string(id));
     }
     return {};
+  });
+}
+
+Result<WaiverRecord> RunStore::record_waiver(const WaiverRecord& waiver) {
+  return sql_guard("record_waiver", [&]() -> Result<WaiverRecord> {
+    SQLite::Statement run(impl_->db, "SELECT COUNT(*) FROM runs WHERE run_id = ?");
+    run.bind(1, waiver.run_id);
+    run.executeStep();
+    if (run.getColumn(0).getInt() == 0) {
+      return fail(error_codes::kNotFound, "run not found: " + waiver.run_id);
+    }
+
+    WaiverRecord record = waiver;
+    if (record.waiver_id.empty()) {
+      record.waiver_id = random_id("waiver_");
+    }
+    SQLite::Statement stmt(
+        impl_->db,
+        "INSERT INTO waivers (waiver_id, run_id, milestone_id, rule, scope, "
+        "justification, approved_by, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    stmt.bind(1, record.waiver_id);
+    stmt.bind(2, record.run_id);
+    stmt.bind(3, record.milestone_id);
+    stmt.bind(4, record.rule);
+    stmt.bind(5, record.scope);
+    stmt.bind(6, record.justification);
+    stmt.bind(7, record.approved_by);
+    stmt.bind(8, static_cast<int64_t>(record.at));
+    try {
+      stmt.exec();
+      return record;
+    } catch (const SQLite::Exception& e) {
+      if (e.getErrorCode() != SQLITE_CONSTRAINT) {
+        throw;
+      }
+    }
+
+    // A retried command for the same rule and scope is idempotent: return
+    // the human decision already on record instead of duplicating it.
+    SQLite::Statement existing(
+        impl_->db,
+        "SELECT waiver_id, run_id, milestone_id, rule, scope, justification, "
+        "approved_by, at FROM waivers WHERE run_id = ? AND rule = ? AND scope = ?");
+    existing.bind(1, waiver.run_id);
+    existing.bind(2, waiver.rule);
+    existing.bind(3, waiver.scope);
+    if (!existing.executeStep()) {
+      return fail(error_codes::kConflict,
+                  "waiver already recorded but cannot be read back");
+    }
+    WaiverRecord found;
+    found.waiver_id = existing.getColumn(0).getString();
+    found.run_id = existing.getColumn(1).getString();
+    found.milestone_id = existing.getColumn(2).getString();
+    found.rule = existing.getColumn(3).getString();
+    found.scope = existing.getColumn(4).getString();
+    found.justification = existing.getColumn(5).getString();
+    found.approved_by = existing.getColumn(6).getString();
+    found.at = existing.getColumn(7).getInt64();
+    return found;
+  });
+}
+
+Result<WaiverRequestRecord> RunStore::record_waiver_request(
+    const WaiverRequestRecord& request) {
+  return sql_guard("record_waiver_request", [&]() -> Result<WaiverRequestRecord> {
+    SQLite::Statement run(impl_->db, "SELECT COUNT(*) FROM runs WHERE run_id = ?");
+    run.bind(1, request.run_id);
+    run.executeStep();
+    if (run.getColumn(0).getInt() == 0) {
+      return fail(error_codes::kNotFound, "run not found: " + request.run_id);
+    }
+    WaiverRequestRecord record = request;
+    if (record.id.empty()) {
+      record.id = random_id("wreq_");
+    }
+    if (record.status.empty()) {
+      record.status = "PENDING";
+    }
+    SQLite::Statement stmt(
+        impl_->db,
+        "INSERT INTO waiver_requests (id, run_id, milestone_id, rule, scope, "
+        "justification, requested_by, status, requested_at, deadline_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    stmt.bind(1, record.id);
+    stmt.bind(2, record.run_id);
+    stmt.bind(3, record.milestone_id);
+    stmt.bind(4, record.rule);
+    stmt.bind(5, record.scope);
+    stmt.bind(6, record.justification);
+    stmt.bind(7, record.requested_by);
+    stmt.bind(8, record.status);
+    stmt.bind(9, static_cast<int64_t>(record.requested_at));
+    stmt.bind(10, static_cast<int64_t>(record.deadline_at));
+    try {
+      stmt.exec();
+      return record;
+    } catch (const SQLite::Exception& e) {
+      if (e.getErrorCode() != SQLITE_CONSTRAINT) {
+        throw;
+      }
+    }
+    SQLite::Statement existing(
+        impl_->db,
+        "SELECT id, run_id, milestone_id, rule, scope, justification, "
+        "requested_by, status, requested_at, deadline_at FROM waiver_requests "
+        "WHERE run_id = ? AND milestone_id = ? AND rule = ? AND scope = ?");
+    existing.bind(1, request.run_id);
+    existing.bind(2, request.milestone_id);
+    existing.bind(3, request.rule);
+    existing.bind(4, request.scope);
+    if (!existing.executeStep()) {
+      return fail(error_codes::kConflict,
+                  "waiver request already recorded but cannot be read back");
+    }
+    WaiverRequestRecord found;
+    found.id = existing.getColumn(0).getString();
+    found.run_id = existing.getColumn(1).getString();
+    found.milestone_id = existing.getColumn(2).getString();
+    found.rule = existing.getColumn(3).getString();
+    found.scope = existing.getColumn(4).getString();
+    found.justification = existing.getColumn(5).getString();
+    found.requested_by = existing.getColumn(6).getString();
+    found.status = existing.getColumn(7).getString();
+    found.requested_at = existing.getColumn(8).getInt64();
+    found.deadline_at = existing.getColumn(9).getInt64();
+    if (found.status == "EXPIRED" || found.status == "REFUSED") {
+      // A fresh request after expiry/refusal replaces the old pending row.
+      SQLite::Statement update(
+          impl_->db,
+          "UPDATE waiver_requests SET justification = ?, requested_by = ?, "
+          "status = 'PENDING', requested_at = ?, deadline_at = ? WHERE id = ?");
+      update.bind(1, record.justification);
+      update.bind(2, record.requested_by);
+      update.bind(3, static_cast<int64_t>(record.requested_at));
+      update.bind(4, static_cast<int64_t>(record.deadline_at));
+      update.bind(5, found.id);
+      update.exec();
+      found.justification = record.justification;
+      found.requested_by = record.requested_by;
+      found.status = "PENDING";
+      found.requested_at = record.requested_at;
+      found.deadline_at = record.deadline_at;
+    }
+    return found;
+  });
+}
+
+Result<std::vector<WaiverRequestRecord>> RunStore::list_waiver_requests(
+    std::string_view run_id, std::string_view milestone_id) const {
+  return sql_guard("list_waiver_requests",
+                   [&]() -> Result<std::vector<WaiverRequestRecord>> {
+    std::string sql =
+        "SELECT id, run_id, milestone_id, rule, scope, justification, "
+        "requested_by, status, requested_at, deadline_at FROM waiver_requests "
+        "WHERE run_id = ?";
+    if (!milestone_id.empty()) {
+      sql += " AND (milestone_id = ? OR milestone_id = '')";
+    }
+    sql += " ORDER BY requested_at, id";
+    SQLite::Statement stmt(impl_->db, sql);
+    stmt.bind(1, std::string(run_id));
+    if (!milestone_id.empty()) {
+      stmt.bind(2, std::string(milestone_id));
+    }
+    std::vector<WaiverRequestRecord> out;
+    while (stmt.executeStep()) {
+      WaiverRequestRecord record;
+      record.id = stmt.getColumn(0).getString();
+      record.run_id = stmt.getColumn(1).getString();
+      record.milestone_id = stmt.getColumn(2).getString();
+      record.rule = stmt.getColumn(3).getString();
+      record.scope = stmt.getColumn(4).getString();
+      record.justification = stmt.getColumn(5).getString();
+      record.requested_by = stmt.getColumn(6).getString();
+      record.status = stmt.getColumn(7).getString();
+      record.requested_at = stmt.getColumn(8).getInt64();
+      record.deadline_at = stmt.getColumn(9).getInt64();
+      out.push_back(std::move(record));
+    }
+    return out;
+  });
+}
+
+Result<WaiverRequestRecord> RunStore::get_waiver_request(
+    std::string_view id) const {
+  return sql_guard("get_waiver_request", [&]() -> Result<WaiverRequestRecord> {
+    SQLite::Statement stmt(
+        impl_->db,
+        "SELECT id, run_id, milestone_id, rule, scope, justification, "
+        "requested_by, status, requested_at, deadline_at FROM waiver_requests "
+        "WHERE id = ?");
+    stmt.bind(1, std::string(id));
+    if (!stmt.executeStep()) {
+      return fail(error_codes::kNotFound, "waiver request not found: " + std::string(id));
+    }
+    WaiverRequestRecord record;
+    record.id = stmt.getColumn(0).getString();
+    record.run_id = stmt.getColumn(1).getString();
+    record.milestone_id = stmt.getColumn(2).getString();
+    record.rule = stmt.getColumn(3).getString();
+    record.scope = stmt.getColumn(4).getString();
+    record.justification = stmt.getColumn(5).getString();
+    record.requested_by = stmt.getColumn(6).getString();
+    record.status = stmt.getColumn(7).getString();
+    record.requested_at = stmt.getColumn(8).getInt64();
+    record.deadline_at = stmt.getColumn(9).getInt64();
+    return record;
+  });
+}
+
+Status RunStore::set_waiver_request_status(std::string_view id,
+                                           std::string_view status) {
+  return sql_guard("set_waiver_request_status", [&]() -> Status {
+    SQLite::Statement stmt(impl_->db,
+                           "UPDATE waiver_requests SET status = ? WHERE id = ?");
+    stmt.bind(1, std::string(status));
+    stmt.bind(2, std::string(id));
+    if (stmt.exec() == 0) {
+      return fail(error_codes::kNotFound,
+                  "waiver request not found: " + std::string(id));
+    }
+    return {};
+  });
+}
+
+Status RunStore::decide_waiver_requests(std::string_view run_id,
+                                        std::string_view milestone_id,
+                                        std::string_view rule,
+                                        std::string_view scope,
+                                        std::string_view status, UnixTime now) {
+  return sql_guard("decide_waiver_requests", [&]() -> Status {
+    SQLite::Statement stmt(
+        impl_->db,
+        "UPDATE waiver_requests SET status = ? WHERE run_id = ? AND status = "
+        "'PENDING' AND (rule = ? OR rule = '*') AND (scope = ? OR scope = '*') "
+        "AND (? = '' OR milestone_id = ? OR milestone_id = '')");
+    stmt.bind(1, std::string(status));
+    stmt.bind(2, std::string(run_id));
+    stmt.bind(3, std::string(rule));
+    stmt.bind(4, std::string(scope));
+    stmt.bind(5, std::string(milestone_id));
+    stmt.bind(6, std::string(milestone_id));
+    stmt.exec();
+    (void)now;
+    return {};
+  });
+}
+
+Result<std::size_t> RunStore::expire_waiver_requests(std::string_view run_id,
+                                                     UnixTime now) {
+  return sql_guard("expire_waiver_requests",
+                   [&]() -> Result<std::size_t> {
+    SQLite::Statement stmt(
+        impl_->db,
+        "UPDATE waiver_requests SET status = 'EXPIRED' WHERE run_id = ? AND "
+        "status = 'PENDING' AND deadline_at <= ?");
+    stmt.bind(1, std::string(run_id));
+    stmt.bind(2, static_cast<int64_t>(now));
+    return static_cast<std::size_t>(stmt.exec());
+  });
+}
+
+Result<std::vector<WaiverRecord>> RunStore::list_waivers(
+    std::string_view run_id, std::string_view milestone_id) const {
+  return sql_guard("list_waivers", [&]() -> Result<std::vector<WaiverRecord>> {
+    std::string sql =
+        "SELECT waiver_id, run_id, milestone_id, rule, scope, justification, "
+        "approved_by, at FROM waivers WHERE run_id = ?";
+    if (!milestone_id.empty()) {
+      // A run-wide waiver (empty milestone_id) applies to every milestone.
+      sql += " AND (milestone_id = ? OR milestone_id = '')";
+    }
+    sql += " ORDER BY at, waiver_id";
+    SQLite::Statement stmt(impl_->db, sql);
+    stmt.bind(1, std::string(run_id));
+    if (!milestone_id.empty()) {
+      stmt.bind(2, std::string(milestone_id));
+    }
+    std::vector<WaiverRecord> out;
+    while (stmt.executeStep()) {
+      WaiverRecord record;
+      record.waiver_id = stmt.getColumn(0).getString();
+      record.run_id = stmt.getColumn(1).getString();
+      record.milestone_id = stmt.getColumn(2).getString();
+      record.rule = stmt.getColumn(3).getString();
+      record.scope = stmt.getColumn(4).getString();
+      record.justification = stmt.getColumn(5).getString();
+      record.approved_by = stmt.getColumn(6).getString();
+      record.at = stmt.getColumn(7).getInt64();
+      out.push_back(std::move(record));
+    }
+    return out;
   });
 }
 
@@ -1332,6 +1692,72 @@ Result<int64_t> RunStore::total_tokens(std::string_view run_id) const {
     stmt.bind(1, std::string(run_id));
     stmt.executeStep();
     return stmt.getColumn(0).getInt64();
+  });
+}
+
+Status RunStore::record_rag_latency(std::string_view run_id,
+                                    int64_t latency_ms, UnixTime at) {
+  return sql_guard("record_rag_latency", [&]() -> Status {
+    SQLite::Statement stmt(
+        impl_->db,
+        "INSERT INTO rag_latency (run_id, latency_ms, at) VALUES (?, ?, ?)");
+    stmt.bind(1, std::string(run_id));
+    stmt.bind(2, static_cast<int64_t>(latency_ms));
+    stmt.bind(3, static_cast<int64_t>(at));
+    stmt.exec();
+    return {};
+  });
+}
+
+Result<std::vector<RagLatencyRow>> RunStore::list_rag_latencies(
+    std::string_view run_id) const {
+  return sql_guard("list_rag_latencies",
+                   [&]() -> Result<std::vector<RagLatencyRow>> {
+    SQLite::Statement stmt(
+        impl_->db,
+        "SELECT id, run_id, latency_ms, at FROM rag_latency WHERE run_id = ? "
+        "ORDER BY id");
+    stmt.bind(1, std::string(run_id));
+    std::vector<RagLatencyRow> out;
+    while (stmt.executeStep()) {
+      RagLatencyRow row;
+      row.id = stmt.getColumn("id").getInt64();
+      row.run_id = stmt.getColumn("run_id").getString();
+      row.latency_ms = stmt.getColumn("latency_ms").getInt64();
+      row.at = stmt.getColumn("at").getInt64();
+      out.push_back(std::move(row));
+    }
+    return out;
+  });
+}
+
+Result<std::vector<LlmCallRecord>> RunStore::list_llm_calls(
+    std::string_view run_id) const {
+  return sql_guard("list_llm_calls",
+                   [&]() -> Result<std::vector<LlmCallRecord>> {
+    SQLite::Statement stmt(
+        impl_->db,
+        "SELECT run_id, role, model, prompt_tokens, completion_tokens, "
+        "cached_tokens, usd, latency_ms, prompt_ref, response_ref, at "
+        "FROM llm_calls WHERE run_id = ? ORDER BY id");
+    stmt.bind(1, std::string(run_id));
+    std::vector<LlmCallRecord> out;
+    while (stmt.executeStep()) {
+      LlmCallRecord record;
+      record.run_id = stmt.getColumn("run_id").getString();
+      record.role = stmt.getColumn("role").getString();
+      record.model = stmt.getColumn("model").getString();
+      record.prompt_tokens = stmt.getColumn("prompt_tokens").getInt64();
+      record.completion_tokens = stmt.getColumn("completion_tokens").getInt64();
+      record.cached_tokens = stmt.getColumn("cached_tokens").getInt64();
+      record.usd = stmt.getColumn("usd").getDouble();
+      record.latency_ms = stmt.getColumn("latency_ms").getInt64();
+      record.prompt_ref = stmt.getColumn("prompt_ref").getString();
+      record.response_ref = stmt.getColumn("response_ref").getString();
+      record.at = stmt.getColumn("at").getInt64();
+      out.push_back(std::move(record));
+    }
+    return out;
   });
 }
 

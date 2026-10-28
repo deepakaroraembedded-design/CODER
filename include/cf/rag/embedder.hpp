@@ -20,7 +20,8 @@ class Embedder {
 // in on-premises runs; design section 13.1).
 class FireworksEmbedder final : public Embedder {
  public:
-  FireworksEmbedder(llm::FireworksClient& client, std::string model);
+  FireworksEmbedder(llm::FireworksClient& client, std::string model,
+                    std::string run_id = {});
 
   Result<std::vector<std::vector<float>>> embed(
       const std::vector<std::string>& texts) override;
@@ -28,6 +29,7 @@ class FireworksEmbedder final : public Embedder {
  private:
   llm::FireworksClient& client_;
   std::string model_;
+  std::string run_id_;
 };
 
 }  // namespace cf::rag

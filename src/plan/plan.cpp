@@ -332,9 +332,12 @@ Plan parse_yaml(const std::string& yaml_text, const ValidationOptions& options,
       } else if (key == "escalation") {
         plan.approvals.escalation_business_days =
             required_business_days(entry.second, "approvals.escalation");
+      } else if (key == "waiver") {
+        plan.approvals.waiver_business_days =
+            required_business_days(entry.second, "approvals.waiver");
       } else {
         schema_error("unknown approvals key '" + key +
-                     "' (expected design_approval or escalation)");
+                     "' (expected design_approval, escalation or waiver)");
       }
     }
   }

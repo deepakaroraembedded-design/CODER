@@ -41,6 +41,8 @@ struct DriverConfig {
   std::string profile_language;
   std::string profile_build_system;
   std::string profile_test_framework;
+  // Host directory holding rules/semgrep; sandboxed gates mount it read-only.
+  std::string rules_dir;
   std::chrono::milliseconds step_timeout{600000};
   // review.diff_threshold_lines (design section 15): a cumulative change
   // beyond this many lines since the last full review forces a full review
@@ -87,6 +89,14 @@ class WorkspaceDriver final : public MilestoneDriver {
   // turn. No-op when no index is configured.
   Status prepare_codeintel();
 
+  // Base-freshness recovery (design section 10.4.9): rebase the integration
+  // branch onto `upstream`; a conflict aborts the rebase and returns
+  // GIT_MERGE_CONFLICT. `run_integration_gates` re-runs the trusted gate plan
+  // on the rebased integration head, records the results for that commit and
+  // applies waivers; it does not run a review.
+  Status rebase_integration_onto(std::string_view upstream);
+  Result<GateOutcome> run_integration_gates(std::string_view upstream);
+
  private:
   Result<std::filesystem::path> ensure_worktree(std::string_view milestone_id,
                                                 std::string_view role);
@@ -98,6 +108,9 @@ class WorkspaceDriver final : public MilestoneDriver {
   Status snapshot(std::string_view milestone_id, std::string_view role,
                   const std::vector<std::string>& paths, const std::string& message,
                   const std::string& op_id);
+  // The CF-Waivers trailer value for a milestone: "none" or the
+  // comma-separated rule@scope list (design section 10.4.5).
+  std::string waivers_trailer(std::string_view milestone_id) const;
   std::string start_point() const;
   AgentTurnRequest make_request(MilestonePhase phase, std::string_view milestone_id,
                                 std::string_view role) const;

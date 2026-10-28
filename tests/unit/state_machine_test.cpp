@@ -256,6 +256,24 @@ TEST_F(StateMachineTest, MilestoneStallEscalatesAndResolves) {
   EXPECT_EQ(*current, MilestoneState::Fixing);
 }
 
+TEST_F(StateMachineTest, AHumanWaiverReturnsAnEscalatedMilestoneToGating) {
+  StateMachine machine(*store_, "R12");
+  ASSERT_TRUE(machine.register_milestone("M3").has_value());
+  apply_milestone(machine, "M3", MilestoneEvent::Start);
+  apply_milestone(machine, "M3", MilestoneEvent::TestsCommitted);
+  apply_milestone(machine, "M3", MilestoneEvent::WorkSubmitted);
+  apply_milestone(machine, "M3", MilestoneEvent::GatesFailed);
+  apply_milestone(machine, "M3", MilestoneEvent::StallOrBudget);
+  auto current = machine.current("M3");
+  ASSERT_TRUE(current.has_value());
+  EXPECT_EQ(*current, MilestoneState::Escalated);
+
+  apply_milestone(machine, "M3", MilestoneEvent::WaiverGranted);
+  current = machine.current("M3");
+  ASSERT_TRUE(current.has_value());
+  EXPECT_EQ(*current, MilestoneState::Gating);
+}
+
 TEST_F(StateMachineTest, MilestoneRevalidationPath) {
   StateMachine machine(*store_, "R12");
   ASSERT_TRUE(machine.register_milestone("M3").has_value());

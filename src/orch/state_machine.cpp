@@ -41,7 +41,7 @@ struct MilestoneTransition {
 // analogous to Escalated -> Executing at run level. StallOrBudget escalates
 // from every active state, per the loop-control limits in design section 12
 // (the diagram shows the Fixing edge as an example).
-constexpr std::array<MilestoneTransition, 26> kMilestoneTransitions = {{
+constexpr std::array<MilestoneTransition, 27> kMilestoneTransitions = {{
     {MilestoneState::Pending, MilestoneEvent::Start, MilestoneState::TestAuthoring},
     {MilestoneState::Pending, MilestoneEvent::Block, MilestoneState::Blocked},
     {MilestoneState::Blocked, MilestoneEvent::Unblock, MilestoneState::TestAuthoring},
@@ -64,6 +64,7 @@ constexpr std::array<MilestoneTransition, 26> kMilestoneTransitions = {{
     {MilestoneState::Done, MilestoneEvent::InterfaceChanged, MilestoneState::Revalidating},
     {MilestoneState::Revalidating, MilestoneEvent::GatesRerun, MilestoneState::Gating},
     {MilestoneState::Escalated, MilestoneEvent::HumanResolved, MilestoneState::Fixing},
+    {MilestoneState::Escalated, MilestoneEvent::WaiverGranted, MilestoneState::Gating},
     {MilestoneState::TestAuthoring, MilestoneEvent::StallOrBudget, MilestoneState::Escalated},
     {MilestoneState::Coding, MilestoneEvent::StallOrBudget, MilestoneState::Escalated},
     {MilestoneState::Gating, MilestoneEvent::StallOrBudget, MilestoneState::Escalated},
@@ -171,6 +172,7 @@ std::string_view to_string(MilestoneEvent event) {
     case MilestoneEvent::InterfaceChanged: return "interface_changed";
     case MilestoneEvent::GatesRerun: return "gates_rerun";
     case MilestoneEvent::HumanResolved: return "human_resolved";
+    case MilestoneEvent::WaiverGranted: return "waiver_granted";
   }
   return "unknown";
 }

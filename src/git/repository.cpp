@@ -200,9 +200,34 @@ Result<Repository> Repository::open(const std::filesystem::path& path,
   return repository;
 }
 
+Status Repository::set_signing_key(const std::filesystem::path& key_path) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(key_path, ec)) {
+    return fail(error_codes::kSigningKey,
+                "signing key is not a readable file: " + key_path.string());
+  }
+  // Commits run in worktrees, so a relative path would resolve against the
+  // wrong directory; anchor it to the orchestrator's working directory.
+  signing_key_ = std::filesystem::absolute(key_path, ec);
+  if (ec) {
+    return fail(error_codes::kSigningKey,
+                "cannot resolve signing key path: " + ec.message());
+  }
+  return {};
+}
+
 Result<bool> Repository::branch_exists(const std::string& branch) const {
   const process::ProcessResult result =
       run_raw({"rev-parse", "--verify", "--quiet", "refs/heads/" + branch}, path_);
+  if (!result.launched) {
+    return fail(error_codes::kCommandFailed, "cannot run git: " + result.error);
+  }
+  return result.exit_code == 0;
+}
+
+Result<bool> Repository::ref_exists(const std::string& ref) const {
+  const process::ProcessResult result =
+      run_raw({"rev-parse", "--verify", "--quiet", ref + "^{commit}"}, path_);
   if (!result.launched) {
     return fail(error_codes::kCommandFailed, "cannot run git: " + result.error);
   }
@@ -284,10 +309,18 @@ Result<std::string> Repository::commit_staged(
     const std::filesystem::path& worktree, const std::string& message,
     const CommitTrailers& trailers) const {
   const std::string full_message = format_commit_message(message, trailers);
-  auto committed = run({"-c", std::string("user.name=") + kUserName, "-c",
-                        std::string("user.email=") + kUserEmail, "commit", "-m",
-                        full_message},
-                       worktree);
+  std::vector<std::string> args = {"-c", std::string("user.name=") + kUserName,
+                                   "-c", std::string("user.email=") + kUserEmail};
+  if (!signing_key_.empty()) {
+    // SSH signing (design section 10.4.2): the same key on every CF commit,
+    // including squashed integration commits.
+    args.insert(args.end(),
+                {"-c", "gpg.format=ssh", "-c",
+                 "user.signingkey=" + signing_key_.string(), "-c",
+                 "commit.gpgsign=true"});
+  }
+  args.insert(args.end(), {"commit", "-m", full_message});
+  auto committed = run(args, worktree);
   if (!committed) {
     return tl::make_unexpected(committed.error());
   }
@@ -428,6 +461,34 @@ Result<std::string> Repository::remote_branch_sha(const std::string& remote,
   return tab == std::string::npos ? *output : output->substr(0, tab);
 }
 
+Status Repository::fetch(const std::string& remote,
+                         const std::string& branch) const {
+  auto fetched = run({"fetch", "--no-tags", remote, branch}, path_);
+  if (!fetched) {
+    return tl::make_unexpected(fetched.error());
+  }
+  return {};
+}
+
+Result<bool> Repository::is_ancestor(const std::string& ancestor,
+                                     const std::string& descendant) const {
+  const process::ProcessResult result =
+      run_raw({"merge-base", "--is-ancestor", ancestor, descendant}, path_);
+  if (!result.launched) {
+    return fail(error_codes::kCommandFailed, "cannot run git: " + result.error);
+  }
+  if (result.exit_code == 0) {
+    return true;
+  }
+  if (result.exit_code == 1) {
+    return false;
+  }
+  return fail(error_codes::kCommandFailed,
+              "git merge-base --is-ancestor failed with code " +
+                  std::to_string(result.exit_code) + ": " +
+                  trim(result.stderr_text));
+}
+
 Result<std::string> Repository::find_commit_by_trailer(const std::string& ref,
                                                        const std::string& key,
                                                        const std::string& value,
@@ -542,6 +603,23 @@ Result<std::vector<std::string>> Repository::worktree_changes(
     }
   }
   return paths;
+}
+
+Status Repository::rebase(const std::filesystem::path& worktree,
+                          const std::string& upstream) const {
+  auto rebased = run({"rebase", upstream}, worktree);
+  if (!rebased) {
+    return tl::make_unexpected(rebased.error());
+  }
+  return {};
+}
+
+Status Repository::abort_rebase(const std::filesystem::path& worktree) const {
+  auto aborted = run({"rebase", "--abort"}, worktree);
+  if (!aborted) {
+    return tl::make_unexpected(aborted.error());
+  }
+  return {};
 }
 
 Status Repository::abort_merge(const std::filesystem::path& worktree) const {

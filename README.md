@@ -19,23 +19,24 @@ is still missing.
 | Phase 0a — opencode harness go/no-go | **Complete**: 300/300 iterations passed (H1–H15 × 20) against pinned opencode 1.18.35; recommendation **Go** (`docs/phase0a/decision.md`) |
 | Run store, side-effect protocol, crash recovery | Implemented and tested; startup recovery (§6.12.4) runs automatically at the start of `cf run --execute` (lease takeover, leftover-container removal, in-flight grace period, reconcile), and `cf resume` releases the lease it takes |
 | State machines, scheduler, review rules, milestone loop, run orchestrator | Implemented and tested; refined plans' declared write sets are enforced at snapshot time (§6.13.2), and a merge that changes a public interface revalidates the Done milestones that use it against the new integration head (§6.13.3; a revalidation fix starts from that head, gates run in a separate build directory, and test-only gate failures are repaired by QA). Human-waiting states have configurable business-day deadlines (§12.1): `cf run --execute` and `cf approve` move an expired design approval or escalation to `Aborted` with `approval_timeout`/`escalation_timeout`, and the resolved deadlines are stored on the run so every command sees the same values |
-| Toolchain profiles and staged gate runner | Implemented and tested |
-| RAG retrieval (BM25 + vectors, precedence, conflicts) and document ingestion | Implemented and tested; the `rag` config section selects hnswlib or brute force, the hybrid BM25/vector weights, the default `top_k` (refiner, MCP search and role servers) and the document-type precedence |
-| MCP tool surface (role-filtered, schema-validated) | Implemented and tested |
-| Reference documentation mirror (`cf-refmirror`) | Implemented and tested: manifest validation, fetch, checksum, HTML→Markdown cleaning, injection scan, audit snapshot and report. Remaining: generated sets (e.g. Doxygen), archive extraction, and the checked-in manifest still has placeholder URLs/checksums |
+| Toolchain profiles and staged gate runner | Implemented and tested: stages 1–2 plus profile-driven stage-3 coverage/mutation gates, trusted step expansion and `cf.yaml` threshold overrides. C/C++, Python, Go, TypeScript/JavaScript and Java profiles are provided (`profiles/`); the built-in checker reads coverage.py/llvm-cov JSON, Go cover profiles, LCOV and JaCoCo XML and enforces the configured thresholds; C/C++ and Java coverage ship instrumented scripts (CMake/Meson llvm-cov and Maven/Gradle JaCoCo) and Python mutation runs through a mutmut wrapper, while Make coverage and the remaining mutation command definitions still need toolchain verification |
+| RAG retrieval (BM25 + vectors, precedence, conflicts) and document ingestion | Implemented and tested; the `rag` config section selects hnswlib or brute force, the hybrid BM25/vector weights, the default `top_k` (refiner, MCP search and role servers) and the document-type precedence. `models.embeddings` wires the OpenAI-compatible embeddings provider into the refiner, question answering and every role MCP server, so hybrid vector search is active when configured (BM25-only otherwise). `cf ingest` also converts PDFs with poppler and DOCX with Pandoc when a `<file>.meta.yaml` metadata sidecar is present |
+| MCP tool surface (role-filtered, schema-validated) | Implemented and tested: RAG, reference lookup, code intelligence, defects, submissions, `run_checks` and `request_waiver` |
+| Reference documentation mirror (`cf-refmirror`) | Implemented and tested: manifest validation, fetch, checksum, HTML→Markdown cleaning, injection scan, audit snapshot and report. `cf run` can now mirror the manifest into the run, pin the versions named by `vcpkg.json`/`requirements.txt`/`package.json`, index the result in the refiner, question answering and role MCP servers, and filter `lookup_reference` to the pinned version. Archive sources with `extract` patterns are unpacked with the system `tar`/`unzip` and matching HTML/Markdown documents are cleaned and indexed independently. Remaining: generated sets (e.g. Doxygen) and the checked-in manifest still has placeholder URLs/checksums |
 | Git layer (worktrees, trailers, diffs, squash merges) | Implemented and tested |
-| Code intelligence (§6.5) | **Foundation + run integration**: the back-end interface and registry, the SQLite symbol index (incremental per file), tree-sitter back ends with the vendored **C, Python and Go** grammars (symbols, methods qualified `Class.method`/`Receiver.Method`, call edges with caller attribution, imports/includes, doc comments and docstrings, the layering check), the context packer (seeds → dependencies → callers → file siblings, cut to the token budget) and the `find_symbol`/`get_callers`/`get_context` MCP tools reading the index (`cf-mcp --codeintel-db`). When a back end matches the plan's language, the run indexes the integration worktree at start-up and refreshes the index incrementally at every merge (`CodeIntelSync`), and the role MCP servers are pointed at it. Remaining: the Clang LibTooling back end for C++ (needs LLVM 17+), TypeScript/Java grammars, ADR/contract retrieval in the packer, and the guardrail checks |
+| Code intelligence (§6.5) | **Foundation + run integration**: the back-end interface and registry, the SQLite symbol index (incremental per file), tree-sitter back ends with the vendored **C, C++, Python, Go, TypeScript/JavaScript and Java** grammars, and a **Clang LibTooling** back end for C/C++ when LLVM/Clang 17 is available (symbols, methods qualified `Class.method`/`Receiver.Method`, call edges with caller attribution, imports/includes, doc comments and docstrings, the layering check; tree-sitter remains the fallback), the context packer (seeds → dependencies → callers → file siblings, cut to the token budget) and the `find_symbol`/`get_callers`/`get_context` MCP tools reading the index (`cf-mcp --codeintel-db`). When a back end matches the plan's language, the run indexes the integration worktree at start-up and refreshes the index incrementally at every merge (`CodeIntelSync`), and the role MCP servers are pointed at it. `get_context` also appends design/architecture hits (ADRs and contracts) within the remaining token budget. Remaining: the rest of the company guardrail rule set |
 | Workspace milestone driver (agents + git + gates) | Implemented and tested; fix turns receive the milestone's open defects and every fix turn counts one attempt per defect (escalates at 4, §12) |
 | opencode-backed `AgentRunner` | Implemented end to end: turn driving with event-driven (`session.idle`) turn completion, permission broker, event routing, role configs, versioned prompt templates, RAG-backed question answering, server spawning, dead-server detection and restart before the next turn (§6.12, H8), `RunProcess` and `cf run --execute` |
-| GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, secret scanning, dependency licences) that run on the exact commit before every flow push — a rejection records no intent and escalates the run, dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment` with late-landing duplicate deletion, §6.12.6 rule 4), `GithubFlow` (milestone pushes, PR open/update/ready with `pr.draft_until_done`/labels/`request_codeowners` policy and a report-derived body — milestone/gate summary, requirement traceability, defects and cost, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
-| CLI (`cf check/run/status/resume/escalations/report/approve/abort/ingest`) | Implemented and tested |
-| Configuration file (§15) | `cf run --config` (default `./cf.yaml`): strict schema, flags > file > defaults, plan budget wins over file defaults; provider/role-model resolution with no provider mixing (§13.1); budget (cost, tokens, iterations, defect attempts and the active wall-clock limit, which excludes states waiting for people, §12), design-approval and escalation deadlines in business days (§12.1), GitHub pre-push policy (`branch_prefix`, `protected_paths`, `max_file_mb`) and PR policy (`draft_until_done`, `labels`, `request_codeowners`), RAG policy (`index`, `top_k`, hybrid weights, precedence), loop/review-threshold/gate-resource knobs wired. Remaining: approval reminders and waiver deadlines, reference_docs, coverage/mutation, and the GitHub `push_on`/branch-retention policy |
-| Design refinement (Phase 4) | Implemented and verified with the real planner model: the refiner turns the plan into a design package (`runs/<run>/design.{json,md}` — component design, refined milestone DAG with write sets/uses/interfaces for the scheduler, ADRs), self-critiques and revises once, stops at the human approval gate, and the approved package drives execution. Approving publishes the design as a product-scoped RAG design document (`<workspace>/designs/`, status `approved`; an earlier design for the same plan becomes `superseded` and is no longer retrieved), and the run's MCP servers and question policy carry the product/language applicability context. The curated pattern catalog (`catalog/patterns/`, six entries) is loaded by `cf-mcp --patterns`, is authoritative for `get_pattern` and is indexed into retrieval; the refiner prompt carries it. Remaining: pattern-conformance checks |
+| GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, signatures, base freshness, secret scanning, dependency licences) that run on the exact commit before every flow push — a rejection records no intent and escalates the run, dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment` with late-landing duplicate deletion, §6.12.6 rule 4), `GithubFlow` (milestone pushes, PR open/update/ready with `pr.draft_until_done`/labels/`request_codeowners` policy and a report-derived body — milestone/gate summary, requirement traceability, defects, waivers and cost, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens), SSH commit signing, branch-retention cleanup (`cf cleanup`), base-move rebase/re-gate, generated ruleset payloads (`cf rulesets`) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
+| CLI (`cf check/run/status/resume/escalations/report/approve/abort/ingest/cleanup/remind/replay/rulesets`) | Implemented and tested |
+| Configuration file (§15) | `cf run --config` (default `./cf.yaml`): strict schema, flags > file > defaults, plan budget wins over file defaults; provider/role-model resolution with no provider mixing (§13.1); budget (cost, tokens, iterations, defect attempts and the active wall-clock limit, which excludes states waiting for people, §12), design-approval, escalation and waiver deadlines in business days (§12.1), GitHub push scheduling (`push_on`) and commit signing (`signing_key_ref`), pre-push policy (`branch_prefix`, `protected_paths`, `max_file_mb`) and PR policy (`draft_until_done`, `labels`, `request_codeowners`), RAG policy (`index`, `top_k`, hybrid weights, precedence), reference-docs manifest/version policy, branch retention, coverage/mutation overrides, loop/review-threshold/gate-resource knobs wired |
+| Design refinement (Phase 4) | Implemented and verified with the real planner model: the refiner turns the plan into a design package (`runs/<run>/design.{json,md}` — component design, refined milestone DAG with write sets/uses/interfaces for the scheduler, ADRs), self-critiques and revises once, stops at the human approval gate, and the approved package drives execution. A reviewer can request changes with written feedback, which is archived and fed into the next refinement. Approving publishes the design as a product-scoped RAG design document (`<workspace>/designs/`, status `approved`; an earlier design for the same plan becomes `superseded` and is no longer retrieved), and the run's MCP servers and question policy carry the product/language applicability context. The curated pattern catalog (`catalog/patterns/`, six entries) is loaded by `cf-mcp --patterns`, is authoritative for `get_pattern` and is indexed into retrieval; the refiner prompt carries it, every ADR must name a catalog `pattern_id`, and refinement rejects a design that misses or invents one |
+| Observability (§6.11, §14) | `cf-telemetry` emits one JSON object per log line with `run_id`, `milestone_id`, `agent` and `trace_id`; `cf`/`cf-mcp`/`cf-eval`/`cf-refmirror` install it, and the run process plus driver scopes each turn and gate run. The report and PR body aggregate `usage-<role>.jsonl` into cost/tokens per role and milestone, and `report.json` carries the design's metric samples (gate pass ratio, iterations, open defects, LLM tokens/USD, escalations, RAG latency) and exports it as OTLP/HTTP JSON when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Direct `cf-llm` calls and opencode HTTP/SSE agent traffic are archived gzip-compressed and AES-256-GCM encrypted under `runs/<run>/llm` and `runs/<run>/opencode` (`CF_ARCHIVE_KEY`, 64 hex characters); `cf replay` re-sends direct LLM calls. |
 | Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the suite spans C++, Python and Go plus a crash-injection reliability scenario, and the full benchmark (3 candidates × 7 plans) is complete and confirms the pinned models |
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout plus run-labelled cleanup on recovery; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
-| Custom clang-tidy checks (`cf-swt-*`) | **Not built** (needs LLVM 17+, see §9) |
+| Company guardrail checks (`cf-swt-*` / `swt.*`) | **Foundation**: `cf-tidy` runs `cf-swt-no-raw-new`, `cf-swt-no-raw-delete`, `cf-swt-no-raw-malloc`, `cf-swt-no-detached-thread` (CG-4.2), `cf-swt-no-hardcoded-secret` and `cf-swt-no-bool-param` over the target's compilation database, with fixture tests for placement new, exempt namespaces, C allocation, macro use sites and clean sources. The C/C++ profile runs the standard clang-tidy check set plus `cf-tidy`. The Python, TypeScript/JavaScript, Java and Go profiles load starter `swt.*` Semgrep rules for shell/eval/HTML injection, unsafe YAML/TLS, stack traces and hardcoded secrets. A starter rule-coverage catalog lives in `rules/guardrails.yaml`, and `cf-tidy --list-checks` lists the compiled checks. Remaining: the rest of the guideline rule set and optional plugin packaging for shared-LLVM distributions |
 
-Test suite: **648 tests**, green on `debug`, `release`, `asan` and `tsan`.
+Test suite: **748 tests**, green on `debug`; CI also runs the `release`, ASan and TSan presets.
 
 ---
 
@@ -56,11 +57,13 @@ The design's module map and the implemented directories:
 | cf-refmirror | `include/cf/refmirror`, `src/refmirror` | 6.3.1 | Approved-documentation manifest, fetch + checksum + clean + scan + publish pipeline |
 | cf-git | `include/cf/git`, `src/git` | 6.8.3, 10.4.5 | Worktrees, snapshot commits with CF trailers, diffs, file hashes, trailer recovery, squash merges |
 | cf-sandbox | `include/cf/sandbox`, `src/sandbox` | 6.8 | Sandbox executors behind `ProcessExecutor`: Docker (gate jobs + opencode servers, internal-network egress) and daemon-free namespaces (user/mount/net/UTS/IPC/PID namespaces, Landlock, seccomp, cgroups) |
-| cf-github | `include/cf/github`, `src/github` | 6.10, 10.4 | REST client (PRs, issues, comments, `cf-op` markers) and the pre-push checks |
-| cf-mcp | `include/cf/mcp`, `src/mcp` | 6.4, 9.1 | MCP stdio server, role-filtered tool registry with JSON-schema validation, structured errors |
-| cf-codeintel | `include/cf/codeintel`, `src/codeintel` | 6.5 | Language back-end interface + registry, SQLite symbol index (per-file incremental), tree-sitter back end (vendored C grammar), architecture layering check |
+| cf-github | `include/cf/github`, `src/github` | 6.10, 10.4 | REST client (PRs, issues, comments, branches, `cf-op` markers), pre-push checks and ruleset payloads |
+| cf-mcp | `include/cf/mcp`, `src/mcp` | 6.4, 9.1 | MCP stdio server, role-filtered tool registry with JSON-schema validation, structured errors, agent-side gate dry run (`run_checks`) and waiver requests |
+| cf-codeintel | `include/cf/codeintel`, `src/codeintel` | 6.5 | Language back-end interface + registry, SQLite symbol index (per-file incremental), Clang LibTooling C/C++ back end (optional LLVM 17) with tree-sitter fallback, tree-sitter back ends (vendored C, C++, Python, Go, TypeScript/JavaScript and Java grammars), context packer, architecture layering check |
+| cf-tidy | `include/cf/tidy`, `src/tidy` | 6.5, 6.7.1 | Company C/C++ guardrail checks and the `cf-tidy` gate driver |
 | cf-agents | `include/cf/agents`, `src/agents` | 6.6 | opencode adapter: HTTP client + SSE event stream (Phase 0a) |
 | cf-cli | `include/cf/cli`, `src/cli` | 9.2 | `cf` commands |
+| cf-telemetry | `include/cf/telemetry`, `src/telemetry` | 6.11, 14 | JSON log formatter and thread-local run/milestone/agent/trace context |
 | harness spike | `tests/harness_compat` | 6.6.2 | H1–H15 compatibility suite used to pin/upgrade opencode |
 
 The orchestrator is a deterministic state machine (design D6). External effects
@@ -138,8 +141,9 @@ disabled.
 - GCC 11+ or Clang 17+ (framework builds as strict C++17)
 - [vcpkg](https://github.com/microsoft/vcpkg) at the pinned baseline
   (`e456309491fd875487bf02b8a0dca76c1b1b00cc`, see `vcpkg.json`)
-- Optional: Docker (for the future sandbox executor), opencode 1.18.35 +
-  `FIREWORKS_API_KEY` (for the harness suite and real agent turns)
+- Optional: Docker for the container sandbox (gate jobs and agent
+  servers), opencode 1.18.35 + `FIREWORKS_API_KEY` (for the harness suite
+  and real agent turns)
 
 Third-party pins live in [`third_party/VERSIONS`](third_party/VERSIONS): opencode
 1.18.35, the default model IDs, LLVM 17, GCC/Clang minimums.
@@ -157,6 +161,12 @@ third_party/vcpkg/bootstrap-vcpkg.sh -disableMetrics
 # configure + build (vcpkg installs the manifest dependencies on first configure)
 cmake --preset debug
 cmake --build build/debug -j"$(nproc)"
+
+# optional: Clang LibTooling C/C++ code intelligence and cf-tidy (LLVM/Clang 17)
+# cmake --preset debug -DLLVM_DIR=/path/to/llvm/lib/cmake/llvm \
+#   -DClang_DIR=/path/to/llvm/lib/cmake/clang
+# Without these, cf-codeintel builds the tree-sitter C/C++ fallback and the
+# cf-tidy company-check target is omitted.
 
 # test
 ctest --test-dir build/debug --output-on-failure
@@ -183,6 +193,7 @@ and GCC 11's cannot suppress them (the small HNSW tests still run).
 | `cf-mcp` | MCP tool server over stdio (one per agent role) |
 | `cf-mcp-spike` | Minimal MCP stub used by the Phase 0a harness |
 | `cf-refmirror` | Reference documentation mirroring job |
+| `cf-tidy` | Company C/C++ guardrail checks (`cf-swt-*`) over a compilation database |
 | `cf-eval` | Golden suite validation/scoring, RAG evaluation, Phase 0b model benchmark |
 | `cf-harness-spike` | opencode compatibility suite (H1–H15) |
 
@@ -198,6 +209,9 @@ The workspace layout created by the CLI:
   runs/<run_id>/plan.yaml       # copy of the validated plan
   runs/<run_id>/design.{json,md}# approved design package (Phase 4)
   runs/<run_id>/codeintel.db    # symbol index (when a back end matches)
+  runs/<run_id>/rules/          # copy of the company guardrail rules
+  runs/<run_id>/opencode/       # encrypted opencode HTTP/SSE traffic archive
+  runs/<run_id>/usage-<role>.jsonl  # per-turn agent cost/tokens (opencode)
   runs/<run_id>/escalations/    # escalation bundles
   designs/                      # published approved designs (RAG input)
   wt/<run>/<milestone>/<role>/  # agent worktrees (driver)
@@ -231,6 +245,22 @@ cf run --plan plans/product-x.yaml --profiles profiles --workspace cf-work --run
 # review the design package, then approve it (AwaitingDesignApproval -> Executing)
 cf approve --run R12 --workspace cf-work --stage design
 
+# or send it back for revision with written feedback; the next execution
+# refines again using that feedback (design section 7.1)
+cf approve --run R12 --workspace cf-work --request-changes \
+       --reason "Route construction through the registry factory"
+
+# record a human waiver of a gate rule failure (design §10.2); agents cannot
+# waive checks. The waiver and its approver appear in report.json/md and the PR.
+cf approve --run R12 --workspace cf-work \
+       --waiver guardrails --scope src/bus.cpp:42 \
+       --justification "Legacy API kept for the compatibility window" \
+       --approved-by alice [--milestone M3]
+
+# refuse a pending agent waiver request instead
+cf approve --run R12 --workspace cf-work --refuse-waiver wreq_1a2b3c4d5e6f7788 \
+       --reason "fix the rule instead"
+
 # execute again: the run already exists (re-running is idempotent), startup
 # recovery reconciles whatever a killed orchestrator left behind (§6.12.4),
 # the approved refined plan drives the scheduler (write sets, interfaces)
@@ -253,8 +283,32 @@ cf escalations --run R12 --workspace cf-work
 # a human aborts an escalated run; the designs it published are withdrawn
 cf abort --run R12 --workspace cf-work --reason "superseded by R13"
 
-# final report: report.json + report.md (traceability matrix, gates, defects, cost)
+# final report: report.json + report.md (traceability, gates, defects, cost,
+# waivers, agent usage per role/milestone and the metrics snapshot)
 cf report --run R12 --workspace cf-work --out reports/R12
+
+# delete the run's cf/ branches once its PR has been merged/closed for
+# github.branch_retention_days (idempotent; safe to run from a cron job)
+cf cleanup --run R12 --workspace cf-work --repo /path/to/target-repo \
+           [--config cf.yaml] [--retention-days 30]
+# or sweep every run in the workspace (the usual cron invocation)
+cf cleanup --all --workspace cf-work --repo /path/to/target-repo
+
+# post due waiting-state reminders (design approval after 2/4 business days,
+# escalation after 1/2, waiver requests after 1) on the run's PR; --all is the
+# usual cron invocation
+cf remind --run R12 --workspace cf-work [--config cf.yaml]
+cf remind --all --workspace cf-work [--config cf.yaml]
+
+# write the GitHub-side ruleset payloads; a human with admin rights applies
+# them (the CF bot deliberately has no administration permission)
+cf rulesets --out rulesets/ [--required-check "ci / build"] \
+            [--required-check "ci / test"]
+
+# re-send an archived direct LLM call (needs CF_ARCHIVE_KEY, the same key used
+# when the call was archived) to the archived or an overridden model
+cf replay --run R12 --workspace cf-work --call call_1a2b3c4d5e6f7788 \
+          [--model accounts/fireworks/models/<model>]
 ```
 
 ### Plans
@@ -284,6 +338,7 @@ budget:
 approvals:                   # business days; overrides cf.yaml defaults
   design_approval: 4d
   escalation: 2d
+  waiver: 2d
 ```
 
 Refined plans may additionally declare per milestone: `writes` (components/paths),
@@ -294,11 +349,78 @@ these drive the scheduler's parallel-safety rules (design §6.13.2).
 
 `profiles/*.yaml` (design §6.7.3) contain **trusted commands only**: lists of steps,
 each an argument list, executed with no shell. `{src_dir}`, `{build_dir}`,
-`{standard}`, `{standard_number}`, `{standard_var}` and `{changed_files...}`
-placeholders are expanded per element. `profiles/c-cpp.yaml`, `profiles/python.yaml`
-and `profiles/go.yaml` are provided; TypeScript/JavaScript and Java follow the
-tools table in design §6.7.2. The profile also supplies the coverage/mutation tool
-metadata, but the stage-3 coverage and mutation runners are not built yet (see §9).
+`{standard}`, `{standard_number}`, `{standard_var}`, `{rules_dir}` and
+`{changed_files...}` placeholders are expanded per element, including the stage-3
+`{coverage_line}`/`{coverage_branch}`/`{mutation_min_score}` values. Coverage
+steps can declare `format`/`report` for the built-in threshold checker
+(`coverage-json`, `go-cover`, `lcov`, `llvm-cov-json` or `jacoco-xml`).
+`profiles/c-cpp.yaml`, `profiles/python.yaml`, `profiles/go.yaml`,
+`profiles/typescript.yaml` (TypeScript and JavaScript, npm/pnpm, vitest/jest)
+and `profiles/java.yaml` (Maven/Gradle, JUnit 5) are provided. The profile
+supplies the coverage/mutation tool metadata and optional stage-3 steps; the
+Python, Go and TypeScript profiles ship line/branch coverage steps checked by
+the built-in parser. The C/C++ profile runs `rules/scripts/cpp-coverage.sh` for
+CMake and Meson projects: it configures a separate Clang-instrumented build,
+runs CTest/Meson test, merges the profiles and exports `llvm-cov-json`;
+`CF_COVERAGE_LDFLAGS` can append linker flags on hosts with a non-default
+libstdc++ path. The Java profile runs `rules/scripts/java-coverage.sh`, which
+invokes Maven or Gradle and normalizes the JaCoCo XML report. The Python
+profile runs `rules/scripts/python-mutation.sh`, which copies the worktree,
+runs mutmut in isolation, exports CI/CD stats and enforces the configured
+score. Make coverage and the remaining mutation commands still need toolchain
+verification. The C/C++ analysis stage runs Clang Static Analyzer through
+`clang-tidy` (`clang-analyzer-*`) plus `cppcheck`.
+
+### Company guardrails (`cf-tidy`)
+
+When LLVM/Clang 17 is enabled, `cf-tidy` runs the company `cf-swt-*` checks over
+the target's `compile_commands.json`. The first rules are
+`cf-swt-no-raw-new`, `cf-swt-no-raw-delete`, `cf-swt-no-raw-malloc` and
+`cf-swt-no-detached-thread` (CG-4.2) flag raw `new`, `delete`, C allocation/free
+calls and detached threads in C++ project code while allowing placement new,
+system headers and namespaces passed with `--allowed-namespaces=<regex>`.
+`cf-swt-no-hardcoded-secret` flags credential-like variables initialized with a
+string literal. `cf-swt-no-bool-param` flags boolean parameters that the
+interface guideline asks authors to replace with a meaningful enum or split
+operation. `cf-tidy` also reads `cf-swt-*.AllowedNamespaces` from a
+`.clang-tidy` file found by walking up from the compilation database, so the
+same configuration can be used by standard clang-tidy and the company checks.
+`cf-tidy --list-checks` lists the compiled checks; `rules/guardrails.yaml`
+records which company rules are automated and which remain reviewer-only.
+
+```bash
+build/debug/cf-tidy -p build/debug --allowed-namespaces='^::allocator$' src/a.cpp
+```
+
+It exits non-zero when it finds a violation and prints clang-style diagnostics
+tagged with the rule ID. `profiles/c-cpp.yaml` runs the standard `clang-tidy`
+check set (with warnings treated as errors) and then `cf-tidy`, so a guardrail
+failure blocks the gate. The pinned LLVM package is static, so `cf-tidy` is a
+small clang-tidy-compatible driver rather than a loadable plugin; the remaining
+rules and optional plugin packaging are tracked in §9.
+
+### Non-C/C++ guardrails (`rules/semgrep`)
+
+The non-C/C++ profiles load starter company rules through Semgrep:
+`python.yaml`, `typescript.yaml`, `javascript.yaml`, `java.yaml` and `go.yaml`.
+`{rules_dir}` is resolved from `CF_RULES_DIR` when set, otherwise from the
+resolved profile's repository (`<repo>/rules`), and is copied into the run
+directory so both gate jobs and agent-side `run_checks` see the same trusted
+files. Docker and namespace gate sandboxes mount it read-only at `/cf-rules`.
+The rules cover high-signal hazards such as `shell=True`, unsafe YAML loading,
+`eval`, untrusted `innerHTML`, `Runtime.exec`, `exec.Command("sh", "-c", ...)`,
+disabled TLS verification, stack-trace printing and hardcoded secrets. Rule IDs
+are immutable and use the `swt.<language>.<rule>` form; findings are gate
+failures because the profiles pass `--error`.
+
+```bash
+semgrep --validate --config rules/semgrep/python.yaml
+semgrep --config rules/semgrep/typescript.yaml --error src/frontend
+```
+
+Add one rule per mandatory guideline item as the company rule set grows. The
+C/C++ checks stay in `cf-tidy`; see `rules/semgrep/README.md` for the rule
+authoring contract.
 
 ### Configuration file (`cf.yaml`, design §15)
 
@@ -321,9 +443,12 @@ github:
   app_id: "12345"               # GitHub App identity; private_key_ref is a PEM path
   installation_id: "67890"
   private_key_ref: /srv/keys/github-app.pem   # secretmanager:// is rejected
+  signing_key_ref: /srv/keys/cf-signing       # SSH key for signed commits
   branch_prefix: "cf/"          # pre-push branch policy
   protected_paths: [".github/**", "CODEOWNERS", "cf.yaml", "deploy/**"]
   max_file_mb: 5                # pre-push size limit
+  push_on: [milestone_done, run_done, escalation]   # when CF pushes
+  branch_retention_days: 30     # delete cf/ branches this long after close
   pr:
     draft_until_done: true      # false: open the PR ready immediately
     labels: [cf-generated]      # applied to the PR (added, never removed)
@@ -340,10 +465,13 @@ models:
     coder:    { family: deepseek, fireworks: "<model-id>", temperature: 0.1, max_output_tokens: 8192 }
     reviewer: { family: kimi,     fireworks: "<model-id>", temperature: 0.0 }
     qa:       { family: glm,      fireworks: "<model-id>" }
+  embeddings:                   # hybrid retrieval (design §6.3)
+    fireworks: { model: "<embedding-model>", dim: 768, index: hosted }
 
 approvals:                      # business-day deadlines (§12.1)
   design_approval: 5d
   escalation: 3d
+  waiver: 2d
 
 budget:                         # defaults only; a plan's budget wins
   max_usd_total: 150
@@ -359,9 +487,25 @@ rag:
   precedence: [policy, requirements, architecture, design, guideline, pattern, external_reference]
                                 # listed first; missing types keep the built-in order
 
-gates:   { profiles_dir: ./profiles }
-review:  { diff_threshold_lines: 400 }
-sandbox: { cpu: 8, memory_gb: 16, job_timeout_min: 30 }
+reference_docs:
+  manifest: ./reference-docs/manifest.yaml
+  index_version: pinned_at_run_start
+  version_source: auto        # vcpkg.json / requirements.txt / package.json
+  on_missing_version: report  # report (skip the set) or fail
+
+gates:
+  profiles_dir: ./profiles
+  profile: auto        # or pin an id such as c-cpp; FR-18 still applies
+  coverage: { line: 0.85, branch: 0.75, scope: changed }
+  mutation: { enabled: true, min_score: 0.60 }
+review:
+  diff_threshold_lines: 400
+  blocking_severities: [blocker, major]
+sandbox:
+  cpu: 8
+  memory_gb: 16
+  job_timeout_min: 30
+  network: deny                 # gate jobs are always network-isolated
 ```
 
 Behaviour worth knowing:
@@ -373,27 +517,100 @@ Behaviour worth knowing:
 - **Approvals.** `Nd` means N business days (weekends skipped). Expired
   design-approval or escalation waits abort the run with
   `approval_timeout`/`escalation_timeout`; the resolved values are stored on
-  the run, so `cf approve` sees the same deadline. `approvals.waiver` is not
-  implemented yet.
+  the run, so `cf approve` sees the same deadline. `approvals.waiver` is
+  resolved and stored the same way for the waiver-request deadline.
+- **Waivers.** Only a human can waive a gate rule, with
+  `cf approve --waiver <rule> --scope <file:line> --justification <text>
+  [--approved-by <person>] [--milestone <id>]`. The record names the approver
+  and reason and is listed in `report.json`/`report.md` and the PR body. The
+  next gate run waives a failed gate when every finding is covered (a `*`
+  scope covers the whole rule); skipped checks are never waived, and commit
+  trailers list the waivers. With `--milestone` (or a matching failed gate)
+  the command also returns an escalated milestone to `Gating` and the run to
+  `Executing`, so `cf run --execute` re-runs the gates with the waiver.
+  Agents can call `request_waiver`; a pending request pauses the run before
+  the next agent turn, is listed in `status`/the report, carries the
+  `approvals.waiver` deadline and is expired by the next run or
+  approval/report command. An approved waiver or expiry lets execution
+  continue.
 - **Budget.** The plan's block wins over the file. The wall-clock limit counts
   only active states; waiting for people is bounded by `approvals` instead.
+- **Waiting-state reminders.** `cf remind` checks the run's confirmed PR and
+  posts the §12.1 reminders that are due (design approval after 2 and 4
+  business days, escalation after 1 and 2), mentioning CODEOWNERS users. A
+  hidden marker on each comment makes the job idempotent. `cf remind --all`
+  sweeps every run in the workspace.
+- **Branch retention.** `cf cleanup` checks the run's confirmed PR; once it
+  is merged or closed for `github.branch_retention_days` (default 30) it
+  deletes only the run's `cf/<run>/*` branches through the GitHub API. The
+  command is idempotent (a missing branch is already clean) and keeps the
+  commit SHAs in the run store. `cf cleanup --all` sweeps every run in the
+  workspace, so one scheduled invocation covers all runs.
+- **GitHub push scheduling.** `push_on` selects the events that push:
+  `milestone_done` (milestone and integration branches, PR open/update),
+  `run_done` (final integration and marking the PR ready) and `escalation`
+  (escalation branch and comment). It defaults to all three; an empty list is
+  rejected. With `run_done` disabled the PR stays a draft even at `Done`.
+- **Commit signing.** When `github.signing_key_ref` (or
+  `--github-signing-key-file`) names an SSH private key, git signs every CF
+  commit with it (design §10.4.2), including squashed integration commits; the
+  pre-push check then rejects any unsigned commit since the base branch.
+  `secretmanager://` references are rejected in this build; use a file path.
+- **GitHub rulesets.** `cf rulesets` writes the main/release and `cf/**`
+  payloads (review, CODEOWNERS, signatures, linear history, no force
+  push/deletion; signed commits on `cf/**`). Apply them with an admin token;
+  the CF bot has no administration permission by design.
 - **GitHub pre-push.** The checks run on the exact commit before every flow
-  push; a rejection records no intent and escalates the run. Configured
-  `protected_paths` are additive: the standard set cannot be removed.
+  push; a rejection records no intent and escalates the run. If the base
+  moved, the orchestrator rebases the integration branch, re-runs the gate
+  plan on the new head and records those results before pushing; a conflict
+  or failing re-gate escalates. Configured `protected_paths` are additive:
+  the standard set cannot be removed.
 - **GitHub PR policy.** `draft_until_done: false` opens the PR ready (and
   requests reviewers at creation when enabled); labels are applied
   idempotently; the PR body is built from the run summary (gates,
-  traceability, defects, cost) and links `runs/<run>/report.md`.
+  traceability, defects, waivers, cost) and links `runs/<run>/report.md`.
+- **Reference docs.** `reference_docs` mirrors the approved manifest into
+  `runs/<run>/reference-docs` once per run and pins the dependency versions
+  found in the target checkout. Archive sets are unpacked and filtered by their
+  `extract` patterns. A set whose mirrored version does not match the project
+  pin is skipped (or fails the run with `on_missing_version: fail`);
+  `lookup_reference` then reports it as not covered instead of returning
+  another version.
 - **RAG.** `top_k` is the default for `search_guidelines` and the refiner
-  context size. Hybrid weights scale the two reciprocal-rank-fusion lists;
+  context size; `models.embeddings` selects the provider/model for hybrid
+  retrieval (it must have a matching `providers` entry). `cf ingest` accepts
+  PDF and DOCX files with a `<file>.meta.yaml` sidecar (poppler `pdftotext`,
+  Pandoc). Hybrid weights scale the two reciprocal-rank-fusion lists;
   `precedence` decides conflict winners, with unlisted types appended in the
   built-in order.
+- **Pattern conformance.** When the pattern catalog is loaded, refinement
+  requires every ADR to carry a `pattern_id` that exists in the catalog;
+  missing or unknown ids fail the design before the approval gate.
+- **Design changes.** `cf approve --request-changes --reason <text>` moves
+  `AwaitingDesignApproval` back to `Refining`, archives the rejected
+  `design.{json,md}` files and records the feedback; the next refinement
+  prompt includes it.
+- **Pinned profile.** `gates.profile` selects a toolchain profile by id
+  instead of resolving from the plan's `target`; the pinned profile must
+  still declare the plan's exact language/build-system/test-framework
+  combination (FR-18).
+- **Review severities.** `review.blocking_severities` selects which finding
+  severities from `submit_review` block the milestone; a verdict with no
+  structured findings falls back to its explicit verdict.
+- **Stage-3 gates.** A profile may declare trusted `steps` under
+  `common.coverage` and `common.mutation`; they run only after every stage-1
+  and stage-2 gate passed. `gates.coverage` and `gates.mutation` override the
+  profile thresholds (`line`/`branch` are ratios), and
+  `mutation.enabled: false` removes the mutation gate. The steps can use
+  `{coverage_line}`, `{coverage_branch}` and `{mutation_min_score}`. The
+  Python profile ships line-and-branch coverage steps; C/C++/Go coverage and
+  mutation runners are profile-author supplied.
 - **Gate resources.** `sandbox.cpu`, `memory_gb` and `job_timeout_min` apply
   to gate jobs (container/namespace limits and step timeout).
 
-Not accepted yet (the loader rejects them): `reference_docs`,
-`gates.coverage`, `gates.mutation`, `approvals.waiver`, `github.push_on`,
-`github.branch_retention_days` and `github.signing_key_ref`. See
+All documented `cf.yaml` sections are now accepted; unsupported values are
+rejected (for example, `sandbox.network` only accepts `deny`). See
 [§9](#9-known-gaps-and-roadmap).
 
 ---
@@ -408,6 +625,7 @@ cf-mcp --role coder --run R12 --milestone M3 \
        --db cf-work/runs/R12/run.db \
        --docs cf-work/docs \
        [--codeintel-db cf-work/runs/R12/codeintel.db] \
+       [--rules-dir /cf/rules] \
        [--top-k 8] [--rag-index hnswlib|brute-force] \
        [--rag-bm25-weight 0.4 --rag-vector-weight 0.6] \
        [--rag-precedence policy,requirements,architecture,design,guideline,pattern,external_reference]
@@ -418,15 +636,16 @@ The run process forwards the `rag` settings from `cf.yaml` to every role server;
 
 | Tool | Roles | Notes |
 |---|---|---|
-| `search_guidelines`, `get_document`, `get_requirement`, `get_design`, `lookup_reference` | all | RAG-backed; hits carry citations, precedence conflicts and `unresolved_conflict` flags; `lookup_reference` returns `covered:false` for mirror gaps |
+| `search_guidelines`, `get_document`, `get_requirement`, `get_design`, `lookup_reference` | all | RAG-backed; hits carry citations, precedence conflicts and `unresolved_conflict` flags; `lookup_reference` defaults to the run's pinned version and returns `covered:false` for mirror gaps |
 | `get_pattern` | coder, reviewer | Pattern catalog entries |
 | `get_gate_results`, `list_defects` | all | Read from the run store |
 | `file_defect`, `verify_defect` | qa | Fingerprint de-duplication; recurring defects are marked `REOPENED` |
 | `submit_work` / `submit_review` / `submit_tests` | coder / reviewer / qa | Structured turn endings |
 | `dispute_test` | coder | Records a `DISPUTED` defect against a protected test and ends the turn; QA decides immediately (fix or reject), a second dispute of the same test escalates (design §6.9, §12) |
 | `find_symbol`, `get_callers` | all | Query the cf-codeintel symbol index when `--codeintel-db` is given; `TOOL_UNAVAILABLE` otherwise |
-| `get_context` | coder, reviewer | Packed code context within a token budget; the task seed is a symbol name or an indexed file/component path |
-| `run_checks` | – | Returns `TOOL_UNAVAILABLE` until the gate dry-run lands (§9) |
+| `get_context` | coder, reviewer | Packed code context within a token budget plus relevant ADR/contract text; the task seed is a symbol name or an indexed file/component path |
+| `request_waiver` | coder, qa | Records a pending human waiver request with the configured business-day deadline; never grants it |
+| `run_checks` | coder, qa | Dry-runs declared profile gates on the agent worktree (build/format/guardrails/analysis/tests); no gate result is recorded. `TOOL_UNAVAILABLE` when the role server has no profile. `--rules-dir` supplies the trusted `swt.*` rules copied into the run |
 
 Arguments are validated against JSON schemas; failures return structured errors
 (`TOOL_INVALID_ARGUMENTS`, `TOOL_DENIED`, `TOOL_NOT_FOUND`, `TOOL_UNAVAILABLE`).
@@ -449,15 +668,25 @@ cf-refmirror --manifest reference-docs/manifest.yaml --out mirror/ [--only boost
 Sets that fail the checksum or the injection scan are held and reported, never
 indexed. Sources can be HTTP(S) or local files (useful for tests and air-gapped
 setups). Sets that request generation (e.g. `generate: doxygen`) are reported as
-`unsupported`; archive extraction is not implemented yet either. The checked-in
-manifest carries placeholder URLs/checksums until the real approved sets land.
+`unsupported`. Archive sources with `extract` patterns are unpacked with the
+system `tar`/`unzip`; matching HTML/Markdown documents are cleaned, injection-
+scanned and written as separate front-matter documents (`<id>-<version>-N.md`)
+alongside the raw archive. The checked-in manifest carries placeholder
+URLs/checksums until the real approved sets land.
+
+With `reference_docs` configured, `cf run --execute` mirrors the manifest into
+`runs/<run>/reference-docs` once, pins the versions named by the target
+checkout's dependency files in `runs/<run>/reference-versions.json`, and indexes
+the mirror in the refiner, question answering and every role server. A version
+mismatch skips that set (or aborts the run with `on_missing_version: fail`), and
+the skipped sets are recorded in the same JSON file.
 
 ---
 
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 648 unit tests
+ctest --test-dir build/debug --output-on-failure     # 748 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -608,9 +837,23 @@ opencode version.
   rule), not because of the executor. Remaining: running agent (opencode)
   servers in the namespace sandbox, which needs a routed egress path for the
   model endpoint.
-- **Custom clang-tidy checks (`cf-swt-*`).** Needs LLVM 17+ (`llvm-17-dev`,
-  `clang-tidy-17`); not available in this environment's default repos. Check
-  fixtures per design §6.5.
+- **Company guardrail checks (`cf-swt-*`).** The first checks,
+  `cf-swt-no-raw-new`, `cf-swt-no-raw-delete`, `cf-swt-no-raw-malloc` and
+  `cf-swt-no-detached-thread` (CG-4.2), `cf-swt-no-hardcoded-secret` and
+  `cf-swt-no-bool-param` are implemented in `cf-tidy` with fixture tests, and
+  the C/C++ profile runs them after the standard clang-tidy check set. The
+  pinned LLVM package is static, so `cf-tidy` is a clang-tidy-compatible gate
+  driver rather than a loadable `.so`; a plugin build can be added for
+  shared-LLVM distributions. A starter `rules/guardrails.yaml` catalog records
+  automated and reviewer-only rules (`cf-tidy --list-checks` lists the compiled
+  checks); the full guideline mapping remains.
+- **Coverage and mutation gates.** The stage-3 runner, threshold placeholders
+  and built-in coverage parser (`coverage-json`, `go-cover`, `lcov`,
+  `llvm-cov-json`, `jacoco-xml`) are implemented. The Python, Go, TypeScript,
+  C/C++ (CMake/Meson) and Java (Maven/Gradle) profiles enforce their configured
+  thresholds. Python mutation runs through a mutmut wrapper. Make coverage and
+  the remaining mutation commands still need real toolchain verification
+  before being enabled.
 - **GitHub operations.** `cf-github` provides the REST client (pull requests,
   issues, comments, hidden `cf-op` markers), the full §10.4.6 pre-push check
   set (branch policy, protected paths, size, binaries, required trailers,
@@ -642,10 +885,33 @@ opencode version.
   `.github/CODEOWNERS`, `CODEOWNERS` or `docs/CODEOWNERS` from the repository
   and requests users and teams on the pull request, again on reconcile after a
   crash (requesting is idempotent); a missing file simply means no reviewers.
-  Remaining for full §10.4 fidelity: `github.push_on` scheduling,
-  branch-retention cleanup after merge/close, commit signatures and base
-  freshness in the pre-push set, GitHub ruleset provisioning, and the waivers
-  section of the PR body (the waiver flow itself is not built).
+  When the base moves, the run process now rebases the integration branch
+  and re-runs the integration gates before pushing; a rebase conflict or a
+  failing re-gate escalates (the design's coder-driven conflict resolution
+  is not built). Remaining for full §10.4 fidelity: that conflict-resolution
+  path and applying the generated rulesets from an admin context.
+- **Waiver flow (§10.2, §12.1).** Human waivers are recorded by
+  `cf approve --waiver`, persisted in the run store and listed, with the
+  approver and justification, in the report and the PR body; agents can
+  request one but have no way to grant it. The gate loop consumes them, an
+  escalated milestone goes
+  back to `Gating`, and commits carry `CF-Waivers`. The resolved
+  `approvals.waiver` deadline is stored on the run. A pending agent request
+  pauses the run, is listed in `status`/the report, receives a reminder after
+  one business day, and can be approved (`--waiver`) or refused
+  (`--refuse-waiver`) by a human, or expires at its deadline.
+- **Observability (§6.11, §14).** `cf-telemetry` installs a JSON formatter
+  and a thread-local context, so every log line carries `run_id`,
+  `milestone_id`, `agent` and `trace_id`; the run process and driver scope
+  each agent turn and gate run. `report.json` carries the design's metric
+  names and labels (gate pass ratio, iterations, open defects, LLM
+  tokens/USD, escalations, RAG latency average/p95) and exports it as
+  OTLP/HTTP JSON when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Direct `cf-llm`
+  calls (planner and embeddings) are archived under `runs/<run>/llm`, and
+  opencode HTTP calls and SSE events are archived under
+  `runs/<run>/opencode`; both use gzip plus AES-256-GCM with
+  `CF_ARCHIVE_KEY` (64 hex characters). Direct-call refs go into the cost
+  ledger, and `cf replay` re-sends one to the same or another model.
 - **Model benchmark (Phase 0b).** `cf-eval bench` implements the benchmark: the
   candidates in `eval/benchmarks/fireworks.yaml` run through the real pipeline on
   the evaluation plans, with hidden acceptance tests and scored reports under
@@ -708,12 +974,15 @@ opencode version.
 - **RAG production index.** hnswlib is the default vector index (brute force
   stays behind the same `VectorIndex` interface and is selectable with
   `rag.index: brute-force`); FAISS (IVF-PQ for collections over 5M chunks) is
-  still pending. PDF/DOCX ingestion
-  is pending; the labeled retrieval evaluation set is started (`eval/rag/`)
+  still pending. PDF/DOCX ingestion uses the external converters
+  (`pdftotext`/`pandoc`) and a metadata sidecar. The labeled retrieval
+  evaluation set is started (`eval/rag/`)
   and grows to 200 queries per collection, and the adversarial conflict set is
   in place.
-- **System-level validation loop.** `WorkspaceDriver::validate_system` delegates to
-  the agent runner; the full QA system suite comes with the real runner.
+- **System-level validation loop.** `WorkspaceDriver::validate_system` drives a
+  real QA system-validation session on the integration worktree and routes
+  defects back to Executing; a dedicated cross-component system-test suite is
+  still to add.
 
 ---
 
@@ -728,7 +997,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (648)
+tests/unit/                 # GoogleTest unit tests (748)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)
@@ -736,6 +1005,9 @@ reference-docs/manifest.yaml
 catalog/patterns/           # curated pattern catalog (YAML, design §6.2)
 prompts/                    # versioned role prompt templates
 profiles/                   # toolchain profiles (YAML)
+rules/semgrep/              # company swt.* rules for non-C/C++ targets
+rules/guardrails.yaml       # automated/reviewer-only rule coverage
+rules/scripts/              # trusted gate helpers (C/C++/Java coverage, Python mutation)
 scripts/                    # dev helpers (e.g. safe cleanup of leaked servers)
 AGENTS.md                   # agent guardrails (process safety, conventions)
 ```
@@ -754,4 +1026,6 @@ AGENTS.md                   # agent guardrails (process safety, conventions)
 - Changes to pinned versions (`third_party/VERSIONS`) require re-running the
   compatibility suite for opencode and the golden evaluation suite for models.
 - Never commit secrets. Provider keys come from the environment
-  (`FIREWORKS_API_KEY`, `VLLM_API_KEY`).
+  (`FIREWORKS_API_KEY`, `VLLM_API_KEY`); the LLM/opencode archive key comes
+  from `CF_ARCHIVE_KEY` (64 hex characters), and
+  `OTEL_EXPORTER_OTLP_ENDPOINT` enables the metrics export.

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -72,7 +73,7 @@ const char* kDesign = R"json({
   ],
   "adrs": [
     {"id": "ADR-001", "title": "Layered design", "decision": "Use layers",
-     "alternatives": ["hexagonal"]}
+     "alternatives": ["hexagonal"], "pattern_id": "PAT-PRODUCER-CONSUMER"}
   ]
 })json";
 
@@ -81,7 +82,7 @@ const char* kOkCritique = R"json({"verdict": "ok", "issues": []})json";
 TEST(RefinerTest, RefinesAndKeepsThePlanContract) {
   ScriptedModel model;
   model.replies = {kDesign, kOkCritique};
-  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner"});
+  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner", 6, true, ""});
 
   auto package = refiner.refine(sample_plan());
   ASSERT_TRUE(package.has_value()) << package.error().message;
@@ -94,6 +95,50 @@ TEST(RefinerTest, RefinesAndKeepsThePlanContract) {
   ASSERT_EQ(package->adrs.size(), 1u);
   EXPECT_EQ(model.prompts.size(), 2u);  // design + self-critique
   EXPECT_NE(model.prompts[0].find("PLAN-X"), std::string::npos);
+}
+
+TEST(RefinerTest, HumanFeedbackIsCarriedIntoThePlannerPrompt) {
+  ScriptedModel model;
+  model.replies = {kDesign, kOkCritique};
+  DesignRefinerOptions options{"test-planner", 6, true,
+                               "Route construction through the registry factory."};
+  DesignRefiner refiner(model, nullptr, std::move(options));
+  auto package = refiner.refine(sample_plan());
+  ASSERT_TRUE(package.has_value()) << package.error().message;
+  ASSERT_FALSE(model.prompts.empty());
+  EXPECT_NE(model.prompts[0].find("Route construction through the registry factory."),
+            std::string::npos);
+}
+
+TEST(RefinerTest, PatternConformanceRequiresAKnownCatalogId) {
+  auto entry = cf::rag::parse_pattern_entry(R"yaml(
+id: PAT-PRODUCER-CONSUMER
+name: Producer-consumer queue
+level: system
+use_when: ["producers hand work to consumers"]
+)yaml",
+                                            "pc.yaml");
+  ASSERT_TRUE(entry.has_value()) << entry.error().message;
+  const std::vector<cf::rag::PatternEntry> catalog = {*entry};
+
+  auto package = cf::orch::parse_design_package(kDesign);
+  ASSERT_TRUE(package.has_value()) << package.error().message;
+  EXPECT_TRUE(
+      cf::orch::validate_pattern_conformance(*package, catalog).has_value());
+
+  auto missing = *package;
+  missing.adrs[0].pattern_id.clear();
+  auto missing_status = cf::orch::validate_pattern_conformance(missing, catalog);
+  ASSERT_FALSE(missing_status.has_value());
+  EXPECT_NE(missing_status.error().message.find("pattern_id"),
+            std::string::npos);
+
+  auto unknown = *package;
+  unknown.adrs[0].pattern_id = "PAT-NOT-THERE";
+  auto unknown_status = cf::orch::validate_pattern_conformance(unknown, catalog);
+  ASSERT_FALSE(unknown_status.has_value());
+  EXPECT_NE(unknown_status.error().message.find("PAT-NOT-THERE"),
+            std::string::npos);
 }
 
 TEST(RefinerTest, ThePlannerPromptCarriesThePatternCatalog) {
@@ -110,7 +155,7 @@ company_notes: "Fixed-capacity ring buffer with acquire/release atomics."
 
   ScriptedModel model;
   model.replies = {kDesign, kOkCritique};
-  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner"},
+  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner", 6, true, ""},
                         &catalog);
   auto package = refiner.refine(sample_plan());
   ASSERT_TRUE(package.has_value()) << package.error().message;
@@ -129,7 +174,7 @@ TEST(RefinerTest, RevisionFollowsTheCritique) {
   model.replies = {kDesign,
                    R"json({"verdict": "revise", "issues": ["M1 needs a mutex"]})json",
                    revised};
-  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner"});
+  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner", 6, true, ""});
 
   auto package = refiner.refine(sample_plan());
   ASSERT_TRUE(package.has_value()) << package.error().message;
@@ -141,7 +186,7 @@ TEST(RefinerTest, RevisionFollowsTheCritique) {
 TEST(RefinerTest, KeepsTheFirstDesignWhenTheCritiqueIsUnreadable) {
   ScriptedModel model;
   model.replies = {kDesign, "I could not review this."};
-  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner"});
+  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner", 6, true, ""});
   auto package = refiner.refine(sample_plan());
   ASSERT_TRUE(package.has_value()) << package.error().message;
   EXPECT_EQ(package->milestones[0].title, "Core");
@@ -159,7 +204,7 @@ TEST(RefinerTest, KeepsTheFirstDesignWhenTheRevisionIsInvalid) {
                              {"id": "M2", "requirements": ["REQ-2"], "acceptance": ["a"]}
                            ],
                            "adrs": [{"id": "ADR-001", "title": "t", "decision": "d"}]})json"};
-  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner"});
+  DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner", 6, true, ""});
   auto package = refiner.refine(sample_plan());
   ASSERT_TRUE(package.has_value()) << package.error().message;
   EXPECT_EQ(package->milestones[0].title, "Core");
@@ -169,7 +214,7 @@ TEST(RefinerTest, RejectsDesignsThatBreakThePlan) {
   const auto refine_with = [](const std::string& design) {
     ScriptedModel model;
     model.replies = {design, kOkCritique};
-    DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner"});
+    DesignRefiner refiner(model, nullptr, DesignRefinerOptions{"test-planner", 6, true, ""});
     return refiner.refine(sample_plan());
   };
 

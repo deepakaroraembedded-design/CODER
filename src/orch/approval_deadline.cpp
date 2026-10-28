@@ -54,6 +54,21 @@ store::UnixTime add_business_days(store::UnixTime start,
   return at;
 }
 
+std::uint32_t business_days_between(store::UnixTime start,
+                                     store::UnixTime now) {
+  if (now <= start) {
+    return 0;
+  }
+  std::uint32_t days = 0;
+  for (store::UnixTime at = start + kSecondsPerDay; at <= now;
+       at += kSecondsPerDay) {
+    if (!is_weekend(at)) {
+      ++days;
+    }
+  }
+  return days;
+}
+
 Result<std::optional<store::UnixTime>> waiting_deadline(
     store::RunStore& store, std::string_view run_id,
     const ApprovalDeadlines& deadlines) {

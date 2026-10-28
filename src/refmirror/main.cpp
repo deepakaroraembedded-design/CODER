@@ -11,6 +11,7 @@
 #include "cf/llm/client.hpp"
 #include "cf/refmirror/manifest.hpp"
 #include "cf/refmirror/mirror.hpp"
+#include "cf/telemetry/logging.hpp"
 
 int main(int argc, char** argv) {
   CLI::App app{"cf-refmirror: mirror the approved reference documentation sets"};
@@ -25,7 +26,7 @@ int main(int argc, char** argv) {
   CLI11_PARSE(app, argc, argv);
 
   spdlog::set_default_logger(spdlog::stderr_color_mt("cf-refmirror"));
-  spdlog::set_level(spdlog::level::info);
+  cf::telemetry::configure_json_logging();
 
   auto manifest = cf::refmirror::load_manifest_file(manifest_path);
   if (!manifest) {

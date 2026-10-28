@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <string_view>
 #include <system_error>
 #include <utility>
 
@@ -12,9 +13,12 @@
 #include "cf/orch/defect_export.hpp"
 #include "cf/orch/github_flow.hpp"
 #include "cf/orch/recovery.hpp"
+#include "cf/llm/client.hpp"
+#include "cf/rag/embedder.hpp"
 #include "cf/rag/loader.hpp"
 #include "cf/rag/retriever.hpp"
 #include "cf/sandbox/docker.hpp"
+#include "cf/telemetry/logging.hpp"
 
 namespace cf::orch {
 namespace {
@@ -104,6 +108,16 @@ RunProcessConfig anchor_config(RunProcessConfig config) {
     anchor_path(docs);
     config.docs_dir = docs.string();
   }
+  if (!config.reference_docs_dir.empty()) {
+    std::filesystem::path path = config.reference_docs_dir;
+    anchor_path(path);
+    config.reference_docs_dir = path.string();
+  }
+  if (!config.reference_versions_file.empty()) {
+    std::filesystem::path path = config.reference_versions_file;
+    anchor_path(path);
+    config.reference_versions_file = path.string();
+  }
   return config;
 }
 
@@ -122,10 +136,46 @@ void RunProcess::set_session_driver_factory(SessionDriverFactory factory) {
 }
 
 Result<RunState> RunProcess::execute(store::UnixTime now) {
+  telemetry::ScopedContext log_context(config_.run_id, "", "");
   const std::filesystem::path run_dir =
       config_.workspace_root / "runs" / config_.run_id;
   std::error_code ec;
   std::filesystem::create_directories(run_dir, ec);
+  // The agent's run_checks loads the same trusted profile as the orchestrator
+  // (design section 9.1); keep a copy inside the run directory, which is also
+  // mounted at /cf in sandboxed agent containers.
+  std::string profile_copy;
+  if (!config_.profile_path.empty()) {
+    const std::filesystem::path destination = run_dir / "profile.yaml";
+    std::filesystem::copy_file(config_.profile_path, destination,
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
+    if (ec) {
+      spdlog::warn("cannot copy the toolchain profile for run_checks: {}",
+                   ec.message());
+    } else {
+      profile_copy = destination.string();
+    }
+  }
+
+  // Company guardrail rules are framework assets, not part of the target
+  // worktree. Keep a copy in the run directory (mounted at /cf in agent
+  // containers) and pass the same directory to gate sandboxes.
+  std::string rules_copy;
+  if (!config_.rules_dir.empty()) {
+    const std::filesystem::path destination = run_dir / "rules";
+    std::filesystem::remove_all(destination, ec);
+    std::filesystem::copy(config_.rules_dir, destination,
+                          std::filesystem::copy_options::recursive |
+                              std::filesystem::copy_options::overwrite_existing,
+                          ec);
+    if (ec) {
+      spdlog::warn("cannot copy company guardrail rules from {}: {}", config_.rules_dir,
+                   ec.message());
+    } else {
+      rules_copy = destination.string();
+    }
+  }
 
   // Code intelligence (design section 6.5): when a back end matches the
   // plan's language, the run keeps the symbol index at runs/<run>/
@@ -158,18 +208,53 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
 
   // RAG index for question answering (design section 6.6.1 layer 3).
   std::shared_ptr<rag::InMemoryRetriever> retriever;
+  std::shared_ptr<llm::FireworksClient> embedding_client;
   const std::filesystem::path designs_dir = config_.workspace_root / "designs";
-  if (!config_.docs_dir.empty() || std::filesystem::is_directory(designs_dir)) {
+  if (!config_.docs_dir.empty() || !config_.reference_docs_dir.empty() ||
+      std::filesystem::is_directory(designs_dir)) {
     auto options = retriever_options(config_);
     if (!options) {
       return tl::make_unexpected(options.error());
     }
+    options->on_search_latency_ms = [this](std::int64_t latency_ms) {
+      (void)store_.record_rag_latency(config_.run_id, latency_ms,
+                                      store::unix_now());
+    };
     retriever = std::make_shared<rag::InMemoryRetriever>(*options);
+    if (!config_.embeddings_model.empty()) {
+      const char* key = std::getenv(config_.embeddings_api_key_env.c_str());
+      if (key == nullptr || *key == '\0') {
+        spdlog::warn("{} is not set; hybrid retrieval uses BM25 only",
+                     config_.embeddings_api_key_env);
+      } else {
+        llm::ClientOptions embedding_options;
+        embedding_options.base_url = config_.embeddings_base_url;
+        embedding_options.api_key = key;
+        llm::UsageCallback on_call = [this](const llm::CallRecord& record) {
+          store::LlmCallRecord row;
+          row.run_id = record.run_id;
+          row.role = record.role;
+          row.model = record.model;
+          row.prompt_tokens = record.usage.prompt_tokens;
+          row.completion_tokens = record.usage.completion_tokens;
+          row.cached_tokens = record.usage.cached_tokens;
+          row.usd = record.usd;
+          row.latency_ms = record.latency_ms;
+          row.at = store::unix_now();
+          (void)store_.record_llm_call(row);
+        };
+        embedding_client = std::make_shared<llm::FireworksClient>(
+            embedding_options, std::make_unique<llm::CprTransport>(), on_call);
+        retriever->set_embedder(std::make_shared<rag::FireworksEmbedder>(
+            *embedding_client, config_.embeddings_model, config_.run_id));
+      }
+    }
     // Company documents plus approved design packages from earlier runs
     // (design section 6.2 step 7); the applicability filter keeps only the
     // ones scoped to this run's product and language.
-    for (const auto& directory :
-         {std::filesystem::path(config_.docs_dir), designs_dir}) {
+    for (const auto& directory : {std::filesystem::path(config_.docs_dir),
+                                  std::filesystem::path(config_.reference_docs_dir),
+                                  designs_dir}) {
       std::error_code directory_ec;
       if (directory.empty() ||
           !std::filesystem::is_directory(directory, directory_ec)) {
@@ -200,13 +285,30 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     factory_config.api_key_env = config_.api_key_env;
     factory_config.role_models = config_.role_models;
     factory_config.role_options = config_.role_options;
+    factory_config.embeddings_model = config_.embeddings_model;
+    factory_config.embeddings_base_url = config_.embeddings_base_url;
+    factory_config.embeddings_api_key_env = config_.embeddings_api_key_env;
+    factory_config.waiver_deadline_business_days = config_.waiver_business_days;
     factory_config.mcp_command = config_.mcp_command;
     factory_config.db_path = (run_dir / "run.db").string();
     factory_config.docs_dir = config_.docs_dir;
+    factory_config.reference_docs_dir = config_.reference_docs_dir;
+    factory_config.reference_versions_file = config_.reference_versions_file;
     // RAG applicability context and approved design packages (design
     // sections 6.2 step 7, 6.3).
     factory_config.product = plan_.product;
     factory_config.language = plan_.target.language;
+    factory_config.profile_path = profile_copy;
+    factory_config.rules_dir =
+        config_.agent_sandbox_image.empty() ? rules_copy : "/cf/rules";
+    factory_config.profile_build_system = config_.profile_build_system;
+    factory_config.profile_test_framework = config_.profile_test_framework;
+    factory_config.target_standard = plan_.target.standard;
+    const auto language_spec =
+        config_.profile.languages.find(config_.profile_language);
+    if (language_spec != config_.profile.languages.end()) {
+      factory_config.standard_var = language_spec->second.standard_var;
+    }
     const std::filesystem::path designs = config_.workspace_root / "designs";
     std::error_code designs_ec;
     if (std::filesystem::is_directory(designs, designs_ec)) {
@@ -255,6 +357,7 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   runner_options.turn_timeout = config_.turn_timeout;
   runner_options.target_language = plan_.target.language;
   runner_options.target_standard = plan_.target.standard;
+  runner_options.blocking_severities = config_.review_blocking_severities;
   runner_options.allowed_commands = agent_command_summary(
       config_.profile, config_.profile_build_system, config_.profile_test_framework);
   SessionAgentRunner agent_runner(driver_factory, run_dir, runner_options);
@@ -268,6 +371,7 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   driver_config.profile_language = config_.profile_language;
   driver_config.profile_build_system = config_.profile_build_system;
   driver_config.profile_test_framework = config_.profile_test_framework;
+  driver_config.rules_dir = config_.rules_dir;
   driver_config.step_timeout = config_.step_timeout;
   driver_config.sandbox_image = config_.sandbox_image;
   driver_config.full_review_threshold = config_.full_review_threshold;
@@ -366,12 +470,21 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     flow_config.remote = config_.github_remote;
     flow_config.base_branch = config_.base_branch;
     flow_config.pre_push = config_.github_pre_push;
+    const auto push_event = [this](std::string_view event) {
+      return std::find(config_.github_push_on.begin(),
+                       config_.github_push_on.end(),
+                       event) != config_.github_push_on.end();
+    };
+    flow_config.push_on_milestone_done = push_event("milestone_done");
+    flow_config.push_on_run_done = push_event("run_done");
+    flow_config.push_on_escalation = push_event("escalation");
     flow_config.pr_draft_until_done = config_.github_pr_draft_until_done;
     flow_config.pr_labels = config_.github_pr_labels;
     flow_config.pr_request_codeowners =
         config_.github_pr_request_codeowners;
     flow_config.report_path =
         (std::filesystem::path("runs") / config_.run_id / "report.md").string();
+    flow_config.run_dir = run_dir;
     github_flow = std::make_unique<GithubFlow>(store_, operation_dispatcher,
                                                repository_, std::move(flow_config));
     if (config_.export_defects) {
@@ -388,12 +501,109 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
 
   uint32_t validation_failures = 0;
   for (int step = 0; step < 100000; ++step) {
+    // Waiting for a person: an agent waiver request pauses the run before
+    // another turn (design section 12.1). The request has its own deadline;
+    // an approved waiver (or expiry) lets the next execution continue.
+    (void)store_.expire_waiver_requests(config_.run_id, store::unix_now());
+    auto waiver_requests = store_.list_waiver_requests(config_.run_id);
+    if (!waiver_requests) {
+      return tl::make_unexpected(waiver_requests.error());
+    }
+    for (const auto& request : *waiver_requests) {
+      if (request.status == "PENDING") {
+        spdlog::info(
+            "run {} is waiting for waiver request {} ({} @ {}); approve it "
+            "with cf approve --waiver or wait for the deadline",
+            config_.run_id, request.id, request.rule, request.scope);
+        return state;
+      }
+    }
+
     auto next = orchestrator.step(now);
     if (!next) {
       return tl::make_unexpected(next.error());
     }
     const RunState previous = state;
     state = *next;
+
+    // Base freshness (design section 10.4.9): if the base branch moved, the
+    // integration branch is rebased and its gates are re-run before the push.
+    // A conflict or a failing re-gate escalates; the design's coder-driven
+    // conflict resolution is not built yet.
+    if (github_flow) {
+      auto base_sha = repository_.remote_branch_sha(config_.github_remote,
+                                                    config_.base_branch);
+      if (!base_sha) {
+        return tl::make_unexpected(base_sha.error());
+      }
+      if (!base_sha->empty()) {
+        auto fetched = repository_.fetch(config_.github_remote,
+                                         config_.base_branch);
+        if (!fetched) {
+          return tl::make_unexpected(fetched.error());
+        }
+        auto integration_exists =
+            repository_.branch_exists(config_.integration_branch);
+        if (!integration_exists) {
+          return tl::make_unexpected(integration_exists.error());
+        }
+        if (*integration_exists) {
+          auto integration_head = repository_.head_sha(
+              repository_.path(), config_.integration_branch);
+          if (!integration_head) {
+            return tl::make_unexpected(integration_head.error());
+          }
+          const std::string base_ref = "refs/remotes/" + config_.github_remote +
+                                       "/" + config_.base_branch;
+          auto ancestor =
+              repository_.is_ancestor(base_ref, *integration_head);
+          if (!ancestor) {
+            return tl::make_unexpected(ancestor.error());
+          }
+          if (!*ancestor) {
+            auto rebased = driver.rebase_integration_onto(base_ref);
+            std::string escalation_reason;
+            if (!rebased) {
+              escalation_reason =
+                  "the base branch moved and the integration rebase failed: " +
+                  rebased.error().message;
+            } else {
+              auto gates = driver.run_integration_gates(base_ref);
+              if (!gates) {
+                escalation_reason =
+                    "the base branch moved and re-gating failed: " +
+                    gates.error().message;
+              } else if (!gates->passed) {
+                escalation_reason =
+                    "the base branch moved and the re-gated integration did "
+                    "not pass";
+              } else {
+                (void)driver.prepare_codeintel();
+              }
+            }
+            if (!escalation_reason.empty()) {
+              if (state == RunState::SystemValidation) {
+                const auto reopened =
+                    machine.apply(RunEvent::SystemDefectsFiled, {}, now);
+                if (!reopened) {
+                  return tl::make_unexpected(reopened.error());
+                }
+              }
+              if (!config_.orchestrator.escalation_dir.empty()) {
+                (void)write_escalation_bundle(
+                    store_, config_.run_id, config_.orchestrator.escalation_dir,
+                    escalation_reason, now);
+              }
+              const auto applied = machine.apply(RunEvent::NoProgress, {}, now);
+              if (!applied) {
+                return tl::make_unexpected(applied.error());
+              }
+              return *applied;
+            }
+          }
+        }
+      }
+    }
 
     // Sync the GitHub state after every step: newly Done milestones are
     // pushed, the draft PR is opened or updated, and Done marks it ready.

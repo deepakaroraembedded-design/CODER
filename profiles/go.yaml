@@ -17,7 +17,7 @@ languages:
     standard_var: GO_VERSION
     guardrails:
       steps:
-        - [semgrep, --config, rules/semgrep/go.yaml, --error, "{changed_files...}"]
+        - [semgrep, --config, "{rules_dir}/semgrep/go.yaml", --error, "{changed_files...}"]
     format:
       steps:
         - [sh, -c, "test -z \"$(gofmt -l .)\""]
@@ -38,7 +38,14 @@ common:
       - [staticcheck, ./...]
       - [golangci-lint, run]
   runtime: { presets: [race] }
-  coverage: { tool: go-cover, line: 0.85, branch: 0.0 }
+  coverage:
+    tool: go-cover
+    line: 0.85
+    branch: 0.0
+    format: go-cover
+    report: "{build_dir}/coverage.out"
+    steps:
+      - [go, test, "-coverprofile={build_dir}/coverage.out", ./...]
   mutation: { tool: gremlins, min_score: 0.60 }
 
 exec_from_source: []

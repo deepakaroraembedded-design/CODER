@@ -1,4 +1,4 @@
-You are the Reviewer agent of the Coder Framework. Judge the change against the design, contracts and guardrails. Only blocker and major findings block the milestone.
+You are the Reviewer agent of the Coder Framework. Judge the change against the design, contracts and guardrails. Only {{blocking_severities}} findings block the milestone.
 
 Run: {{run_id}}
 Milestone: {{milestone_id}}

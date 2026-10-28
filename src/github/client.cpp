@@ -34,6 +34,12 @@ Result<PullRequest> parse_pull_request(const Json& json) {
   pr.state = json.value("state", "");
   pr.body = json.value("body", "");
   pr.draft = json.value("draft", false);
+  if (json.contains("merged_at") && json["merged_at"].is_string()) {
+    pr.merged_at = json["merged_at"].get<std::string>();
+  }
+  if (json.contains("closed_at") && json["closed_at"].is_string()) {
+    pr.closed_at = json["closed_at"].get<std::string>();
+  }
   const auto head = json.find("head");
   if (head != json.end() && head->is_object()) {
     pr.head_branch = head->value("ref", "");
@@ -357,6 +363,31 @@ Result<std::vector<Client::IssueComment>> Client::list_issue_comments(
     }
   }
   return comments;
+}
+
+Status Client::delete_branch(const std::string& owner, const std::string& repo,
+                             const std::string& branch) {
+  auto response = send("DELETE",
+                       "/repos/" + owner + "/" + repo + "/git/refs/heads/" +
+                           branch,
+                       Json(), "application/vnd.github+json");
+  if (!response) {
+    return tl::make_unexpected(response.error());
+  }
+  if (response->status == 404) {
+    return {};  // already deleted
+  }
+  if (response->status >= 200 && response->status < 300) {
+    return {};
+  }
+  if (response->status >= 500) {
+    return fail(error_codes::kServerError,
+                "GitHub HTTP " + std::to_string(response->status) + ": " +
+                    error_detail(*response));
+  }
+  return fail(error_codes::kClientError,
+              "GitHub HTTP " + std::to_string(response->status) + ": " +
+                  error_detail(*response));
 }
 
 Status Client::delete_comment(const std::string& owner, const std::string& repo,

@@ -14,6 +14,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "cf/common/archive.hpp"
 #include "cf/orch/opencode_server.hpp"
 
 namespace {
@@ -124,6 +125,47 @@ TEST_F(OpencodeServerTest, StartsWaitsForHealthAndStops) {
   const std::string text((std::istreambuf_iterator<char>(log)),
                          std::istreambuf_iterator<char>());
   EXPECT_NE(text.find("fake opencode listening"), std::string::npos);
+}
+
+TEST_F(OpencodeServerTest, ArchivesAgentCallsWhenTheKeyIsSet) {
+  constexpr const char* key =
+      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  ::setenv("CF_ARCHIVE_TEST_KEY", key, 1);
+  const uint16_t port = find_free_port();
+  cf::agents::OpencodeClientOptions options;
+  options.host = "127.0.0.1";
+  options.port = port;
+  options.archive_dir = dir_ / "archive";
+  options.archive_key_env = "CF_ARCHIVE_TEST_KEY";
+  options.run_id = "R12";
+  options.role = "coder";
+  cf::agents::OpencodeClient client(options);
+  OpencodeServerOptions server_options;
+  server_options.binary = fake_binary_.string();
+  server_options.port = port;
+  server_options.log_path = dir_ / "archive-server.log";
+  server_options.start_timeout = std::chrono::seconds(10);
+  auto started = OpencodeServerProcess::start(server_options, client);
+  ASSERT_TRUE(started.has_value()) << started.error().message;
+
+  auto providers = client.list_providers();
+  EXPECT_FALSE(providers.has_value());  // the fake server only answers health
+  (*started)->stop();
+
+  std::size_t archives = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(options.archive_dir)) {
+    ++archives;
+    auto key_value = cf::common::archive::key_from_env("CF_ARCHIVE_TEST_KEY");
+    ASSERT_TRUE(key_value.has_value());
+    auto contents = cf::common::archive::read_encrypted(entry.path(), *key_value);
+    ASSERT_TRUE(contents.has_value());
+    const auto document = cf::agents::Json::parse(*contents);
+    EXPECT_EQ(document.value("kind", ""), "opencode-http");
+    EXPECT_EQ(document.value("run_id", ""), "R12");
+    EXPECT_EQ(document.value("role", ""), "coder");
+  }
+  EXPECT_EQ(archives, 1u);
+  ::unsetenv("CF_ARCHIVE_TEST_KEY");
 }
 
 TEST_F(OpencodeServerTest, MissingBinaryFailsCleanly) {

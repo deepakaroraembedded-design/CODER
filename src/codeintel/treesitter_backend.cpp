@@ -57,7 +57,7 @@ struct TreeSitterBackend::Impl {
     }
 
     graph.files.push_back(FileRecord{relative, sha256_hex(source)});
-    detail::Extraction extraction{source, relative, &graph, {}, {}};
+    detail::Extraction extraction{source, relative, &graph, {}, {}, {}};
     extract(ts_tree_root_node(tree.get()), extraction);
     return {};
   }

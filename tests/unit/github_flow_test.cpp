@@ -156,6 +156,16 @@ class GithubFlowTest : public ::testing::Test {
 };
 
 TEST_F(GithubFlowTest, PushesMilestonesAndOpensADraftPullRequest) {
+  cf::store::WaiverRecord waiver;
+  waiver.run_id = "R12";
+  waiver.milestone_id = "M1";
+  waiver.rule = "guardrails";
+  waiver.scope = "src/bus.cpp:42";
+  waiver.justification = "Legacy API kept for the compatibility window";
+  waiver.approved_by = "alice";
+  waiver.at = now_;
+  ASSERT_TRUE(store_->record_waiver(waiver).has_value());
+
   transport_->script(200, "[]");
   transport_->script(201,
                      R"({"number": 7, "html_url": "u", "state": "open", "body": "b",
@@ -178,6 +188,9 @@ TEST_F(GithubFlowTest, PushesMilestonesAndOpensADraftPullRequest) {
     const std::string body = input.value("body", "");
     EXPECT_NE(body.find("Requirement traceability"), std::string::npos);
     EXPECT_NE(body.find("## Defects"), std::string::npos);
+    EXPECT_NE(body.find("## Waivers"), std::string::npos);
+    EXPECT_NE(body.find("alice"), std::string::npos);
+    EXPECT_NE(body.find("src/bus.cpp:42"), std::string::npos);
     EXPECT_NE(body.find("Cost so far"), std::string::npos);
     found_body = true;
   }
@@ -233,6 +246,28 @@ TEST_F(GithubFlowTest, AppliesThePullRequestPolicy) {
   EXPECT_FALSE(input.at("draft").get<bool>());
   EXPECT_EQ(input.at("labels").at(0).get<std::string>(), "cf-generated");
   EXPECT_FALSE(input.at("request_codeowners").get<bool>());
+}
+
+TEST_F(GithubFlowTest, RefusesAnIntegrationPushWhenTheBaseMoved) {
+  // Publish main and then move it; the integration branch still starts at
+  // the old commit, so check 8 must reject the push.
+  ASSERT_TRUE(repository_->command({"push", "origin", "main"}).has_value());
+  write_file(dir_ / "repo" / "base.txt", "moved\n");
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.milestone_id = "M1";
+  trailers.op_id = "op_base";
+  ASSERT_TRUE(repository_
+                  ->commit_paths(dir_ / "repo", {"base.txt"}, "chore: base moved",
+                                 trailers)
+                  .has_value());
+  ASSERT_TRUE(repository_->command({"push", "origin", "main"}).has_value());
+
+  const auto synced = flow_->sync("R12", plan_, RunState::Executing, epoch_, now_);
+  ASSERT_FALSE(synced.has_value());
+  EXPECT_EQ(synced.error().code,
+            cf::orch::github_error_codes::kPrePushRejected);
+  EXPECT_NE(synced.error().message.find("base branch"), std::string::npos);
 }
 
 TEST_F(GithubFlowTest, PrePushRejectionRefusesThePush) {
@@ -299,6 +334,129 @@ TEST_F(GithubFlowTest, EscalationPushesABranchAndCommentsOnThePullRequest) {
     }
   }
   EXPECT_TRUE(commented);
+}
+
+TEST_F(GithubFlowTest, PushOnControlsMilestoneAndRunDonePushes) {
+  GithubFlowConfig config;
+  config.owner = "o";
+  config.repo = "r";
+  config.push_on_milestone_done = false;
+  config.push_on_run_done = true;
+  GithubFlow flow(*store_, *dispatcher_, *repository_, config);
+
+  // No milestone push while the run is executing.
+  auto synced = flow.sync("R12", plan_, RunState::Executing, epoch_, now_);
+  ASSERT_TRUE(synced.has_value()) << synced.error().message;
+  EXPECT_EQ(*synced, 0u);
+  EXPECT_TRUE(transport_->requests().empty());
+  auto milestone_remote = repository_->remote_branch_sha("origin", "cf/R12/M1");
+  ASSERT_TRUE(milestone_remote.has_value());
+  EXPECT_TRUE(milestone_remote->empty());
+  auto integration_remote =
+      repository_->remote_branch_sha("origin", "cf/R12/integration");
+  ASSERT_TRUE(integration_remote.has_value());
+  EXPECT_TRUE(integration_remote->empty());
+
+  // Run done still pushes the integration branch and opens the PR ready.
+  transport_->script(200, "[]");
+  transport_->script(201,
+                     R"({"number": 7, "html_url": "u", "state": "open",
+                         "body": "b", "draft": false,
+                         "head": {"ref": "cf/R12/integration"},
+                         "base": {"ref": "main"}})");
+  synced = flow.sync("R12", plan_, RunState::Done, epoch_, now_ + 5);
+  ASSERT_TRUE(synced.has_value()) << synced.error().message;
+  EXPECT_EQ(*synced, 2u);  // integration push + pr_create
+  integration_remote =
+      repository_->remote_branch_sha("origin", "cf/R12/integration");
+  ASSERT_TRUE(integration_remote.has_value());
+  EXPECT_FALSE(integration_remote->empty());
+  milestone_remote = repository_->remote_branch_sha("origin", "cf/R12/M1");
+  ASSERT_TRUE(milestone_remote.has_value());
+  EXPECT_TRUE(milestone_remote->empty());
+
+  auto operations = store_->list_operations("R12", {});
+  ASSERT_TRUE(operations.has_value());
+  bool found_pr = false;
+  for (const auto& op : *operations) {
+    if (op.kind == "pr_create") {
+      const auto input = nlohmann::json::parse(op.input_json);
+      EXPECT_FALSE(input.at("draft").get<bool>());
+      found_pr = true;
+    }
+  }
+  EXPECT_TRUE(found_pr);
+}
+
+TEST_F(GithubFlowTest, RunDonePushCanBeDisabled) {
+  GithubFlowConfig config;
+  config.owner = "o";
+  config.repo = "r";
+  config.push_on_milestone_done = true;
+  config.push_on_run_done = false;
+  GithubFlow flow(*store_, *dispatcher_, *repository_, config);
+
+  // The milestone and integration pushes still happen at Done, but the PR
+  // must stay a draft: run_done is disabled, so CF must not mark it ready.
+  transport_->script(200, "[]");
+  transport_->script(200, "[]");
+  transport_->script(201,
+                     R"({"number": 7, "html_url": "u", "state": "open",
+                         "body": "b", "draft": true,
+                         "head": {"ref": "cf/R12/integration"},
+                         "base": {"ref": "main"}})");
+  const auto synced = flow.sync("R12", plan_, RunState::Done, epoch_, now_);
+  ASSERT_TRUE(synced.has_value()) << synced.error().message;
+  EXPECT_EQ(*synced, 3u);
+
+  auto operations = store_->list_operations("R12", {});
+  ASSERT_TRUE(operations.has_value());
+  bool found_pr = false;
+  for (const auto& op : *operations) {
+    if (op.kind == "pr_create") {
+      const auto input = nlohmann::json::parse(op.input_json);
+      EXPECT_TRUE(input.at("draft").get<bool>());
+      found_pr = true;
+    }
+  }
+  EXPECT_TRUE(found_pr);
+}
+
+TEST_F(GithubFlowTest, EscalationPushCanBeDisabled) {
+  transport_->script(200, "[]");
+  transport_->script(201,
+                     R"({"number": 7, "html_url": "u", "state": "open", "body": "b",
+                         "draft": true, "head": {"ref": "cf/R12/integration"},
+                         "base": {"ref": "main"}})");
+  auto synced = flow_->sync("R12", plan_, RunState::Executing, epoch_, now_);
+  ASSERT_TRUE(synced.has_value()) << synced.error().message;
+
+  StateMachine machine(*store_, "R12");
+  ASSERT_TRUE(machine.apply(RunEvent::NoProgress, {}, now_ + 5).has_value());
+
+  GithubFlowConfig config;
+  config.owner = "o";
+  config.repo = "r";
+  config.push_on_escalation = false;
+  GithubFlow flow(*store_, *dispatcher_, *repository_, config);
+
+  // The PR body still reflects the new run state, but there is no escalation
+  // branch and no escalation comment.
+  transport_->script(200,
+                     R"({"number": 7, "html_url": "u", "state": "open",
+                         "body": "escalated", "draft": true,
+                         "head": {"ref": "cf/R12/integration"},
+                         "base": {"ref": "main"}})");
+  synced = flow.sync("R12", plan_, RunState::Escalated, epoch_, now_ + 5);
+  ASSERT_TRUE(synced.has_value()) << synced.error().message;
+
+  auto escalation_remote = repository_->remote_branch_sha(
+      "origin", "cf/R12/escalation/esc-" + std::to_string(now_ + 5));
+  ASSERT_TRUE(escalation_remote.has_value());
+  EXPECT_TRUE(escalation_remote->empty());
+  for (const auto& request : transport_->requests()) {
+    EXPECT_EQ(request.url.find("/issues/7/comments"), std::string::npos);
+  }
 }
 
 TEST_F(GithubFlowTest, AbortClosesTheDraftPullRequest) {

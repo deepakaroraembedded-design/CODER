@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -216,11 +217,21 @@ Profile parse_profile(const YAML::Node& root) {
         }
         profile.coverage.line = optional_double(node, "line", 0.0);
         profile.coverage.branch = optional_double(node, "branch", 0.0);
+        if (const YAML::Node format = node["format"]) {
+          profile.coverage.format = as_string(format, "common.coverage.format");
+        }
+        if (const YAML::Node report = node["report"]) {
+          profile.coverage.report = as_string(report, "common.coverage.report");
+        }
+        profile.coverage.steps =
+            parse_gate_spec(node, "common.coverage").steps;
       } else if (name == "mutation") {
         if (const YAML::Node tool = node["tool"]) {
           profile.mutation.tool = as_string(tool, "common.mutation.tool");
         }
         profile.mutation.min_score = optional_double(node, "min_score", 0.0);
+        profile.mutation.steps =
+            parse_gate_spec(node, "common.mutation").steps;
       } else {
         profile.common.emplace(name, parse_gate_spec(node, "common." + name));
       }
@@ -272,7 +283,11 @@ Result<Profile> load_profile_file(const std::filesystem::path& path) {
   }
   std::ostringstream buffer;
   buffer << in.rdbuf();
-  return load_profile_string(buffer.str());
+  auto profile = load_profile_string(buffer.str());
+  if (profile) {
+    profile->source_path = std::filesystem::absolute(path);
+  }
+  return profile;
 }
 
 Status ProfileRegistry::add(Profile profile) {
@@ -365,6 +380,10 @@ Result<std::vector<std::string>> expand_step(const GateStep& step,
       {"{standard}", context.standard},
       {"{standard_number}", context.standard_number},
       {"{standard_var}", context.standard_var},
+      {"{rules_dir}", context.rules_dir},
+      {"{coverage_line}", context.coverage_line},
+      {"{coverage_branch}", context.coverage_branch},
+      {"{mutation_min_score}", context.mutation_min_score},
   };
   std::vector<std::string> out;
   for (const auto& element : step.argv) {
@@ -384,6 +403,16 @@ Result<std::vector<std::string>> expand_step(const GateStep& step,
     out.push_back(std::move(expanded));
   }
   return out;
+}
+
+std::string coverage_percent(double ratio) {
+  return std::to_string(static_cast<int>(ratio * 100.0 + 0.5));
+}
+
+std::string ratio_string(double ratio) {
+  char buffer[32] = {0};
+  std::snprintf(buffer, sizeof(buffer), "%.2f", ratio);
+  return buffer;
 }
 
 std::string standard_number(std::string_view standard) {

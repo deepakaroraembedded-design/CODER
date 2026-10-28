@@ -1,0 +1,29 @@
+# Company Semgrep starter rules for Python (design section 6.7.2).
+# Only rules whose IDs start with `swt.` are company rules.
+rules:
+  - id: swt.python.no-shell-true
+    languages: [python]
+    severity: ERROR
+    message: Do not pass shell=True to subprocess; build an argument list instead.
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+
+  - id: swt.python.no-unsafe-yaml-load
+    languages: [python]
+    severity: ERROR
+    message: Use yaml.safe_load or an explicit SafeLoader for untrusted YAML.
+    patterns:
+      - pattern: yaml.load(...)
+      - pattern-not: yaml.load(..., Loader=yaml.SafeLoader, ...)
+
+  - id: swt.python.no-hardcoded-secret
+    languages: [python]
+    severity: ERROR
+    message: Do not hardcode credentials or tokens; read them at runtime.
+    patterns:
+      - pattern-either:
+          - pattern: $NAME = "..."
+          - pattern: $NAME = '...'
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)(password|passwd|secret|token|api_key|apikey|private_key)

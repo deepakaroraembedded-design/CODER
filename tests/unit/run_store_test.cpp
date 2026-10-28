@@ -549,6 +549,117 @@ TEST_F(RunStoreTest, ListsMilestonesAndTransitions) {
   EXPECT_EQ((*recent)[0].to_state, "Refining");
 }
 
+TEST_F(RunStoreTest, WaiversPersistAndAreIdempotent) {
+  create_run();
+  cf::store::WaiverRecord waiver;
+  waiver.run_id = "R12";
+  waiver.milestone_id = "M3";
+  waiver.rule = "guardrails";
+  waiver.scope = "src/bus.cpp:42";
+  waiver.justification = "Legacy API kept for the compatibility window";
+  waiver.approved_by = "alice";
+  waiver.at = now_;
+  auto recorded = store_->record_waiver(waiver);
+  ASSERT_TRUE(recorded.has_value()) << recorded.error().message;
+  EXPECT_FALSE(recorded->waiver_id.empty());
+  EXPECT_EQ(recorded->approved_by, "alice");
+
+  // A retried command returns the existing human decision.
+  waiver.justification = "a different text";
+  auto again = store_->record_waiver(waiver);
+  ASSERT_TRUE(again.has_value()) << again.error().message;
+  EXPECT_EQ(again->waiver_id, recorded->waiver_id);
+  EXPECT_EQ(again->justification,
+            "Legacy API kept for the compatibility window");
+
+  cf::store::WaiverRecord run_wide;
+  run_wide.run_id = "R12";
+  run_wide.rule = "format";
+  run_wide.scope = "src/registry.cpp:9";
+  run_wide.justification = "Generated file, formatting is owned upstream";
+  run_wide.approved_by = "bob";
+  run_wide.at = now_ + 1;
+  ASSERT_TRUE(store_->record_waiver(run_wide).has_value());
+
+  auto all = store_->list_waivers("R12");
+  ASSERT_TRUE(all.has_value()) << all.error().message;
+  ASSERT_EQ(all->size(), 2u);
+  EXPECT_EQ((*all)[0].rule, "guardrails");
+
+  auto milestone = store_->list_waivers("R12", "M3");
+  ASSERT_TRUE(milestone.has_value());
+  ASSERT_EQ(milestone->size(), 2u);  // its own plus the run-wide waiver
+  auto other = store_->list_waivers("R12", "M1");
+  ASSERT_TRUE(other.has_value());
+  ASSERT_EQ(other->size(), 1u);
+  EXPECT_EQ((*other)[0].rule, "format");
+
+  // A waiver needs an existing run.
+  cf::store::WaiverRecord orphan;
+  orphan.run_id = "R99";
+  orphan.rule = "build";
+  orphan.scope = "src/x.cpp:1";
+  orphan.justification = "no";
+  orphan.approved_by = "alice";
+  const auto missing = store_->record_waiver(orphan);
+  ASSERT_FALSE(missing.has_value());
+  EXPECT_EQ(missing.error().code, cf::store::error_codes::kNotFound);
+}
+
+TEST_F(RunStoreTest, WaiverRequestsRoundTripAndExpire) {
+  create_run();
+  cf::store::WaiverRequestRecord request;
+  request.run_id = "R12";
+  request.milestone_id = "M3";
+  request.rule = "guardrails";
+  request.scope = "src/a.cpp:1";
+  request.justification = "legacy API";
+  request.requested_by = "coder";
+  request.requested_at = now_;
+  request.deadline_at = now_ + 100;
+  auto recorded = store_->record_waiver_request(request);
+  ASSERT_TRUE(recorded.has_value()) << recorded.error().message;
+  EXPECT_EQ(recorded->status, "PENDING");
+  EXPECT_FALSE(recorded->id.empty());
+
+  auto again = store_->record_waiver_request(request);
+  ASSERT_TRUE(again.has_value());
+  EXPECT_EQ(again->id, recorded->id);
+
+  auto pending = store_->list_waiver_requests("R12");
+  ASSERT_TRUE(pending.has_value());
+  ASSERT_EQ(pending->size(), 1u);
+  EXPECT_EQ((*pending)[0].requested_by, "coder");
+  auto fetched = store_->get_waiver_request(recorded->id);
+  ASSERT_TRUE(fetched.has_value());
+  EXPECT_EQ(fetched->rule, "guardrails");
+
+  auto expired = store_->expire_waiver_requests("R12", now_ + 101);
+  ASSERT_TRUE(expired.has_value());
+  EXPECT_EQ(*expired, 1u);
+  auto after = store_->list_waiver_requests("R12");
+  ASSERT_TRUE(after.has_value());
+  EXPECT_EQ((*after)[0].status, "EXPIRED");
+
+  // A human decision updates a pending request.
+  request.rule = "format";
+  request.scope = "src/b.cpp:2";
+  request.deadline_at = now_ + 500;
+  auto second = store_->record_waiver_request(request);
+  ASSERT_TRUE(second.has_value());
+  ASSERT_TRUE(store_
+                  ->decide_waiver_requests("R12", "M3", "format", "src/b.cpp:2",
+                                           "APPROVED", now_ + 200)
+                  .has_value());
+  auto decided = store_->list_waiver_requests("R12", "M3");
+  ASSERT_TRUE(decided.has_value());
+  bool approved = false;
+  for (const auto& row : *decided) {
+    approved = approved || (row.rule == "format" && row.status == "APPROVED");
+  }
+  EXPECT_TRUE(approved);
+}
+
 TEST_F(RunStoreTest, GateResultsPersistAndAggregate) {
   create_run();
   cf::store::GateResultRow row;

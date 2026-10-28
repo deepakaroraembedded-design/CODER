@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "cf/common/process.hpp"
 #include "cf/common/result.hpp"
 #include "cf/llm/client.hpp"
 #include "cf/refmirror/manifest.hpp"
@@ -21,6 +22,9 @@ namespace cf::refmirror {
 struct MirrorOptions {
   std::filesystem::path out_dir;
   std::chrono::milliseconds timeout{120000};
+  // Used to unpack reference archives with the system tar/unzip binaries.
+  // A local executor is created when this is null.
+  process::ProcessExecutor* executor = nullptr;
 };
 
 struct SetReport {

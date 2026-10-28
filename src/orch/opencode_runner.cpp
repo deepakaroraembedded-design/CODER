@@ -1,5 +1,6 @@
 #include "cf/orch/opencode_runner.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <utility>
@@ -118,6 +119,9 @@ std::string OpencodeAgentRunner::build_prompt(const AgentTurnRequest& request,
   values["standard"] = options_.target_standard;
   values["requirements"] = join(request.requirement_ids);
   values["open_defects"] = join(request.open_defect_ids);
+  values["blocking_severities"] =
+      options_.blocking_severities.empty() ? "none"
+                                           : join(options_.blocking_severities);
   values["brief"] = system_validation
                         ? "Run the full system validation suite on the merged result"
                         : request.brief;
@@ -185,7 +189,27 @@ Result<AgentTurnOutcome> OpencodeAgentRunner::outcome_from_submission(
   } else if (tool == "submit_review") {
     const Json verdict = arguments.value("verdict_json", Json::object());
     outcome.summary = verdict.value("summary", "review submitted");
-    outcome.changes_requested = verdict.value("verdict", "") == "CHANGES_REQUESTED";
+    const auto findings = verdict.find("findings");
+    if (findings != verdict.end() && findings->is_array() && !findings->empty()) {
+      // Design section 8.2: only the configured severities block.
+      outcome.changes_requested = false;
+      for (const auto& finding : *findings) {
+        if (!finding.is_object()) {
+          continue;
+        }
+        const std::string severity = finding.value("severity", "");
+        if (std::find(options_.blocking_severities.begin(),
+                      options_.blocking_severities.end(),
+                      severity) != options_.blocking_severities.end()) {
+          outcome.changes_requested = true;
+          break;
+        }
+      }
+    } else {
+      // A verdict without structured findings keeps the explicit verdict.
+      outcome.changes_requested =
+          verdict.value("verdict", "") == "CHANGES_REQUESTED";
+    }
   } else if (tool == "dispute_test") {
     outcome.disputed_test_id = arguments.value("test_id", "");
     outcome.summary = "disputed test " + outcome.disputed_test_id;

@@ -10,7 +10,9 @@
 // structured submissions. The Phase 0a harness spike lives in cf-mcp-spike.
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <string>
 
@@ -22,9 +24,11 @@
 #include "cf/codeintel/symbol_index.hpp"
 #include "cf/mcp/stdio_server.hpp"
 #include "cf/mcp/tools.hpp"
+#include "cf/rag/embedder.hpp"
 #include "cf/rag/loader.hpp"
 #include "cf/rag/retriever.hpp"
 #include "cf/store/run_store.hpp"
+#include "cf/telemetry/logging.hpp"
 
 namespace {
 
@@ -66,9 +70,18 @@ int main(int argc, char** argv) {
   std::string milestone_id;
   std::string db_path;
   std::string docs_dir;
+  std::string reference_docs_dir;
+  std::string reference_versions_file;
   std::string designs_dir;
   std::string patterns_dir;
   std::string codeintel_db;
+  std::string profile_path;
+  std::string rules_dir;
+  std::string profile_build_system;
+  std::string profile_test_framework;
+  std::string build_dir;
+  std::string standard;
+  std::string standard_var;
   std::string product;
   std::string language;
   std::string name;
@@ -76,6 +89,10 @@ int main(int argc, char** argv) {
   double rag_bm25_weight = 1.0;
   double rag_vector_weight = 1.0;
   std::string rag_precedence;
+  std::string embeddings_model;
+  std::string embeddings_base_url;
+  std::string embeddings_api_key_env = "FIREWORKS_API_KEY";
+  std::uint32_t waiver_deadline_days = 2;
   std::uint32_t top_k = 8;
   app.add_option("--role", role_text, "Agent role: coder, reviewer or qa")
       ->required();
@@ -84,12 +101,30 @@ int main(int argc, char** argv) {
   app.add_option("--db", db_path, "Run store database (optional)");
   app.add_option("--docs", docs_dir,
                  "Directory of Markdown documents to index (optional)");
+  app.add_option("--reference-docs", reference_docs_dir,
+                 "Offline reference documentation to index (optional)");
+  app.add_option("--reference-versions", reference_versions_file,
+                 "Pinned reference versions JSON (optional)");
   app.add_option("--designs", designs_dir,
                  "Directory of approved design packages to index (optional)");
   app.add_option("--patterns", patterns_dir,
                  "Directory of pattern catalog entries (optional)");
   app.add_option("--codeintel-db", codeintel_db,
                  "cf-codeintel symbol index database (optional; design section 6.5)");
+  app.add_option("--profile", profile_path,
+                 "Toolchain profile YAML for run_checks (optional)");
+  app.add_option("--rules-dir", rules_dir,
+                 "Company guardrail rules directory (for run_checks)");
+  app.add_option("--profile-build-system", profile_build_system,
+                 "Build system key inside the profile (for run_checks)");
+  app.add_option("--profile-test-framework", profile_test_framework,
+                 "Test framework key inside the profile (for run_checks)");
+  app.add_option("--build-dir", build_dir,
+                 "Build directory for run_checks (default: .cf-build)");
+  app.add_option("--standard", standard,
+                 "Language standard from the plan (for run_checks)");
+  app.add_option("--standard-var", standard_var,
+                 "Build-system standard variable (for run_checks)");
   app.add_option("--product", product,
                  "Product scope for RAG applicability (design section 6.3)");
   app.add_option("--language", language,
@@ -105,16 +140,25 @@ int main(int argc, char** argv) {
                  "Hybrid vector weight (default 1.0)");
   app.add_option("--rag-precedence", rag_precedence,
                  "Comma-separated document precedence, highest first");
+  app.add_option("--embeddings-model", embeddings_model,
+                 "Embedding model for hybrid retrieval (optional)");
+  app.add_option("--embeddings-base-url", embeddings_base_url,
+                 "OpenAI-compatible embeddings endpoint");
+  app.add_option("--embeddings-api-key-env", embeddings_api_key_env,
+                 "Environment variable holding the embeddings API key");
+  app.add_option("--waiver-deadline-days", waiver_deadline_days,
+                 "Business-day deadline for request_waiver (default 2)");
   CLI11_PARSE(app, argc, argv);
 
   spdlog::set_default_logger(spdlog::stderr_color_mt("cf-mcp"));
-  spdlog::set_level(spdlog::level::info);
+  cf::telemetry::configure_json_logging();
 
   const auto role = cf::mcp::tool_role_from_string(role_text);
   if (!role) {
     spdlog::error("unknown role '{}': expected coder, reviewer or qa", role_text);
     return 2;
   }
+  cf::telemetry::ScopedContext log_context(run_id, milestone_id, role_text);
   if (rag_index != "hnswlib" && rag_index != "brute-force") {
     spdlog::error("--rag-index must be hnswlib or brute-force");
     return 2;
@@ -167,10 +211,28 @@ int main(int argc, char** argv) {
   }
 
   std::shared_ptr<cf::rag::InMemoryRetriever> retriever;
-  if (!docs_dir.empty() || !designs_dir.empty() || !catalog.empty()) {
+  std::shared_ptr<cf::llm::FireworksClient> embedding_client;
+  if (!docs_dir.empty() || !reference_docs_dir.empty() ||
+      !designs_dir.empty() || !catalog.empty()) {
     retriever =
         std::make_shared<cf::rag::InMemoryRetriever>(retriever_options);
-    for (const auto& directory : {docs_dir, designs_dir}) {
+    if (!embeddings_model.empty()) {
+      const char* key = std::getenv(embeddings_api_key_env.c_str());
+      if (key == nullptr || *key == '\0') {
+        spdlog::warn("{} is not set; hybrid retrieval uses BM25 only",
+                     embeddings_api_key_env);
+      } else {
+        cf::llm::ClientOptions embedding_options;
+        embedding_options.base_url = embeddings_base_url;
+        embedding_options.api_key = key;
+        embedding_client = std::make_shared<cf::llm::FireworksClient>(
+            embedding_options, std::make_unique<cf::llm::CprTransport>());
+        retriever->set_embedder(std::make_shared<cf::rag::FireworksEmbedder>(
+            *embedding_client, embeddings_model, run_id));
+      }
+    }
+    for (const auto& directory :
+         {docs_dir, reference_docs_dir, designs_dir}) {
       if (directory.empty()) {
         continue;
       }
@@ -202,6 +264,25 @@ int main(int argc, char** argv) {
     }
   }
 
+  std::map<std::string, std::string, std::less<>> reference_versions;
+  if (!reference_versions_file.empty()) {
+    std::ifstream in(reference_versions_file, std::ios::binary);
+    const json document = json::parse(in, nullptr, false);
+    if (document.is_discarded() || !document.is_object()) {
+      spdlog::error("cannot read the reference versions file: {}",
+                    reference_versions_file);
+      return 7;
+    }
+    const auto versions = document.find("versions");
+    if (versions != document.end() && versions->is_object()) {
+      for (const auto& [library, version] : versions->items()) {
+        if (version.is_string()) {
+          reference_versions[library] = version.get<std::string>();
+        }
+      }
+    }
+  }
+
   std::unique_ptr<cf::store::RunStore> store;
   if (!db_path.empty()) {
     auto opened = cf::store::RunStore::open(db_path);
@@ -222,9 +303,36 @@ int main(int argc, char** argv) {
     symbols = std::move(*opened);
   }
 
+  std::unique_ptr<cf::process::LocalProcessExecutor> check_executor;
+  cf::mcp::GateCheckContext check_context;
+  const bool checks_enabled = !profile_path.empty();
+  if (checks_enabled) {
+    auto profile = cf::gates::load_profile_file(profile_path);
+    if (!profile) {
+      spdlog::error("cannot load the toolchain profile: {}",
+                    profile.error().message);
+      return 6;
+    }
+    check_context.profile = std::move(*profile);
+    check_context.rules_dir = rules_dir;
+    check_context.language = language;
+    check_context.build_system = profile_build_system;
+    check_context.test_framework = profile_test_framework;
+    check_context.standard = standard;
+    check_context.standard_var = standard_var;
+    check_context.worktree = std::filesystem::current_path();
+    check_context.build_dir = build_dir.empty()
+                                  ? check_context.worktree / ".cf-build"
+                                  : std::filesystem::path(build_dir);
+    check_executor = std::make_unique<cf::process::LocalProcessExecutor>();
+    check_context.executor = check_executor.get();
+  }
+
   cf::mcp::ToolDependencies dependencies;
   dependencies.run_id = run_id;
   dependencies.milestone_id = milestone_id;
+  dependencies.role = role_text;
+  dependencies.waiver_deadline_business_days = waiver_deadline_days;
   dependencies.context.product = product;
   dependencies.context.language = language;
   dependencies.retriever = retriever.get();
@@ -232,6 +340,12 @@ int main(int argc, char** argv) {
   dependencies.store = store.get();
   dependencies.patterns = &catalog;
   dependencies.symbols = symbols.get();
+  if (checks_enabled) {
+    dependencies.gate_checks = &check_context;
+  }
+  if (!reference_versions.empty()) {
+    dependencies.reference_versions = &reference_versions;
+  }
   const cf::mcp::ToolRegistry registry =
       cf::mcp::build_tool_registry(std::move(dependencies));
 

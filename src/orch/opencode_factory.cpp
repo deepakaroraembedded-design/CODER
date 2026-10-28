@@ -289,9 +289,39 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
     spec.allowed_commands.clear();
   }
   spec.mcp_command = sandboxed ? "/usr/local/bin/cf-mcp" : config_.mcp_command;
+  spec.embeddings_model = config_.embeddings_model;
+  spec.embeddings_base_url = config_.embeddings_base_url;
+  spec.embeddings_api_key_env = config_.embeddings_api_key_env;
+  spec.waiver_deadline_business_days = config_.waiver_deadline_business_days;
+  if (!config_.rules_dir.empty()) {
+    spec.rules_dir = sandboxed ? "/cf/rules" : config_.rules_dir;
+  }
+  if (!config_.profile_path.empty()) {
+    spec.profile_path = sandboxed ? "/cf/profile.yaml" : config_.profile_path;
+    const std::string check_key =
+        worktree.empty()
+            ? role
+            : std::filesystem::path(worktree).parent_path().filename().string();
+    spec.check_build_dir =
+        sandboxed ? "/build"
+                  : (config_.run_dir / "checks" / role / check_key).string();
+    spec.profile_build_system = config_.profile_build_system;
+    spec.profile_test_framework = config_.profile_test_framework;
+    spec.target_standard = config_.target_standard;
+    spec.standard_var = config_.standard_var;
+  }
   spec.run_id = config_.run_id;
   spec.db_path = sandboxed ? "/cf/run.db" : config_.db_path;
   spec.docs_dir = sandboxed ? "/cf/docs" : config_.docs_dir;
+  if (!config_.reference_docs_dir.empty()) {
+    spec.reference_docs_dir =
+        sandboxed ? "/cf/reference-docs" : config_.reference_docs_dir;
+  }
+  if (!config_.reference_versions_file.empty()) {
+    spec.reference_versions_file = sandboxed
+                                       ? "/cf/reference-versions.json"
+                                       : config_.reference_versions_file;
+  }
   if (!config_.codeintel_db.empty()) {
     spec.codeintel_db = sandboxed ? "/cf/codeintel.db" : config_.codeintel_db;
   }
@@ -339,6 +369,9 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   agents::OpencodeClientOptions client_options;
   client_options.host = config_.hostname;
   client_options.port = port;
+  client_options.archive_dir = config_.run_dir / "opencode";
+  client_options.run_id = config_.run_id;
+  client_options.role = role;
 
   OpencodeServerOptions server_options;
   server_options.port = port;

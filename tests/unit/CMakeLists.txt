@@ -1,5 +1,6 @@
 add_executable(cf_unit_tests
   result_test.cpp
+  archive_test.cpp
   sse_parser_test.cpp
   hash_test.cpp
   run_store_test.cpp
@@ -62,7 +63,23 @@ add_executable(cf_unit_tests
   eval_benchmark_test.cpp
   eval_run_executor_test.cpp
   rag_eval_test.cpp
-  github_reviewers_test.cpp)
+  github_reviewers_test.cpp
+  telemetry_test.cpp
+  waivers_test.cpp
+  run_summary_test.cpp
+  versions_test.cpp
+  cleanup_test.cpp
+  metrics_test.cpp
+  replay_test.cpp
+  telemetry_metrics_test.cpp
+  reminder_test.cpp
+  rulesets_test.cpp
+  treesitter_typescript_java_test.cpp
+  treesitter_cpp_test.cpp
+  semgrep_rules_test.cpp)
+if(CF_ENABLE_CLANG_CODEINTEL AND LLVM_FOUND AND Clang_FOUND)
+  target_sources(cf_unit_tests PRIVATE clang_backend_test.cpp tidy_test.cpp)
+endif()
 target_link_libraries(cf_unit_tests PRIVATE
   cf_agents
   cf_store
@@ -72,6 +89,7 @@ target_link_libraries(cf_unit_tests PRIVATE
   cf_gates
   cf_rag
   cf_codeintel
+  cf_tidy
   cf_mcp_tools
   cf_refmirror
   cf_git
@@ -79,6 +97,7 @@ target_link_libraries(cf_unit_tests PRIVATE
   cf_sandbox
   cf_github
   cf_eval
+  cf_telemetry
   cf_common
   GTest::gtest_main)
 

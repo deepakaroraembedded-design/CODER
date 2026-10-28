@@ -1,0 +1,32 @@
+# Company Semgrep starter rules for TypeScript (design section 6.7.2).
+rules:
+  - id: swt.typescript.no-eval
+    languages: [typescript]
+    severity: ERROR
+    message: Do not use eval; parse or validate the input explicitly.
+    pattern: eval(...)
+
+  - id: swt.typescript.no-direct-html
+    languages: [typescript]
+    severity: ERROR
+    message: Do not assign untrusted HTML to innerHTML/outerHTML; use a safe DOM API.
+    patterns:
+      - pattern-either:
+          - pattern: $ELEMENT.innerHTML = $VALUE
+          - pattern: $ELEMENT.outerHTML = $VALUE
+      - pattern-not: $ELEMENT.innerHTML = "..."
+      - pattern-not: $ELEMENT.innerHTML = '...'
+      - pattern-not: $ELEMENT.outerHTML = "..."
+      - pattern-not: $ELEMENT.outerHTML = '...'
+
+  - id: swt.typescript.no-hardcoded-secret
+    languages: [typescript]
+    severity: ERROR
+    message: Do not hardcode credentials or tokens; read them at runtime.
+    patterns:
+      - pattern-either:
+          - pattern: $NAME = "..."
+          - pattern: $NAME = '...'
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)(password|passwd|secret|token|api_key|apikey|private_key)

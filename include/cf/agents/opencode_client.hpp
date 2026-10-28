@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -47,6 +48,14 @@ struct OpencodeClientOptions {
   std::optional<std::string> password;
   std::chrono::milliseconds connect_timeout{5000};
   std::chrono::milliseconds request_timeout{60000};
+  // Encrypted archive of HTTP calls and SSE events (design sections 6.11,
+  // 14). Empty disables it; the key comes from archive_key_env (64 hex
+  // characters), matching the direct cf-llm archive.
+  std::filesystem::path archive_dir;
+  std::string archive_key_env = "CF_ARCHIVE_KEY";
+  std::string run_id;
+  std::string role;
+  std::string milestone_id;
 };
 
 // One SSE event, unwrapped from its envelope.

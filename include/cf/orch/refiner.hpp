@@ -41,6 +41,8 @@ struct DesignAdr {
   std::string title;
   std::string decision;
   std::vector<std::string> alternatives;
+  // A pattern id from the curated catalog (design sections 6.2, 6.5).
+  std::string pattern_id;
 };
 
 // One milestone of the refined DAG.
@@ -78,6 +80,9 @@ struct DesignRefinerOptions {
   std::string model;              // recorded in the package
   std::size_t context_hits = 6;   // retrieved documents included in the prompt
   bool self_critique = true;      // design section 6.2, step 5
+  // Human feedback from a design approval that requested changes (design
+  // section 7.1: AwaitingDesignApproval -> Refining).
+  std::string feedback;
 };
 
 class DesignRefiner {
@@ -108,6 +113,12 @@ class DesignRefiner {
 // Parses a design package from model output; code fences and prose around the
 // JSON object are tolerated.
 Result<DesignPackage> parse_design_package(std::string_view text);
+
+// Checks that every ADR names a pattern from the catalog (G3): the id must
+// exist. A missing catalog leaves this check off.
+Status validate_pattern_conformance(
+    const DesignPackage& package,
+    const std::vector<rag::PatternEntry>& catalog);
 
 // Checks the package against the plan (design section 6.2): milestone IDs and
 // requirement mappings are fixed, dependencies may only be added, the DAG is

@@ -373,6 +373,120 @@ TEST(GatePlanTest, BuildsTheStandardStagedPlan) {
   EXPECT_EQ((*plan)[0].steps[0].argv.front(), "cmake");
 }
 
+TEST(GatePlanTest, IncludesDeclaredCoverageAndMutationGates) {
+  const char* profile_yaml = R"yaml(
+id: stage3
+image: img
+languages:
+  cpp:
+    standard_var: CMAKE_CXX_STANDARD
+    guardrails: { steps: [[true]] }
+    format: { steps: [[true]] }
+build_systems:
+  cmake: { steps: [[true]] }
+test_frameworks:
+  gtest: { steps: [[true]], languages: [cpp] }
+common:
+  coverage:
+    tool: cov
+    line: 0.85
+    branch: 0.75
+    steps: [[cov, "{coverage_line}", "{coverage_branch}"]]
+  mutation:
+    tool: mut
+    min_score: 0.60
+    steps: [[mut, "{mutation_min_score}"]]
+)yaml";
+  auto profile = cf::gates::load_profile_string(profile_yaml);
+  ASSERT_TRUE(profile.has_value()) << profile.error().message;
+  auto plan = cf::gates::build_gate_plan(*profile, "cpp", "cmake", "gtest");
+  ASSERT_TRUE(plan.has_value()) << plan.error().message;
+  ASSERT_EQ(plan->size(), 6u);
+  EXPECT_EQ((*plan)[4].name, "coverage");
+  EXPECT_EQ((*plan)[4].stage, GateStage::Expensive);
+  EXPECT_EQ((*plan)[5].name, "mutation");
+  EXPECT_EQ((*plan)[5].stage, GateStage::Expensive);
+}
+
+TEST(CoverageReportTest, GateEnforcesThresholdsFromTheReport) {
+  const auto dir = std::filesystem::temp_directory_path() /
+                   ("cf_coverage_gate_" + std::to_string(::getpid()));
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  std::filesystem::create_directories(dir / "build");
+  cf::process::LocalProcessExecutor executor;
+
+  cf::gates::GateRunOptions options;
+  options.working_directory = dir.string();
+  options.step_context.build_dir = (dir / "build").string();
+
+  cf::gates::GateDefinition gate;
+  gate.name = "coverage";
+  gate.stage = cf::gates::GateStage::Expensive;
+  gate.steps.push_back(cf::gates::GateStep{
+      {"sh", "-c", "printf 'a.go:1,2 2 1\\na.go:3,4 2 0\\n' > {build_dir}/coverage.out"}});
+  gate.coverage = cf::gates::CoverageCheck{
+      "go-cover", "{build_dir}/coverage.out", 0.5, 0.0};
+  cf::gates::GateRunner runner(executor);
+  auto report = runner.run({gate}, options);
+  ASSERT_EQ(report.results.size(), 1u);
+  EXPECT_TRUE(report.results[0].passed);
+  EXPECT_TRUE(report.passed);
+
+  gate.coverage.line = 0.9;
+  report = runner.run({gate}, options);
+  ASSERT_EQ(report.results.size(), 1u);
+  EXPECT_FALSE(report.results[0].passed);
+  ASSERT_FALSE(report.results[0].findings.empty());
+  EXPECT_NE(report.results[0].findings[0].message.find("line coverage"),
+            std::string::npos);
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(CoverageReportTest, ParsesGoCoverageJSONAndLcov) {
+  auto go = cf::gates::parse_coverage_report(
+      "go-cover", "file.go:1,2 3 1\nfile.go:3,4 2 0\n");
+  ASSERT_TRUE(go.has_value()) << go.error().message;
+  EXPECT_DOUBLE_EQ(go->line, 0.6);
+  EXPECT_FALSE(go->has_branch);
+
+  auto json = cf::gates::parse_coverage_report(
+      "coverage-json",
+      R"({"totals":{"covered_lines":8,"num_statements":10,"covered_branches":3,"num_branches":4}})");
+  ASSERT_TRUE(json.has_value()) << json.error().message;
+  EXPECT_DOUBLE_EQ(json->line, 0.8);
+  ASSERT_TRUE(json->has_branch);
+  EXPECT_DOUBLE_EQ(json->branch, 0.75);
+
+  auto lcov = cf::gates::parse_coverage_report(
+      "lcov",
+      "TN:\nSF:a.cpp\nLF:10\nLH:8\nBRF:4\nBRH:3\nend_of_record\n");
+  ASSERT_TRUE(lcov.has_value()) << lcov.error().message;
+  EXPECT_DOUBLE_EQ(lcov->line, 0.8);
+  ASSERT_TRUE(lcov->has_branch);
+  EXPECT_DOUBLE_EQ(lcov->branch, 0.75);
+
+  auto llvm = cf::gates::parse_coverage_report(
+      "llvm-cov-json",
+      R"({"data":[{"totals":{"lines":{"count":10,"covered":8,"percent":80},"branches":{"count":4,"covered":3,"percent":75}}}]})");
+  ASSERT_TRUE(llvm.has_value()) << llvm.error().message;
+  EXPECT_DOUBLE_EQ(llvm->line, 0.8);
+  ASSERT_TRUE(llvm->has_branch);
+  EXPECT_DOUBLE_EQ(llvm->branch, 0.75);
+
+  auto jacoco = cf::gates::parse_coverage_report(
+      "jacoco-xml",
+      R"(<report><counter type="LINE" missed="2" covered="8"/><counter type="BRANCH" missed="1" covered="3"/></report>)");
+  ASSERT_TRUE(jacoco.has_value()) << jacoco.error().message;
+  EXPECT_DOUBLE_EQ(jacoco->line, 0.8);
+  ASSERT_TRUE(jacoco->has_branch);
+  EXPECT_DOUBLE_EQ(jacoco->branch, 0.75);
+
+  auto unknown = cf::gates::parse_coverage_report("sarif", "{}");
+  ASSERT_FALSE(unknown.has_value());
+  EXPECT_EQ(unknown.error().code, cf::gates::error_codes::kCoverageReport);
+}
+
 TEST(GatePlanTest, RejectsUnknownCombinations) {
   auto profile = cf::gates::load_profile_string(kProfileYaml);
   ASSERT_TRUE(profile.has_value());

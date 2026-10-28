@@ -28,8 +28,8 @@ struct Extraction {
   std::string path;  // root-relative
   SymbolGraph* graph;
   std::string current_caller;  // the enclosing function/method, empty at file scope
-  std::string current_scope;   // the enclosing class name, when the grammar
-                               // tracks one (Python methods)
+  std::string current_scope;   // the enclosing class/namespace scope
+  std::string current_class;   // the enclosing class, when one is active
 };
 
 // A grammar's extractor: walks the parsed tree of one file.
@@ -63,5 +63,9 @@ class TreeSitterBackend final : public LanguageBackend {
 std::unique_ptr<LanguageBackend> make_c_backend();       // ".c", ".h"
 std::unique_ptr<LanguageBackend> make_python_backend();  // ".py"
 std::unique_ptr<LanguageBackend> make_go_backend();      // ".go"
+std::unique_ptr<LanguageBackend> make_typescript_backend();  // ".ts", ".tsx"
+std::unique_ptr<LanguageBackend> make_javascript_backend();  // ".js", ".jsx"
+std::unique_ptr<LanguageBackend> make_java_backend();        // ".java"
+std::unique_ptr<LanguageBackend> make_cpp_backend();         // ".cpp", ".hpp", ...
 
 }  // namespace cf::codeintel

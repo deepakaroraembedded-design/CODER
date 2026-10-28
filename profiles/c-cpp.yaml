@@ -12,7 +12,8 @@ languages:
     standard_var: CMAKE_CXX_STANDARD
     guardrails:
       steps:
-        - [clang-tidy, --load=libcf-swt-checks.so, -p, "{build_dir}", "{changed_files...}"]
+        - [clang-tidy, "--checks=-*,bugprone-*,cert-*,cppcoreguidelines-*,performance-*,modernize-*", "--warnings-as-errors=*", -p, "{build_dir}", "{changed_files...}"]
+        - [cf-tidy, -p, "{build_dir}", "{changed_files...}"]
     format:
       steps:
         - [clang-format, --dry-run, -Werror, "{changed_files...}"]
@@ -20,7 +21,8 @@ languages:
     standard_var: CMAKE_C_STANDARD
     guardrails:
       steps:
-        - [clang-tidy, --load=libcf-swt-checks.so, "--checks=-*,bugprone-*,cert-*,cf-swt-c-*", -p, "{build_dir}", "{changed_files...}"]
+        - [clang-tidy, "--checks=-*,bugprone-*,cert-*", "--warnings-as-errors=*", -p, "{build_dir}", "{changed_files...}"]
+        - [cf-tidy, -p, "{build_dir}", "{changed_files...}"]
     format:
       steps:
         - [clang-format, --dry-run, -Werror, "{changed_files...}"]
@@ -50,9 +52,17 @@ test_frameworks:
 common:
   analysis:
     steps:
+      - [clang-tidy, "--checks=-*,clang-analyzer-*", "--warnings-as-errors=*", -p, "{build_dir}", "{changed_files...}"]
       - [cppcheck, --enable=warning,performance, --error-exitcode=1, "--project={build_dir}/compile_commands.json"]
   runtime:  { presets: [asan-ubsan], tsan_when: "component.concurrent" }
-  coverage: { tool: llvm-cov, line: 0.85, branch: 0.75 }
+  coverage:
+    tool: llvm-cov
+    line: 0.85
+    branch: 0.75
+    format: llvm-cov-json
+    report: "{build_dir}/coverage/coverage.json"
+    steps:
+      - [bash, "{rules_dir}/scripts/cpp-coverage.sh", "{src_dir}", "{build_dir}", "{standard_var}", "{standard_number}"]
   mutation: { tool: mull, min_score: 0.60 }
 
 exec_from_source: []

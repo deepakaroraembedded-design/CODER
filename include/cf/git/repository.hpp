@@ -25,6 +25,7 @@ inline constexpr const char* kInvalidPath = "GIT_INVALID_PATH";
 inline constexpr const char* kNoChanges = "GIT_NO_CHANGES";
 inline constexpr const char* kNotFound = "GIT_NOT_FOUND";
 inline constexpr const char* kMergeConflict = "GIT_MERGE_CONFLICT";
+inline constexpr const char* kSigningKey = "GIT_SIGNING_KEY";
 }  // namespace error_codes
 
 // Required commit trailers (design section 10.4.5).
@@ -60,6 +61,12 @@ class Repository {
 
   const std::filesystem::path& path() const { return path_; }
 
+  // Signs every commit created afterwards with the SSH private key at
+  // `key_path` (design section 10.4.2: all CF commits are signed). The key
+  // is read by git at commit time; a missing or unreadable file is rejected
+  // here. An empty path disables signing (local runs without a key).
+  Status set_signing_key(const std::filesystem::path& key_path);
+
   // --- worktrees (design sections 5.3, 6.13.1) -----------------------------
   // Adds a worktree at worktree_path on branch. When the branch already
   // exists it is checked out; otherwise it is created from start_point.
@@ -70,6 +77,9 @@ class Repository {
   Status remove_worktree(const std::filesystem::path& worktree_path);
 
   Result<bool> branch_exists(const std::string& branch) const;
+
+  // True when `ref` resolves (a branch, tag, remote-tracking ref or commit).
+  Result<bool> ref_exists(const std::string& ref) const;
 
   // --- commits (design sections 6.8.3, 10.4.5) ------------------------------
   Result<std::string> head_sha(const std::filesystem::path& worktree,
@@ -110,6 +120,14 @@ class Repository {
   Result<std::string> remote_branch_sha(const std::string& remote,
                                         const std::string& branch) const;
 
+  // Fetches one branch and updates its remote-tracking ref.
+  Status fetch(const std::string& remote, const std::string& branch) const;
+
+  // True when `ancestor` is an ancestor of `descendant` (git merge-base
+  // --is-ancestor; a missing object is an error).
+  Result<bool> is_ancestor(const std::string& ancestor,
+                           const std::string& descendant) const;
+
   // --- recovery (design sections 6.12.4, 10.4.5) ---------------------------
   // Walks back from `ref` (at most max_walk commits) and returns the commit
   // whose <key> trailer equals value, e.g. ("CF-Op", "op_7f3a").
@@ -146,6 +164,13 @@ class Repository {
 
   Status abort_merge(const std::filesystem::path& worktree) const;
 
+  // Rebases the worktree's checked-out branch onto `upstream`; on conflict
+  // the caller should abort_rebase. Integration only (design section
+  // 10.4.9).
+  Status rebase(const std::filesystem::path& worktree,
+                const std::string& upstream) const;
+  Status abort_rebase(const std::filesystem::path& worktree) const;
+
  private:
   Repository(std::filesystem::path path, process::ProcessExecutor& executor);
 
@@ -162,6 +187,7 @@ class Repository {
 
   std::filesystem::path path_;
   process::ProcessExecutor& executor_;
+  std::filesystem::path signing_key_;  // empty: unsigned commits
 };
 
 // Subject + blank line + the non-empty trailers, in the design's order.

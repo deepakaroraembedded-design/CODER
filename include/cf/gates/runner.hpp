@@ -22,12 +22,30 @@ namespace cf::gates {
 
 enum class GateStage { Prerequisites = 1, Cheap = 2, Expensive = 3 };
 
+struct CoverageCheck {
+  std::string format;  // go-cover | coverage-json | lcov | llvm-cov-json | jacoco-xml
+  std::string report;  // report path (placeholders expanded)
+  double line = 0.0;   // required ratio, 0 disables
+  double branch = 0.0; // required ratio, 0 disables
+};
+
 struct GateDefinition {
   std::string name;
   GateStage stage = GateStage::Cheap;
   std::vector<GateStep> steps;  // trusted steps, executed as argument lists
   bool blocking = true;
+  CoverageCheck coverage;  // stage-3 coverage gates only
 };
+
+struct CoverageTotals {
+  double line = 0.0;
+  double branch = 0.0;
+  bool has_branch = false;
+};
+
+// Parses a coverage report produced by a profile's stage-3 steps.
+Result<CoverageTotals> parse_coverage_report(std::string_view format,
+                                             std::string_view content);
 
 struct GateFinding {
   std::string gate;
@@ -39,6 +57,9 @@ struct GateResult {
   std::string gate;
   bool passed = false;
   bool skipped = false;  // an earlier stage failed
+  // A human waiver covers every finding of a failed gate (design section
+  // 10.2). The gate still reports its findings for the audit trail.
+  bool waived = false;
   int64_t duration_ms = 0;
   std::vector<GateFinding> findings;
 };

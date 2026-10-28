@@ -1,6 +1,7 @@
 #include "cf/rag/retriever.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <set>
 
@@ -220,6 +221,18 @@ Status InMemoryRetriever::add_chunk(Chunk chunk) {
 }
 
 Result<std::vector<Hit>> InMemoryRetriever::search(const Query& query) const {
+  struct Latency {
+    const std::function<void(std::int64_t)>& observer;
+    std::chrono::steady_clock::time_point start;
+    ~Latency() {
+      if (observer) {
+        observer(std::chrono::duration_cast<std::chrono::milliseconds>(
+                     std::chrono::steady_clock::now() - start)
+                     .count());
+      }
+    }
+  } latency{options_.on_search_latency_ms, std::chrono::steady_clock::now()};
+
   const std::size_t top_k = std::max<std::size_t>(query.top_k, 1);
   const std::size_t candidates = top_k * options_.candidate_multiplier;
 

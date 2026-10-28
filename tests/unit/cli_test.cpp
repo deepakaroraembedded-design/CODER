@@ -67,6 +67,21 @@ test_frameworks:
   gtest: { steps: [[true]], languages: [cpp] }
 )yaml";
 
+class FakePdfExecutor final : public cf::process::ProcessExecutor {
+ public:
+  cf::process::ProcessResult run(
+      const cf::process::ProcessRequest& request) override {
+    argv = request.argv;
+    cf::process::ProcessResult result;
+    result.launched = true;
+    result.exit_code = 0;
+    result.stdout_text =
+        "# Converted manual\n\nThe converted PDF text is here.\n";
+    return result;
+  }
+  std::vector<std::string> argv;
+};
+
 class CliTest : public ::testing::Test {
  protected:
   void SetUp() override {
@@ -412,6 +427,36 @@ TEST_F(CliTest, IngestValidatesWritesAndRecordsVersions) {
   (*store).reset();
 }
 
+TEST_F(CliTest, IngestConvertsPdfWithASidecarAndHoldsMissingMetadata) {
+  write_file(dir_ / "docs" / "manual.pdf", "pdf bytes");
+  write_file(dir_ / "docs" / "manual.pdf.meta.yaml",
+             "doc_id: MANUAL\nversion: \"1\"\ntype: guideline\n"
+             "scope: company\nstatus: active\n");
+  write_file(dir_ / "docs" / "orphan.pdf", "pdf bytes");
+
+  FakePdfExecutor converter;
+  cf::cli::IngestOptions options;
+  options.docs_dir = dir_ / "docs";
+  options.out_dir = dir_ / "indexed";
+  options.executor = &converter;
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(cf::cli::ingest_command(options, out, err), 0) << err.str();
+  const auto report = nlohmann::json::parse(out.str());
+  ASSERT_EQ(report["ingested"].size(), 1u);
+  EXPECT_EQ(report["ingested"][0]["doc_id"], "MANUAL");
+  ASSERT_EQ(report["held"].size(), 1u);
+  EXPECT_NE(report["held"][0]["reason"].get<std::string>().find("sidecar"),
+            std::string::npos);
+  ASSERT_FALSE(converter.argv.empty());
+  EXPECT_EQ(converter.argv.front(), "pdftotext");
+
+  std::ifstream normalized(dir_ / "indexed" / "MANUAL-1.md");
+  const std::string text((std::istreambuf_iterator<char>(normalized)),
+                         std::istreambuf_iterator<char>());
+  EXPECT_NE(text.find("converted PDF text"), std::string::npos);
+}
+
 TEST_F(CliTest, IngestRejectsAMissingDirectory) {
   cf::cli::IngestOptions options;
   options.docs_dir = dir_ / "nope";
@@ -561,7 +606,8 @@ TEST_F(CliTest, RefinementStopsAtTheApprovalGateAndTheRefinedPlanDrivesExecution
                  "writes_interfaces": ["include/core.hpp"]}
               ],
               "adrs": [{"id": "ADR-001", "title": "Small core",
-                        "decision": "Keep it small", "alternatives": ["none"]}]})json",
+                        "decision": "Keep it small", "alternatives": ["none"],
+                        "pattern_id": "PAT-FACTORY"}]})json",
       R"json({"verdict": "ok", "issues": []})json"};
 
   cf::cli::ExecuteOptions options;
@@ -626,6 +672,337 @@ TEST_F(CliTest, RefinementStopsAtTheApprovalGateAndTheRefinedPlanDrivesExecution
   EXPECT_TRUE(design.replies.empty());
 }
 
+TEST_F(CliTest, RequestingDesignChangesArchivesThePackageAndRecordsFeedback) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+  const auto run_dir = cf::cli::run_directory(workspace_, "R12");
+  {
+    auto store = cf::store::RunStore::open(run_dir / "run.db");
+    ASSERT_TRUE(store.has_value());
+    cf::orch::StateMachine machine(**store, "R12");
+    for (const auto event : {cf::orch::RunEvent::Start,
+                             cf::orch::RunEvent::IndexReady,
+                             cf::orch::RunEvent::DesignPackageReady}) {
+      ASSERT_TRUE(machine.apply(event, {}, now_).has_value());
+    }
+  }
+  write_file(run_dir / "design.json", R"json({"system_design": "old"})json");
+  write_file(run_dir / "design.md", "# old design\n");
+
+  std::ostringstream changes_out;
+  std::ostringstream changes_err;
+  ASSERT_EQ(cf::cli::request_design_changes_command(
+                workspace_, "R12", "Use the registry factory", changes_out,
+                changes_err),
+            0)
+      << changes_err.str();
+  const auto document = nlohmann::json::parse(changes_out.str());
+  EXPECT_EQ(document["state"], "Refining");
+  ASSERT_EQ(document["archived"].size(), 2u);
+  EXPECT_FALSE(std::filesystem::exists(run_dir / "design.json"));
+  EXPECT_FALSE(std::filesystem::exists(run_dir / "design.md"));
+  EXPECT_TRUE(std::filesystem::exists(run_dir / "design-feedback.txt"));
+  std::ifstream feedback(run_dir / "design-feedback.txt");
+  const std::string text((std::istreambuf_iterator<char>(feedback)),
+                         std::istreambuf_iterator<char>());
+  EXPECT_NE(text.find("registry factory"), std::string::npos);
+
+  std::ostringstream empty_out;
+  std::ostringstream empty_err;
+  EXPECT_EQ(cf::cli::request_design_changes_command(workspace_, "R12", "  ",
+                                                    empty_out, empty_err),
+            1);
+}
+
+TEST_F(CliTest, WaiverIsRecordedAndListedInTheReport) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+
+  cf::cli::WaiverOptions options;
+  options.rule = "guardrails";
+  options.scope = "src/bus.cpp:42";
+  options.justification = "Legacy API kept for the compatibility window";
+  options.approved_by = "alice";
+  options.milestone_id = "M1";
+  std::ostringstream waiver_out;
+  std::ostringstream waiver_err;
+  EXPECT_EQ(
+      cf::cli::approve_waiver_command(workspace_, "R12", options, waiver_out,
+                                      waiver_err),
+      0)
+      << waiver_err.str();
+  const auto recorded = nlohmann::json::parse(waiver_out.str());
+  EXPECT_EQ(recorded["state"], "Created");
+  EXPECT_EQ(recorded["waiver"]["rule"], "guardrails");
+  EXPECT_EQ(recorded["waiver"]["approved_by"], "alice");
+
+  // A waiver without a written justification is refused (design 10.2).
+  options.justification.clear();
+  std::ostringstream invalid_out;
+  std::ostringstream invalid_err;
+  EXPECT_EQ(cf::cli::approve_waiver_command(workspace_, "R12", options,
+                                            invalid_out, invalid_err),
+            1);
+  EXPECT_NE(invalid_err.str().find("justification"), std::string::npos);
+
+  const auto report_dir = dir_ / "report";
+  std::ostringstream report_out;
+  std::ostringstream report_err;
+  ASSERT_EQ(cf::cli::report_command(workspace_, "R12", report_dir, report_out,
+                                    report_err),
+            0)
+      << report_err.str();
+
+  std::ifstream json_in(report_dir / "report.json");
+  const auto report = nlohmann::json::parse(json_in);
+  ASSERT_EQ(report["waivers"].size(), 1u);
+  EXPECT_EQ(report["waivers"][0]["milestone_id"], "M1");
+  EXPECT_EQ(report["waivers"][0]["approved_by"], "alice");
+  EXPECT_EQ(report["waivers"][0]["justification"],
+            "Legacy API kept for the compatibility window");
+
+  std::ifstream markdown_in(report_dir / "report.md");
+  const std::string markdown((std::istreambuf_iterator<char>(markdown_in)),
+                             std::istreambuf_iterator<char>());
+  EXPECT_NE(markdown.find("## Waivers"), std::string::npos);
+  EXPECT_NE(markdown.find("alice"), std::string::npos);
+  EXPECT_NE(markdown.find("src/bus.cpp:42"), std::string::npos);
+}
+
+TEST_F(CliTest, WaiverReleasesAnEscalatedMilestone) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+
+  const auto run_dir = cf::cli::run_directory(workspace_, "R12");
+  {
+    auto store = cf::store::RunStore::open(run_dir / "run.db");
+    ASSERT_TRUE(store.has_value());
+    cf::orch::StateMachine machine(**store, "R12");
+    for (const auto event :
+         {cf::orch::RunEvent::Start, cf::orch::RunEvent::IndexReady,
+          cf::orch::RunEvent::DesignPackageReady, cf::orch::RunEvent::Approved,
+          cf::orch::RunEvent::BudgetExceeded}) {
+      ASSERT_TRUE(machine.apply(event, {}, now_).has_value());
+    }
+    ASSERT_EQ(machine.current(), cf::orch::RunState::Escalated);
+    ASSERT_TRUE(
+        (*store)
+            ->set_milestone_state("R12", "M1", "Escalated", 0, now_)
+            .has_value());
+    cf::store::GateResultRow gate;
+    gate.run_id = "R12";
+    gate.milestone_id = "M1";
+    gate.commit_sha = "abc123";
+    gate.gate = "guardrails";
+    gate.passed = false;
+    gate.at = now_;
+    ASSERT_TRUE((*store)->record_gate_result(gate).has_value());
+    cf::store::WaiverRequestRecord request;
+    request.run_id = "R12";
+    request.milestone_id = "M1";
+    request.rule = "guardrails";
+    request.scope = "*";
+    request.justification = "the coder asked for this";
+    request.requested_by = "coder";
+    request.requested_at = now_;
+    request.deadline_at = now_ + 100;
+    ASSERT_TRUE((*store)->record_waiver_request(request).has_value());
+  }
+
+  cf::cli::WaiverOptions options;
+  options.rule = "guardrails";
+  options.scope = "*";
+  options.justification = "Legacy API kept for the compatibility window";
+  options.approved_by = "alice";
+  options.milestone_id = "M1";
+  std::ostringstream waiver_out;
+  std::ostringstream waiver_err;
+  ASSERT_EQ(cf::cli::approve_waiver_command(workspace_, "R12", options,
+                                            waiver_out, waiver_err),
+            0)
+      << waiver_err.str();
+  const auto document = nlohmann::json::parse(waiver_out.str());
+  EXPECT_EQ(document["state"], "Executing");
+  ASSERT_EQ(document["resolved_milestones"].size(), 1u);
+  EXPECT_EQ(document["resolved_milestones"][0], "M1");
+
+  auto store = cf::store::RunStore::open(run_dir / "run.db");
+  ASSERT_TRUE(store.has_value());
+  const auto run_record = (*store)->get_run("R12");
+  ASSERT_TRUE(run_record.has_value());
+  EXPECT_EQ(run_record->state, "Executing");
+  const auto milestone = (*store)->get_milestone("R12", "M1");
+  ASSERT_TRUE(milestone.has_value());
+  EXPECT_EQ(milestone->state, "Gating");
+  const auto requests = (*store)->list_waiver_requests("R12", "M1");
+  ASSERT_TRUE(requests.has_value());
+  ASSERT_EQ(requests->size(), 1u);
+  EXPECT_EQ((*requests)[0].status, "APPROVED");
+}
+
+TEST_F(CliTest, RefusingAWaiverRequestSettlesIt) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+  const auto run_dir = cf::cli::run_directory(workspace_, "R12");
+  std::string request_id;
+  {
+    auto store = cf::store::RunStore::open(run_dir / "run.db");
+    ASSERT_TRUE(store.has_value());
+    cf::store::WaiverRequestRecord request;
+    request.run_id = "R12";
+    request.milestone_id = "M1";
+    request.rule = "guardrails";
+    request.scope = "src/a.cpp:1";
+    request.justification = "requested by the coder";
+    request.requested_by = "coder";
+    request.requested_at = now_;
+    request.deadline_at = now_ + 100;
+    auto recorded = (*store)->record_waiver_request(request);
+    ASSERT_TRUE(recorded.has_value());
+    request_id = recorded->id;
+  }
+
+  std::ostringstream status_out;
+  std::ostringstream status_err;
+  ASSERT_EQ(cf::cli::status_command(workspace_, "R12", true, status_out,
+                                    status_err),
+            0)
+      << status_err.str();
+  const auto before = nlohmann::json::parse(status_out.str());
+  ASSERT_EQ(before["waiver_requests"].size(), 1u);
+  EXPECT_EQ(before["waiver_requests"][0]["status"], "PENDING");
+
+  std::ostringstream refuse_out;
+  std::ostringstream refuse_err;
+  ASSERT_EQ(cf::cli::refuse_waiver_request_command(workspace_, "R12", request_id,
+                                                   "not acceptable",
+                                                   refuse_out, refuse_err),
+            0)
+      << refuse_err.str();
+  EXPECT_EQ(nlohmann::json::parse(refuse_out.str())["status"], "REFUSED");
+
+  std::ostringstream after_out;
+  std::ostringstream after_err;
+  ASSERT_EQ(cf::cli::status_command(workspace_, "R12", true, after_out,
+                                    after_err),
+            0);
+  const auto after = nlohmann::json::parse(after_out.str());
+  EXPECT_EQ(after["waiver_requests"][0]["status"], "REFUSED");
+}
+
+TEST_F(CliTest, ExecuteRejectsAnUnknownPinnedProfile) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+
+  cf::process::LocalProcessExecutor executor;
+  auto repo = cf::git::Repository::create(dir_ / "pinned-repo", executor);
+  ASSERT_TRUE(repo.has_value()) << repo.error().message;
+
+  cf::cli::ExecuteOptions options;
+  options.workspace = workspace_;
+  options.run_id = "R12";
+  options.profiles_dir = dir_ / "profiles";
+  options.repository_path = dir_ / "pinned-repo";
+  options.skip_refinement = true;
+  options.profile_id = "does-not-exist";
+  std::ostringstream execute_out;
+  std::ostringstream execute_err;
+  EXPECT_EQ(cf::cli::execute_command(options, execute_out, execute_err), 1);
+  EXPECT_NE(execute_err.str().find("does-not-exist"), std::string::npos);
+}
+
+TEST_F(CliTest, ReferenceDocsAreMirroredAndPinnedForTheRun) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+
+  const auto repo = dir_ / "reference-repo";
+  write_file(repo / "vcpkg.json",
+             R"({"dependencies": [{"name": "boost", "version>=": "1.89.0"}]})");
+  const auto doc = dir_ / "boost.md";
+  write_file(doc, "# Boost Asio\n\nAsio provides asynchronous I/O.\n");
+  const auto manifest = dir_ / "reference.yaml";
+  write_file(manifest, "sets:\n  - id: boost\n    version: \"1.89.0\"\n    source: " +
+                           doc.string() + "\n    license: BSL-1.0\n");
+
+  ScriptedDesignModel design;
+  design.replies = {
+      R"json({"system_design": "Single core component.",
+              "milestones": [
+                {"id": "M1", "title": "Core", "requirements": ["REQ-001"],
+                 "depends_on": [], "acceptance": ["works"],
+                 "writes": ["src"], "uses": [],
+                 "writes_interfaces": ["include/core.hpp"]}
+              ],
+              "adrs": [{"id": "ADR-001", "title": "Small core",
+                        "decision": "Keep it small", "alternatives": ["none"],
+                        "pattern_id": "PAT-FACTORY"}]})json",
+      R"json({"verdict": "ok", "issues": []})json"};
+
+  cf::cli::ExecuteOptions options;
+  options.workspace = workspace_;
+  options.run_id = "R12";
+  options.profiles_dir = dir_ / "profiles";
+  options.repository_path = repo;
+  options.design_model_override = &design;
+  options.reference_docs_manifest = manifest.string();
+  options.reference_docs_version_source = "auto";
+  std::ostringstream execute_out;
+  std::ostringstream execute_err;
+  ASSERT_EQ(cf::cli::execute_command(options, execute_out, execute_err), 0)
+      << execute_err.str();
+  EXPECT_NE(execute_out.str().find("AwaitingDesignApproval"), std::string::npos);
+
+  const auto run_dir = cf::cli::run_directory(workspace_, "R12");
+  const auto mirrored = run_dir / "reference-docs" / "boost-1.89.0.md";
+  ASSERT_TRUE(std::filesystem::exists(mirrored));
+  std::ifstream doc_in(mirrored);
+  const std::string markdown((std::istreambuf_iterator<char>(doc_in)),
+                             std::istreambuf_iterator<char>());
+  EXPECT_NE(markdown.find("type: external_reference"), std::string::npos);
+  EXPECT_NE(markdown.find("version: \"1.89.0\""), std::string::npos);
+
+  std::ifstream versions_in(run_dir / "reference-versions.json");
+  const auto versions = nlohmann::json::parse(versions_in);
+  EXPECT_EQ(versions["versions"]["boost"], "1.89.0");
+  EXPECT_TRUE(versions["skipped"].empty());
+}
+
+TEST_F(CliTest, ReferenceDocsVersionMismatchCanFailTheRun) {
+  std::ostringstream out;
+  std::ostringstream err;
+  ASSERT_EQ(run(out, err), 0) << err.str();
+
+  const auto repo = dir_ / "reference-repo";
+  write_file(repo / "vcpkg.json",
+             R"({"dependencies": [{"name": "boost", "version>=": "1.84.0"}]})");
+  const auto doc = dir_ / "boost.md";
+  write_file(doc, "# Boost\n");
+  const auto manifest = dir_ / "reference.yaml";
+  write_file(manifest, "sets:\n  - id: boost\n    version: \"1.89.0\"\n    source: " +
+                           doc.string() + "\n");
+
+  cf::cli::ExecuteOptions options;
+  options.workspace = workspace_;
+  options.run_id = "R12";
+  options.profiles_dir = dir_ / "profiles";
+  options.repository_path = repo;
+  options.reference_docs_manifest = manifest.string();
+  options.reference_docs_version_source = "auto";
+  options.reference_docs_on_missing_version = "fail";
+  std::ostringstream execute_out;
+  std::ostringstream execute_err;
+  EXPECT_EQ(cf::cli::execute_command(options, execute_out, execute_err), 1);
+  EXPECT_NE(execute_err.str().find("REFDOCS_VERSION_MISSING"), std::string::npos);
+  const auto run_dir = cf::cli::run_directory(workspace_, "R12");
+  EXPECT_FALSE(std::filesystem::exists(run_dir / "reference-docs" / "boost-1.89.0.md"));
+}
+
 TEST_F(CliTest, ApproveCommandMovesToExecuting) {
   std::ostringstream out;
   std::ostringstream err;
@@ -679,7 +1056,8 @@ TEST_F(CliTest, AbortWithdrawsThePublishedDesign) {
          "writes_interfaces": ["include/core.hpp"]}
       ],
       "adrs": [{"id": "ADR-001", "title": "Small core",
-                "decision": "Keep it small", "alternatives": ["none"]}]})json");
+                "decision": "Keep it small", "alternatives": ["none"],
+                        "pattern_id": "PAT-FACTORY"}]})json");
   std::ostringstream approve_out;
   std::ostringstream approve_err;
   ASSERT_EQ(cf::cli::approve_command(workspace_, "R12", "design", approve_out,

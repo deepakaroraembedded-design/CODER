@@ -4,9 +4,8 @@
 // is command-line flags > cf.yaml > built-in defaults. The parsed schema is
 // strict: an unknown key fails with CLI_CONFIG_INVALID naming the key, so a
 // configuration never silently half-applies; sections whose knobs have no
-// consumer yet (reference_docs, gate coverage/mutation, github push_on and
-// branch retention, waiver deadlines) are rejected the same way until they
-// are implemented.
+// consumer yet (gate coverage/mutation) are rejected the same way until
+// they are implemented.
 #pragma once
 
 #include <cstdint>
@@ -40,10 +39,19 @@ struct FrameworkConfig {
     // A filesystem path to the PEM. secretmanager:// references are rejected
     // at load time (not resolvable in this build).
     std::optional<std::string> private_key_ref;
+    // SSH private key used to sign every CF commit (design section 10.4.2).
+    // A filesystem path; secretmanager:// references are rejected.
+    std::optional<std::string> signing_key_ref;
     // Pre-push policy (design sections 10.4.6, 15).
     std::optional<std::string> branch_prefix;
     std::optional<std::vector<std::string>> protected_paths;
     std::optional<std::uint64_t> max_file_mb;
+    // When the GitHub flow pushes (design sections 10.4.4, 15):
+    // milestone_done, run_done and/or escalation. Unset = all three.
+    std::optional<std::vector<std::string>> push_on;
+    // Delete the run's cf/ branches this many days after its PR is merged
+    // or closed (design section 10.4.9); unset = 30.
+    std::optional<std::uint32_t> branch_retention_days;
     // Pull-request policy (design sections 10.4.4, 10.4.8, 15).
     struct Pr {
       std::optional<bool> draft_until_done;
@@ -69,10 +77,17 @@ struct FrameworkConfig {
     std::optional<double> temperature;
     std::optional<std::uint32_t> max_output_tokens;
   };
+  struct EmbeddingModel {
+    std::string model;
+    std::optional<std::uint32_t> dim;
+    std::optional<std::string> index;  // hosted | local
+  };
   struct Models {
     std::string default_provider = "fireworks";
     // coder, reviewer, qa and planner (design sections 6.2, 6.6).
     std::map<std::string, RoleModel, std::less<>> roles;
+    // Embedding model per provider (design sections 6.3, 15).
+    std::map<std::string, EmbeddingModel, std::less<>> embeddings;
   };
   Models models;
 
@@ -93,6 +108,7 @@ struct FrameworkConfig {
     // Business days (design section 12.1); the plan overrides these.
     std::optional<std::uint32_t> design_approval_business_days;
     std::optional<std::uint32_t> escalation_business_days;
+    std::optional<std::uint32_t> waiver_business_days;
   };
   Approvals approvals;
 
@@ -107,13 +123,44 @@ struct FrameworkConfig {
   };
   Rag rag;
 
+  // Offline reference documentation (design sections 6.3.1, 15).
+  struct ReferenceDocs {
+    std::optional<std::string> manifest;
+    // Only "pinned_at_run_start" is supported: the run mirrors and pins the
+    // versions it starts with.
+    std::optional<std::string> index_version;
+    // "auto" reads vcpkg.json, requirements.txt and package.json from the
+    // target checkout; "none" skips version matching.
+    std::optional<std::string> version_source;
+    // "report" skips a set whose pinned version is not mirrored; "fail"
+    // aborts the run instead.
+    std::optional<std::string> on_missing_version;
+  };
+  ReferenceDocs reference_docs;
+
   struct Gates {
     std::optional<std::string> profiles_dir;
+    // "auto" (the plan's target block) or a profile id such as "c-cpp".
+    std::optional<std::string> profile;
+    struct Coverage {
+      std::optional<double> line;
+      std::optional<double> branch;
+      std::optional<std::string> scope;  // changed | all
+    };
+    Coverage coverage;
+    struct Mutation {
+      std::optional<bool> enabled;
+      std::optional<double> min_score;
+    };
+    Mutation mutation;
   };
   Gates gates;
 
   struct Review {
     std::optional<std::uint32_t> diff_threshold_lines;
+    // Review-finding severities that block the milestone (design section
+    // 8.2/15).
+    std::optional<std::vector<std::string>> blocking_severities;
   };
   Review review;
 
@@ -121,6 +168,9 @@ struct FrameworkConfig {
     std::optional<double> cpu;
     std::optional<double> memory_gb;
     std::optional<std::uint32_t> job_timeout_min;
+    // Gate jobs are always network-isolated; only "deny" is accepted
+    // (design sections 6.8, 15).
+    std::optional<std::string> network;
   };
   Sandbox sandbox;
 };

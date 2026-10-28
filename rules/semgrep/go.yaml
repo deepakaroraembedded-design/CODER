@@ -1,0 +1,25 @@
+# Company Semgrep starter rules for Go (design section 6.7.2).
+rules:
+  - id: swt.go.no-shell-command
+    languages: [go]
+    severity: ERROR
+    message: Do not invoke a shell with exec.Command; pass an argument list.
+    pattern: exec.Command("sh", "-c", ...)
+
+  - id: swt.go.no-insecure-skip-verify
+    languages: [go]
+    severity: ERROR
+    message: Do not disable TLS certificate verification.
+    pattern: "tls.Config{..., InsecureSkipVerify: true, ...}"
+
+  - id: swt.go.no-hardcoded-secret
+    languages: [go]
+    severity: ERROR
+    message: Do not hardcode credentials or tokens; read them at runtime.
+    patterns:
+      - pattern-either:
+          - pattern: $NAME := "..."
+          - pattern: $NAME = "..."
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)(password|passwd|secret|token|api_key|apikey|private_key)

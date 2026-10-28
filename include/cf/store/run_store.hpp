@@ -151,6 +151,13 @@ struct DocVersionRow {
   UnixTime ingested_at = 0;
 };
 
+struct RagLatencyRow {
+  int64_t id = 0;
+  std::string run_id;
+  int64_t latency_ms = 0;
+  UnixTime at = 0;
+};
+
 struct LockRecord {
   std::string lock_id;
   std::string run_id;
@@ -190,6 +197,35 @@ struct DefectRecord {
   std::string fingerprint;  // de-duplication across runs (design section 6.10)
   std::string body_json;    // the full defect payload
   uint32_t attempts = 0;
+};
+
+// An agent's request for a human waiver (design section 12.1). Only the CLI
+// can grant the resulting waiver.
+struct WaiverRequestRecord {
+  std::string id;  // "wreq_" + 16 hex chars
+  std::string run_id;
+  std::string milestone_id;
+  std::string rule;
+  std::string scope;
+  std::string justification;
+  std::string requested_by;  // coder | reviewer | qa
+  std::string status;        // PENDING | APPROVED | REFUSED | EXPIRED
+  UnixTime requested_at = 0;
+  UnixTime deadline_at = 0;
+};
+
+// A human-approved waiver of one gate rule at one scope (design section
+// 10.2). Agents cannot create waivers; only the CLI records them. An empty
+// milestone_id applies to the whole run.
+struct WaiverRecord {
+  std::string waiver_id;     // "waiver_" + 16 hex chars
+  std::string run_id;
+  std::string milestone_id;
+  std::string rule;          // the gate/check name
+  std::string scope;         // file:line (or the finding's location)
+  std::string justification;
+  std::string approved_by;
+  UnixTime at = 0;
 };
 
 // The statuses that still need work (design section 11.1: a milestone cannot
@@ -283,6 +319,10 @@ class RunStore {
   Result<std::vector<GateResultRow>> list_gate_results(
       std::string_view run_id, std::string_view commit_sha) const;
 
+  // Every gate result row of the run, oldest first (metrics/reporting).
+  Result<std::vector<GateResultRow>> list_all_gate_results(
+      std::string_view run_id) const;
+
   // True only when at least one gate result exists for the commit and every
   // one of them passed. Used by the pre-push check and the milestone Done
   // criteria (design section 11.1).
@@ -311,6 +351,37 @@ class RunStore {
 
   Status set_defect_status(std::string_view id, std::string_view status,
                            uint32_t attempts);
+
+  // --- waivers (design section 10.2) ---------------------------------------
+  // Records a human waiver of a gate rule at a scope. (run_id, rule, scope)
+  // is unique: recording the same waiver again returns the existing row
+  // unchanged, so a retried CLI command is idempotent. An empty waiver_id is
+  // generated.
+  Result<WaiverRecord> record_waiver(const WaiverRecord& waiver);
+
+  // Oldest first. Empty milestone_id = all waivers of the run; a non-empty
+  // id selects that milestone's waivers plus the run-wide ones.
+  Result<std::vector<WaiverRecord>> list_waivers(
+      std::string_view run_id, std::string_view milestone_id = "") const;
+
+  // --- waiver requests (design section 12.1) ------------------------------
+  // (run_id, milestone_id, rule, scope) is unique; a retried request returns
+  // the existing row.
+  Result<WaiverRequestRecord> record_waiver_request(
+      const WaiverRequestRecord& request);
+  Result<std::vector<WaiverRequestRecord>> list_waiver_requests(
+      std::string_view run_id, std::string_view milestone_id = "") const;
+  Result<WaiverRequestRecord> get_waiver_request(std::string_view id) const;
+  Status set_waiver_request_status(std::string_view id, std::string_view status);
+  // Marks matching PENDING requests APPROVED/REFUSED.
+  Status decide_waiver_requests(std::string_view run_id,
+                                std::string_view milestone_id,
+                                std::string_view rule, std::string_view scope,
+                                std::string_view status, UnixTime now);
+  // PENDING requests at or past their deadline become EXPIRED; returns the
+  // number changed.
+  Result<std::size_t> expire_waiver_requests(std::string_view run_id,
+                                             UnixTime now);
 
   // --- checkpoints (design section 6.12.3) ---------------------------------
   Status save_checkpoint(const CheckpointRecord& checkpoint);
@@ -354,10 +425,18 @@ class RunStore {
   // empty holder so the epoch stays monotonic across acquisitions.
   Status release_lease(std::string_view run_id, std::string_view holder, uint64_t epoch);
 
+  // --- RAG latency samples (design section 14) -----------------------------
+  Status record_rag_latency(std::string_view run_id, int64_t latency_ms,
+                            UnixTime at);
+  Result<std::vector<RagLatencyRow>> list_rag_latencies(
+      std::string_view run_id) const;
+
   // --- LLM call ledger (design section 6.11) -------------------------------
   Status record_llm_call(const LlmCallRecord& call);
   Result<double> total_usd(std::string_view run_id) const;
   Result<int64_t> total_tokens(std::string_view run_id) const;
+  // Every ledger row of the run, oldest first (metrics/reporting).
+  Result<std::vector<LlmCallRecord>> list_llm_calls(std::string_view run_id) const;
 
   // --- document versions (design section 8.4) ------------------------------
   // Records what was ingested (doc_id, version, content hash, precedence);

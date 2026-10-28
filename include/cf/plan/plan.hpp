@@ -61,6 +61,7 @@ struct BudgetSpec {
 struct ApprovalSpec {
   std::optional<uint32_t> design_approval_business_days;
   std::optional<uint32_t> escalation_business_days;
+  std::optional<uint32_t> waiver_business_days;
 };
 
 struct Plan {

@@ -16,7 +16,7 @@ languages:
     standard_var: PYTHON_VERSION
     guardrails:
       steps:
-        - [semgrep, --config, rules/semgrep/python.yaml, --error, "{changed_files...}"]
+        - [semgrep, --config, "{rules_dir}/semgrep/python.yaml", --error, "{changed_files...}"]
     format:
       steps:
         - [ruff, format, --check, "{changed_files...}"]
@@ -39,7 +39,21 @@ common:
     steps:
       - [bandit, -q, -r, "{src_dir}/src"]
       - [ruff, check, "{src_dir}/src"]
-  coverage: { tool: coverage.py, line: 0.85, branch: 0.75 }
-  mutation: { tool: mutmut, min_score: 0.60 }
+  coverage:
+    tool: coverage.py
+    line: 0.85
+    branch: 0.75
+    # Stage 3, after the cheap gates pass. The built-in checker reads the
+    # coverage.py JSON report and enforces the line and branch thresholds.
+    format: coverage-json
+    report: "{build_dir}/coverage.json"
+    steps:
+      - [python3, -m, coverage, run, --branch, "--source={src_dir}/src", -m, pytest, "{src_dir}/tests", -q]
+      - [python3, -m, coverage, json, -o, "{build_dir}/coverage.json", --pretty-print]
+  mutation:
+    tool: mutmut
+    min_score: 0.60
+    steps:
+      - [bash, "{rules_dir}/scripts/python-mutation.sh", "{src_dir}", "{build_dir}", "{mutation_min_score}"]
 
 exec_from_source: []

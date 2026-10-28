@@ -54,6 +54,31 @@ TEST_F(GithubClientTest, CreatesAPullRequest) {
   EXPECT_TRUE(has_auth);
 }
 
+TEST_F(GithubClientTest, ParsesMergeAndCloseTimestamps) {
+  transport_->script(200, R"({"number": 7, "html_url": "u", "state": "closed",
+                              "body": "b", "draft": false,
+                              "merged_at": "2026-10-01T10:00:00Z",
+                              "closed_at": "2026-10-02T10:00:00Z",
+                              "head": {"ref": "cf/R12/integration"},
+                              "base": {"ref": "main"}})");
+  auto pr = client_->get_pull_request("o", "r", 7);
+  ASSERT_TRUE(pr.has_value()) << pr.error().message;
+  EXPECT_EQ(pr->merged_at, "2026-10-01T10:00:00Z");
+  EXPECT_EQ(pr->closed_at, "2026-10-02T10:00:00Z");
+}
+
+TEST_F(GithubClientTest, DeletesBranchesIdempotently) {
+  transport_->script(204, "");
+  ASSERT_TRUE(client_->delete_branch("o", "r", "cf/R12/M1").has_value());
+  ASSERT_EQ(transport_->requests().size(), 1u);
+  EXPECT_EQ(transport_->requests()[0].method, "DELETE");
+  EXPECT_EQ(transport_->requests()[0].url,
+            "https://api.github.test/repos/o/r/git/refs/heads/cf/R12/M1");
+
+  transport_->script(404, R"({"message": "Reference does not exist"})");
+  EXPECT_TRUE(client_->delete_branch("o", "r", "cf/R12/M2").has_value());
+}
+
 TEST_F(GithubClientTest, ListsPullRequestsByHead) {
   transport_->script(200, R"([{"number": 7, "html_url": "u", "state": "open",
                                "body": "b", "draft": false,

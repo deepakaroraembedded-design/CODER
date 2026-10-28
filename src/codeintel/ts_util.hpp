@@ -75,8 +75,13 @@ inline std::string clean_comment(std::string text) {
 // (C block comments, Go // comments).
 inline std::string doc_comment(std::string_view source, TSNode node) {
   const TSNode previous = ts_node_prev_named_sibling(node);
-  if (ts_node_is_null(previous) ||
-      std::strcmp(ts_node_type(previous), "comment") != 0) {
+  if (ts_node_is_null(previous)) {
+    return {};
+  }
+  const char* previous_type = ts_node_type(previous);
+  if (std::strcmp(previous_type, "comment") != 0 &&
+      std::strcmp(previous_type, "line_comment") != 0 &&
+      std::strcmp(previous_type, "block_comment") != 0) {
     return {};
   }
   const std::uint32_t gap_begin = ts_node_end_byte(previous);

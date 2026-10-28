@@ -10,9 +10,23 @@
 
 #include "cf/sandbox/docker.hpp"
 #include "cf/sandbox/namespaces.hpp"
+#include "cf/telemetry/logging.hpp"
+#include "cf/orch/waivers.hpp"
 
 namespace cf::orch {
 namespace {
+
+const char* role_for_phase(MilestonePhase phase) {
+  switch (phase) {
+    case MilestonePhase::AuthorTests: return "qa";
+    case MilestonePhase::Code: return "coder";
+    case MilestonePhase::Fix: return "coder";
+    case MilestonePhase::Review: return "reviewer";
+    case MilestonePhase::Validate: return "qa";
+    case MilestonePhase::Integrate: return "orchestrator";
+  }
+  return "orchestrator";
+}
 
 bool starts_with(std::string_view text, std::string_view prefix) {
   return text.size() >= prefix.size() && text.substr(0, prefix.size()) == prefix;
@@ -201,12 +215,32 @@ Status WorkspaceDriver::snapshot(std::string_view milestone_id, std::string_view
   git::CommitTrailers trailers;
   trailers.run_id = config_.run_id;
   trailers.milestone_id = std::string(milestone_id);
+  trailers.waivers = waivers_trailer(milestone_id);
   trailers.op_id = op_id;
   auto sha = repository_.commit_paths(*worktree, existing, message, trailers);
   if (!sha) {
     return tl::make_unexpected(sha.error());
   }
   return {};
+}
+
+std::string WorkspaceDriver::waivers_trailer(
+    std::string_view milestone_id) const {
+  if (store_ == nullptr) {
+    return "none";
+  }
+  auto waivers = store_->list_waivers(config_.run_id, milestone_id);
+  if (!waivers || waivers->empty()) {
+    return "none";
+  }
+  std::string joined;
+  for (const auto& waiver : *waivers) {
+    if (!joined.empty()) {
+      joined += ", ";
+    }
+    joined += waiver.rule + "@" + waiver.scope;
+  }
+  return joined;
 }
 
 AgentTurnRequest WorkspaceDriver::make_request(MilestonePhase phase,
@@ -376,6 +410,8 @@ Status WorkspaceDriver::prepare_codeintel() {
 }
 
 TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone_id) {
+  telemetry::ScopedContext log_context(config_.run_id, std::string(milestone_id),
+                                       role_for_phase(phase));
   if (phase == MilestonePhase::Integrate) {
     // The integration worktree lives under wt/<run>/integration.
     auto path = ensure_integration_worktree();
@@ -393,6 +429,7 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
     git::CommitTrailers trailers;
     trailers.run_id = config_.run_id;
     trailers.milestone_id = std::string(milestone_id);
+    trailers.waivers = waivers_trailer(milestone_id);
     trailers.op_id = store::new_op_id();
     trailers.squashed_from = branch;
     auto merged = repository_.merge_squash(*path, branch,
@@ -646,6 +683,8 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
 // coder's worktree so a corrected test is what the next gate run builds, and
 // the fix is committed there (tests/ and qa/ are QA-owned paths).
 TurnResult WorkspaceDriver::run_test_dispute(std::string_view milestone_id) {
+  telemetry::ScopedContext log_context(config_.run_id, std::string(milestone_id),
+                                       "qa");
   const std::string id(milestone_id);
   auto worktree = ensure_worktree(milestone_id, "coder");
   if (!worktree) {
@@ -707,6 +746,7 @@ TurnResult WorkspaceDriver::run_test_dispute(std::string_view milestone_id) {
     git::CommitTrailers trailers;
     trailers.run_id = config_.run_id;
     trailers.milestone_id = id;
+    trailers.waivers = waivers_trailer(milestone_id);
     trailers.op_id = store::new_op_id();
     const auto committed = repository_.commit_paths(
         *worktree, qa_paths, "test(" + id + "): dispute decision", trailers);
@@ -753,6 +793,8 @@ TurnResult WorkspaceDriver::run_test_dispute(std::string_view milestone_id) {
 }
 
 GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
+  telemetry::ScopedContext log_context(config_.run_id, std::string(milestone_id),
+                                       "orchestrator");
   GateOutcome outcome;
   // A revalidating milestone is already merged: its gates run against the
   // integration head, and the review is re-run in full (design sections
@@ -816,6 +858,7 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
   }
 
   gates::GateRunOptions options;
+  options.step_context.rules_dir = config_.rules_dir;
   options.step_context.src_dir = worktree->string();
   // A revalidation gates the integration worktree, so it needs its own build
   // directory: reusing the coder worktree's would trip CMake's source-dir
@@ -833,6 +876,12 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     options.step_context.standard_var = language->second.standard_var;
   }
   options.step_context.changed_files = changed_files;
+  options.step_context.coverage_line =
+      gates::coverage_percent(config_.profile.coverage.line);
+  options.step_context.coverage_branch =
+      gates::coverage_percent(config_.profile.coverage.branch);
+  options.step_context.mutation_min_score =
+      gates::ratio_string(config_.profile.mutation.min_score);
   options.working_directory = worktree->string();
   options.commit_sha = *head;
   options.step_timeout = config_.step_timeout;
@@ -847,10 +896,15 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     spec.worktree = worktree->string();
     spec.writable_paths = {"src", "include"};
     spec.memory_mb = config_.gate_memory_mb;
+    if (!config_.rules_dir.empty()) {
+      spec.extra_readonly_mounts.push_back({config_.rules_dir, "/cf-rules"});
+    }
     namespace_sandbox = std::make_unique<cf::sandbox::NamespaceExecutor>(std::move(spec));
     runner = std::make_unique<gates::GateRunner>(*namespace_sandbox);
     options.step_context.src_dir = "/work";
     options.step_context.build_dir = "/build";
+    options.step_context.rules_dir =
+        config_.rules_dir.empty() ? "" : "/cf-rules";
     options.working_directory = "/work";
   } else if (!config_.sandbox_image.empty()) {
     // Gates run in the sandbox: placeholders point at the container's mount
@@ -862,10 +916,16 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     spec.writable_paths = {"src", "include"};
     spec.cpus = config_.gate_cpus;
     spec.memory_mb = config_.gate_memory_mb;
+    if (!config_.rules_dir.empty()) {
+      spec.extra_mounts.push_back(
+          sandbox::SandboxMount{config_.rules_dir, "/cf-rules", false});
+    }
     sandbox = std::make_unique<cf::sandbox::DockerSandboxExecutor>(std::move(spec));
     runner = std::make_unique<gates::GateRunner>(*sandbox);
     options.step_context.src_dir = "/work";
     options.step_context.build_dir = "/build";
+    options.step_context.rules_dir =
+        config_.rules_dir.empty() ? "" : "/cf-rules";
     options.working_directory = "/work";
   } else {
     std::error_code ec;
@@ -874,6 +934,17 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
   }
 
   outcome.report = runner->run(*plan, options);
+  // A human can waive a failed gate rule at a scope (design section 10.2);
+  // only fully covered gates are waived, and skipped checks never are.
+  if (store_ != nullptr) {
+    auto waivers = store_->list_waivers(config_.run_id, milestone_id);
+    if (waivers) {
+      apply_waivers(outcome.report, *waivers);
+    } else {
+      spdlog::warn("cannot read waivers for {}: {}", milestone_id,
+                   waivers.error().message);
+    }
+  }
   outcome.passed = outcome.report.passed;
 
   if (store_ != nullptr) {
@@ -895,7 +966,7 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
       row.milestone_id = std::string(milestone_id);
       row.commit_sha = *head;
       row.gate = result.gate;
-      row.passed = result.passed && !result.skipped;
+      row.passed = (result.passed || result.waived) && !result.skipped;
       row.report_ref = report_path.string();
       row.at = store::unix_now();
       (void)store_->record_gate_result(row);
@@ -908,7 +979,169 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
 // interface change can invalidate protected tests. QA owns tests/, so it
 // updates them (or files a defect when the code is actually wrong) against
 // the integration head.
+Status WorkspaceDriver::rebase_integration_onto(std::string_view upstream) {
+  telemetry::ScopedContext log_context(config_.run_id, "integration",
+                                       "orchestrator");
+  auto worktree = ensure_integration_worktree();
+  if (!worktree) {
+    return tl::make_unexpected(worktree.error());
+  }
+  auto rebased = repository_.rebase(*worktree, std::string(upstream));
+  if (!rebased) {
+    (void)repository_.abort_rebase(*worktree);
+    return fail(git::error_codes::kMergeConflict,
+                "cannot rebase the integration branch onto " +
+                    std::string(upstream) + ": " + rebased.error().message);
+  }
+  return {};
+}
+
+Result<GateOutcome> WorkspaceDriver::run_integration_gates(
+    std::string_view upstream) {
+  telemetry::ScopedContext log_context(config_.run_id, "integration",
+                                       "orchestrator");
+  GateOutcome outcome;
+  auto worktree = ensure_integration_worktree();
+  if (!worktree) {
+    return tl::make_unexpected(worktree.error());
+  }
+  auto head = repository_.head_sha(*worktree);
+  if (!head) {
+    return tl::make_unexpected(head.error());
+  }
+  outcome.commit_sha = *head;
+
+  std::vector<std::string> changed_files;
+  auto changes = repository_.diff(std::string(upstream), *head);
+  if (changes) {
+    for (const auto& change : *changes) {
+      changed_files.push_back(change.path);
+    }
+  } else {
+    spdlog::warn("integration gates: cannot diff {}..{}: {}",
+                 std::string(upstream), head->substr(0, 12),
+                 changes.error().message);
+  }
+
+  auto plan = gates::build_gate_plan(config_.profile, config_.profile_language,
+                                     config_.profile_build_system,
+                                     config_.profile_test_framework);
+  if (!plan) {
+    cf::gates::GateResult result;
+    result.gate = "build";
+    result.passed = false;
+    result.findings.push_back(
+        cf::gates::GateFinding{"build", "error", plan.error().message});
+    outcome.report.results.push_back(std::move(result));
+    return outcome;
+  }
+
+  gates::GateRunOptions options;
+  options.step_context.rules_dir = config_.rules_dir;
+  options.step_context.src_dir = worktree->string();
+  std::filesystem::path build_dir = config_.workspace_root / "build" /
+                                    config_.run_id / "integration";
+  options.step_context.build_dir = build_dir.string();
+  options.step_context.standard = plan_.target.standard;
+  options.step_context.standard_number = gates::standard_number(plan_.target.standard);
+  const auto language = config_.profile.languages.find(config_.profile_language);
+  if (language != config_.profile.languages.end()) {
+    options.step_context.standard_var = language->second.standard_var;
+  }
+  options.step_context.coverage_line =
+      gates::coverage_percent(config_.profile.coverage.line);
+  options.step_context.coverage_branch =
+      gates::coverage_percent(config_.profile.coverage.branch);
+  options.step_context.mutation_min_score =
+      gates::ratio_string(config_.profile.mutation.min_score);
+  options.step_context.changed_files = changed_files;
+  options.working_directory = worktree->string();
+  options.commit_sha = *head;
+  options.step_timeout = config_.step_timeout;
+
+  std::unique_ptr<gates::GateRunner> runner;
+  std::unique_ptr<cf::sandbox::DockerSandboxExecutor> sandbox;
+  std::unique_ptr<cf::sandbox::NamespaceExecutor> namespace_sandbox;
+  if (config_.sandbox_namespaces) {
+    sandbox::NamespaceSandboxSpec spec;
+    spec.worktree = worktree->string();
+    spec.writable_paths = {"src", "include"};
+    spec.memory_mb = config_.gate_memory_mb;
+    if (!config_.rules_dir.empty()) {
+      spec.extra_readonly_mounts.push_back({config_.rules_dir, "/cf-rules"});
+    }
+    namespace_sandbox = std::make_unique<sandbox::NamespaceExecutor>(std::move(spec));
+    runner = std::make_unique<gates::GateRunner>(*namespace_sandbox);
+    options.step_context.src_dir = "/work";
+    options.step_context.build_dir = "/build";
+    options.step_context.rules_dir =
+        config_.rules_dir.empty() ? "" : "/cf-rules";
+    options.working_directory = "/work";
+  } else if (!config_.sandbox_image.empty()) {
+    sandbox::SandboxSpec spec;
+    spec.image = config_.sandbox_image;
+    spec.run_id = config_.run_id;
+    spec.worktree = worktree->string();
+    spec.writable_paths = {"src", "include"};
+    spec.cpus = config_.gate_cpus;
+    spec.memory_mb = config_.gate_memory_mb;
+    if (!config_.rules_dir.empty()) {
+      spec.extra_mounts.push_back(
+          sandbox::SandboxMount{config_.rules_dir, "/cf-rules", false});
+    }
+    sandbox = std::make_unique<cf::sandbox::DockerSandboxExecutor>(std::move(spec));
+    runner = std::make_unique<gates::GateRunner>(*sandbox);
+    options.step_context.src_dir = "/work";
+    options.step_context.build_dir = "/build";
+    options.step_context.rules_dir =
+        config_.rules_dir.empty() ? "" : "/cf-rules";
+    options.working_directory = "/work";
+  } else {
+    std::error_code ec;
+    std::filesystem::create_directories(options.step_context.build_dir, ec);
+    runner = std::make_unique<gates::GateRunner>(executor_);
+  }
+
+  outcome.report = runner->run(*plan, options);
+  if (store_ != nullptr) {
+    auto waivers = store_->list_waivers(config_.run_id);
+    if (waivers) {
+      apply_waivers(outcome.report, *waivers);
+    }
+  }
+  outcome.passed = outcome.report.passed;
+
+  if (store_ != nullptr) {
+    const std::filesystem::path reports_dir =
+        config_.workspace_root / "reports" / config_.run_id / "integration";
+    std::error_code ec;
+    std::filesystem::create_directories(reports_dir, ec);
+    const std::filesystem::path report_path =
+        reports_dir / ("gates-" + *head + ".json");
+    {
+      std::ofstream report_out(report_path, std::ios::binary);
+      if (report_out) {
+        report_out << outcome.report.to_json() << "\n";
+      }
+    }
+    for (const auto& result : outcome.report.results) {
+      store::GateResultRow row;
+      row.run_id = config_.run_id;
+      row.milestone_id = "integration";
+      row.commit_sha = *head;
+      row.gate = result.gate;
+      row.passed = (result.passed || result.waived) && !result.skipped;
+      row.report_ref = report_path.string();
+      row.at = store::unix_now();
+      (void)store_->record_gate_result(row);
+    }
+  }
+  return outcome;
+}
+
 TurnResult WorkspaceDriver::run_test_repair(std::string_view milestone_id) {
+  telemetry::ScopedContext log_context(config_.run_id, std::string(milestone_id),
+                                       "qa");
   const std::string id(milestone_id);
   auto worktree = ensure_integration_worktree();
   if (!worktree) {
@@ -958,6 +1191,7 @@ TurnResult WorkspaceDriver::run_test_repair(std::string_view milestone_id) {
     git::CommitTrailers trailers;
     trailers.run_id = config_.run_id;
     trailers.milestone_id = id;
+    trailers.waivers = waivers_trailer(milestone_id);
     trailers.op_id = store::new_op_id();
     const auto committed = repository_.commit_paths(
         *worktree, qa_paths, "test(" + id + "): revalidation repair", trailers);
@@ -985,6 +1219,7 @@ void WorkspaceDriver::mark_revalidating(std::string_view milestone_id) {
 }
 
 SystemValidationResult WorkspaceDriver::validate_system() {
+  telemetry::ScopedContext log_context(config_.run_id, "", "qa");
   AgentTurnRequest request;
   request.phase = MilestonePhase::Validate;
   request.run_id = config_.run_id;

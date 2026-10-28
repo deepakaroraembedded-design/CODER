@@ -1,0 +1,23 @@
+# Company Semgrep starter rules for Java (design section 6.7.2).
+rules:
+  - id: swt.java.no-runtime-exec
+    languages: [java]
+    severity: ERROR
+    message: Do not execute OS commands through Runtime.exec; use a vetted API.
+    pattern: $RUNTIME.exec(...)
+
+  - id: swt.java.no-print-stack-trace
+    languages: [java]
+    severity: ERROR
+    message: Log structured errors with context instead of printStackTrace().
+    pattern: $EXCEPTION.printStackTrace()
+
+  - id: swt.java.no-hardcoded-secret
+    languages: [java]
+    severity: ERROR
+    message: Do not hardcode credentials or tokens; read them at runtime.
+    patterns:
+      - pattern: $NAME = "..."
+      - metavariable-regex:
+          metavariable: $NAME
+          regex: (?i)(password|passwd|secret|token|api_key|apikey|private_key)

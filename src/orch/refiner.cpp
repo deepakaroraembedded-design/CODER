@@ -78,7 +78,8 @@ Json package_to_json(const DesignPackage& package) {
     adrs.push_back(Json{{"id", adr.id},
                         {"title", adr.title},
                         {"decision", adr.decision},
-                        {"alternatives", adr.alternatives}});
+                        {"alternatives", adr.alternatives},
+                        {"pattern_id", adr.pattern_id}});
   }
   return Json{{"plan_id", package.plan_id},
               {"product", package.product},
@@ -125,7 +126,8 @@ Rules:
   be complete enough that independent milestones can run in parallel without
   touching the same files or interfaces (design section 6.13.2).
 - Give every milestone concrete entry/exit acceptance criteria.
-- Record at least one ADR per component-level pattern or interface choice.
+- Record at least one ADR per component-level pattern or interface choice,
+  and give every ADR a `pattern_id` from the pattern catalog.
 - Respect the plan's forbidden constraints and the retrieved company
   guidelines; cite the guideline doc ids in the ADRs where you follow them.
 )rules";
@@ -160,6 +162,30 @@ std::string retrieved_context(const rag::Retriever* docs, const plan::Plan& plan
 
 }  // namespace
 
+Status validate_pattern_conformance(
+    const DesignPackage& package,
+    const std::vector<rag::PatternEntry>& catalog) {
+  if (catalog.empty()) {
+    return {};
+  }
+  std::set<std::string> ids;
+  for (const auto& entry : catalog) {
+    ids.insert(entry.id);
+  }
+  for (const auto& adr : package.adrs) {
+    if (adr.pattern_id.empty()) {
+      return fail(error_codes::kDesignInvalid,
+                  "ADR " + adr.id +
+                      " has no pattern_id (choose one from the pattern catalog)");
+    }
+    if (ids.count(adr.pattern_id) == 0) {
+      return fail(error_codes::kDesignInvalid,
+                  "ADR " + adr.id + " names unknown pattern " + adr.pattern_id);
+    }
+  }
+  return {};
+}
+
 Result<DesignPackage> parse_design_package(std::string_view text) {
   const auto begin = text.find('{');
   const auto end = text.rfind('}');
@@ -185,6 +211,7 @@ Result<DesignPackage> parse_design_package(std::string_view text) {
     adr.title = item.value("title", "");
     adr.decision = item.value("decision", "");
     adr.alternatives = string_list(item.value("alternatives", Json::array()));
+    adr.pattern_id = item.value("pattern_id", "");
     package.adrs.push_back(std::move(adr));
   }
   return package;
@@ -353,6 +380,9 @@ std::string design_package_to_markdown(const DesignPackage& package) {
   for (const auto& adr : package.adrs) {
     out << "### " << adr.id << " — " << adr.title << "\n\n";
     out << adr.decision << "\n\n";
+    if (!adr.pattern_id.empty()) {
+      out << "Pattern: " << adr.pattern_id << "\n\n";
+    }
     if (!adr.alternatives.empty()) {
       out << "Alternatives considered: " << join(adr.alternatives, "; ") << "\n\n";
     }
@@ -485,8 +515,13 @@ DesignRefiner::DesignRefiner(DesignModel& model, const rag::Retriever* docs,
 std::string DesignRefiner::design_prompt(const plan::Plan& plan) const {
   std::ostringstream out;
   out << "You are the planner agent of the Coder Framework (design section 6.2). "
-         "Produce the component-level design for this implementation plan.\n\n"
-      << "Plan:\n"
+         "Produce the component-level design for this implementation plan.\n\n";
+  if (!options_.feedback.empty()) {
+    out << "The human reviewer requested changes to the previous design. "
+           "Address this feedback explicitly:\n"
+        << options_.feedback << "\n\n";
+  }
+  out << "Plan:\n"
       << plan_summary(plan) << "\n";
   const std::string context = retrieved_context(docs_, plan, options_.context_hits);
   if (!context.empty()) {
@@ -529,7 +564,7 @@ std::string DesignRefiner::design_prompt(const plan::Plan& plan) const {
          "  ],\n"
          "  \"adrs\": [\n"
          "    {\"id\": \"ADR-001\", \"title\": \"...\", \"decision\": \"...\",\n"
-         "     \"alternatives\": [\"...\"]}\n"
+         "     \"alternatives\": [\"...\"], \"pattern_id\": \"<catalog id>\"}\n"
          "  ]\n"
          "}\n";
   return out.str();
@@ -585,6 +620,12 @@ Result<DesignPackage> DesignRefiner::refine(const plan::Plan& plan) {
   if (!valid) {
     return tl::make_unexpected(valid.error());
   }
+  if (catalog_ != nullptr) {
+    valid = validate_pattern_conformance(*package, *catalog_);
+    if (!valid) {
+      return tl::make_unexpected(valid.error());
+    }
+  }
   if (!options_.self_critique) {
     return package;
   }
@@ -631,6 +672,9 @@ Result<DesignPackage> DesignRefiner::refine(const plan::Plan& plan) {
   revised->product = plan.product;
   revised->model = options_.model;
   valid = validate_design_package(*revised, plan);
+  if (valid && catalog_ != nullptr) {
+    valid = validate_pattern_conformance(*revised, *catalog_);
+  }
   if (!valid) {
     spdlog::warn("refiner: revision is invalid ({}); keeping the first design",
                  valid.error().message);

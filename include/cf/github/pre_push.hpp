@@ -2,8 +2,8 @@
 //
 // The orchestrator runs these on the exact commit it is about to push and
 // refuses to push if any fail. Implemented here: target branch, protected
-// paths, size and binaries, required trailers. (Gates, secrets and licences
-// are checked by their own subsystems.)
+// paths, size and binaries, required trailers and commit signatures. (Gates,
+// secrets and licences are checked by their own subsystems.)
 #pragma once
 
 #include <cstdint>
@@ -23,6 +23,12 @@ struct PrePushConfig {
   uint64_t max_file_mb = 5;
   bool allow_binaries = false;
   std::vector<std::string> required_trailers = {"CF-Run", "CF-Milestone", "CF-Op"};
+  // Design section 10.4.6 check 7: when true, every commit in
+  // base_branch..commit must carry an SSH/GPG signature. base_branch is a
+  // ref or commit (the run's base branch); when it does not resolve, only the
+  // pushed commit itself is checked.
+  bool require_signatures = false;
+  std::string base_branch = "main";
   // When set, new dependencies in changed manifests are checked against the
   // database and its allow-list (design section 10.4.6 check 6).
   const LicenseDatabase* licenses = nullptr;
@@ -30,7 +36,9 @@ struct PrePushConfig {
 };
 
 struct PrePushFinding {
-  std::string check;    // branch-policy | protected-path | file-size | binary-file | trailer
+  // branch-policy | protected-path | file-size | binary-file | trailer |
+  // signature
+  std::string check;
   std::string message;
 };
 

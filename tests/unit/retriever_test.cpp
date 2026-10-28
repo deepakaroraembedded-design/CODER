@@ -510,4 +510,31 @@ TEST(RetrieverTest, DuplicateDocumentIsRejected) {
   EXPECT_EQ(again.error().code, cf::rag::error_codes::kDuplicateDocument);
 }
 
+TEST(RetrieverLatencyTest, ObservesEverySearch) {
+  int samples = 0;
+  std::int64_t last = -1;
+  RetrieverOptions options;
+  options.hnsw = false;
+  options.on_search_latency_ms = [&samples, &last](std::int64_t value) {
+    ++samples;
+    last = value;
+  };
+  InMemoryRetriever retriever(options);
+  ASSERT_TRUE(retriever
+                  .add_document(make_document("guide", DocType::Guideline,
+                                              "Always format the code."))
+                  .has_value());
+
+  Query query;
+  query.text = "format code";
+  auto first = retriever.search(query);
+  ASSERT_TRUE(first.has_value()) << first.error().message;
+  EXPECT_EQ(samples, 1);
+  EXPECT_GE(last, 0);
+
+  auto second = retriever.search(query);
+  ASSERT_TRUE(second.has_value()) << second.error().message;
+  EXPECT_EQ(samples, 2);
+}
+
 }  // namespace

@@ -119,10 +119,18 @@ TEST(PlanTest, RejectsInvalidApprovalDeadlines) {
   EXPECT_NE(invalid.error().message.find("design_approval"), std::string::npos);
 
   auto unknown = cf::plan::parse_plan_string(minimal_plan(
-      "  - id: M1\n    title: T\n", "approvals:\n  waiver: 2d\n"));
+      "  - id: M1\n    title: T\n", "approvals:\n  reminders: 2d\n"));
   ASSERT_FALSE(unknown.has_value());
   EXPECT_EQ(unknown.error().code, cf::plan::error_codes::kSchemaInvalid);
-  EXPECT_NE(unknown.error().message.find("waiver"), std::string::npos);
+  EXPECT_NE(unknown.error().message.find("reminders"), std::string::npos);
+}
+
+TEST(PlanTest, ParsesTheWaiverDeadline) {
+  auto plan = cf::plan::parse_plan_string(
+      minimal_plan("  - id: M1\n    title: T\n", "approvals:\n  waiver: 2d\n"));
+  ASSERT_TRUE(plan.has_value()) << plan.error().message;
+  ASSERT_TRUE(plan->approvals.waiver_business_days.has_value());
+  EXPECT_EQ(*plan->approvals.waiver_business_days, 2u);
 }
 
 TEST(PlanTest, ParsesMarkdownWithFrontMatter) {

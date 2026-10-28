@@ -1,10 +1,14 @@
 #include "cf/mcp/tools.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <set>
+#include <sstream>
 #include <utility>
 
 #include "cf/codeintel/context_packer.hpp"
 #include "cf/common/hash.hpp"
+#include "cf/gates/runner.hpp"
 
 namespace cf::mcp {
 namespace {
@@ -105,6 +109,82 @@ std::string hits_text(const std::vector<rag::Hit>& hits) {
     out += "\n";
   }
   return out;
+}
+
+store::UnixTime add_business_days(store::UnixTime start, std::uint32_t days) {
+  constexpr store::UnixTime kDay = 86400;
+  store::UnixTime at = start;
+  std::uint32_t added = 0;
+  while (added < days) {
+    at += kDay;
+    const int weekday = static_cast<int>((at / kDay + 4) % 7);
+    if (weekday != 0 && weekday != 6) {
+      ++added;
+    }
+  }
+  return at;
+}
+
+std::vector<std::string> worktree_changed_files(
+    process::ProcessExecutor& executor, const std::filesystem::path& worktree) {
+  std::set<std::string> paths;
+  const std::vector<std::vector<std::string>> commands = {
+      {"git", "diff", "--name-only", "HEAD"},
+      {"git", "ls-files", "--others", "--exclude-standard"}};
+  for (const auto& argv : commands) {
+    process::ProcessRequest request;
+    request.argv = argv;
+    request.working_directory = worktree;
+    request.timeout = std::chrono::seconds(30);
+    const process::ProcessResult result = executor.run(request);
+    if (!result.launched || result.exit_code != 0) {
+      continue;
+    }
+    std::istringstream stream(result.stdout_text);
+    std::string line;
+    while (std::getline(stream, line)) {
+      while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) {
+        line.pop_back();
+      }
+      if (!line.empty()) {
+        paths.insert(line);
+      }
+    }
+  }
+  return std::vector<std::string>(paths.begin(), paths.end());
+}
+
+Json gate_report_json(const gates::GateReport& report) {
+  Json results = Json::array();
+  for (const auto& result : report.results) {
+    Json findings = Json::array();
+    for (const auto& finding : result.findings) {
+      findings.push_back(Json{{"severity", finding.severity},
+                              {"message", finding.message}});
+    }
+    results.push_back(Json{{"gate", result.gate},
+                           {"passed", result.passed},
+                           {"skipped", result.skipped},
+                           {"findings", std::move(findings)}});
+  }
+  return Json{{"passed", report.passed}, {"results", std::move(results)}};
+}
+
+std::string gate_report_text(const gates::GateReport& report) {
+  std::string text;
+  for (const auto& result : report.results) {
+    if (!text.empty()) {
+      text += "\n";
+    }
+    text += result.gate + ": " + (result.passed ? "passed" : "failed");
+    if (result.skipped) {
+      text += " (skipped)";
+    }
+    for (const auto& finding : result.findings) {
+      text += "\n  " + finding.message;
+    }
+  }
+  return text;
 }
 
 ToolResult hits_result(const std::vector<rag::Hit>& hits, const std::string& empty_message) {
@@ -443,7 +523,22 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
         if (!hits) {
           return error_result(hits.error().code, hits.error().message);
         }
-        const std::string version = arguments.value("version", "");
+        std::string version = arguments.value("version", "");
+        if (version.empty() && !library.empty() &&
+            dependencies.reference_versions != nullptr) {
+          auto pinned = dependencies.reference_versions->find(library);
+          if (pinned == dependencies.reference_versions->end()) {
+            std::string lowered = library;
+            std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                           [](unsigned char c) {
+                             return static_cast<char>(std::tolower(c));
+                           });
+            pinned = dependencies.reference_versions->find(lowered);
+          }
+          if (pinned != dependencies.reference_versions->end()) {
+            version = pinned->second;
+          }
+        }
         if (!version.empty()) {
           hits->erase(std::remove_if(hits->begin(), hits->end(),
                                      [&version](const rag::Hit& hit) {
@@ -819,6 +914,33 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
           text += "\n(budget cut " + std::to_string(packed->dropped.size()) +
                   " entrie(s))";
         }
+
+        // ADR/contract retrieval (design section 6.5): design and
+        // architecture documents for the task are appended within whatever
+        // budget the code pack left.
+        if (dependencies.retriever != nullptr && request.token_budget > packed->tokens) {
+          rag::Query query;
+          query.text = arguments["task_id"].get<std::string>();
+          query.types = {rag::DocType::Design, rag::DocType::Architecture};
+          query.top_k = 3;
+          query.context = dependencies.context;
+          auto design_hits = dependencies.retriever->search(query);
+          if (design_hits && !design_hits->empty()) {
+            const std::uint32_t remaining = request.token_budget - packed->tokens;
+            std::string design_text =
+                "\n\nDesign context (ADRs and contracts):\n" + hits_text(*design_hits);
+            const std::size_t max_chars =
+                static_cast<std::size_t>(remaining) * 4;
+            if (design_text.size() > max_chars) {
+              design_text.resize(max_chars);
+              design_text += "\n(design context truncated to the token budget)";
+            }
+            result.structured["design_context"] = hits_json(*design_hits);
+            result.structured["design_tokens"] =
+                codeintel::estimate_tokens(design_text);
+            text += design_text;
+          }
+        }
         result.text = std::move(text);
         return result;
       }});
@@ -900,13 +1022,134 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
       }});
 
   registry.add(ToolDefinition{
-      "run_checks",
-      "Runs a subset of gates on the agent's worktree (dry run).",
-      object_schema(Json{{"scope", string_property("Files or component to check")}}, {}),
+      "request_waiver",
+      "Requests a human waiver for a gate rule, with a written reason. The "
+      "human decides; this tool never grants a waiver.",
+      object_schema(Json{{"rule", string_property("Gate rule or check name")},
+                         {"scope", string_property("What it covers, e.g. src/a.cpp:42")},
+                         {"justification", string_property("Why the waiver is needed")}},
+                    {"rule", "scope", "justification"}),
       {ToolRole::Coder, ToolRole::Qa},
-      [](const Json& arguments) -> ToolResult {
-        (void)arguments;
-        return unavailable("run_checks");
+      [dependencies](const Json& arguments) -> ToolResult {
+        if (dependencies.store == nullptr) {
+          return unavailable("request_waiver");
+        }
+        if (dependencies.run_id.empty()) {
+          return error_result("TOOL_INVALID_ARGUMENTS", "no run id is configured");
+        }
+        const store::UnixTime now = store::unix_now();
+        store::WaiverRequestRecord request;
+        request.run_id = dependencies.run_id;
+        request.milestone_id = dependencies.milestone_id;
+        request.rule = arguments.at("rule").get<std::string>();
+        request.scope = arguments.at("scope").get<std::string>();
+        request.justification = arguments.at("justification").get<std::string>();
+        request.requested_by = dependencies.role;
+        request.requested_at = now;
+        request.deadline_at = add_business_days(
+            now, dependencies.waiver_deadline_business_days);
+        auto recorded = dependencies.store->record_waiver_request(request);
+        if (!recorded) {
+          return error_result(recorded.error().code, recorded.error().message);
+        }
+        ToolResult result;
+        result.structured =
+            Json{{"id", recorded->id},
+                 {"status", recorded->status},
+                 {"rule", recorded->rule},
+                 {"scope", recorded->scope},
+                 {"requested_by", recorded->requested_by},
+                 {"deadline_at", recorded->deadline_at}};
+        result.text = "waiver request " + recorded->id + " recorded (status " +
+                      recorded->status + ", deadline " +
+                      std::to_string(recorded->deadline_at) + "); a human decides";
+        return result;
+      }});
+
+  registry.add(ToolDefinition{
+      "run_checks",
+      "Runs trusted gates from the toolchain profile on the agent's worktree "
+      "without recording a gate result (dry run). scope is a comma-separated "
+      "list of gate names (build, format, guardrails, analysis, tests); empty "
+      "runs the cheap gates format, guardrails and analysis.",
+      object_schema(Json{{"scope", string_property("Gate names, comma-separated")}}, {}),
+      {ToolRole::Coder, ToolRole::Qa},
+      [dependencies](const Json& arguments) -> ToolResult {
+        const GateCheckContext* context = dependencies.gate_checks;
+        if (context == nullptr || context->executor == nullptr) {
+          return unavailable("run_checks");
+        }
+        auto plan = gates::build_gate_plan(context->profile, context->language,
+                                           context->build_system,
+                                           context->test_framework);
+        if (!plan) {
+          return error_result("TOOL_UNAVAILABLE", plan.error().message);
+        }
+
+        std::set<std::string> requested;
+        std::istringstream stream(arguments.value("scope", std::string()));
+        std::string item;
+        while (std::getline(stream, item, ',')) {
+          const std::size_t begin = item.find_first_not_of(" \t");
+          if (begin == std::string::npos) {
+            continue;
+          }
+          const std::size_t end = item.find_last_not_of(" \t");
+          requested.insert(item.substr(begin, end - begin + 1));
+        }
+        bool default_scope = false;
+        if (requested.empty()) {
+          default_scope = true;
+          requested = {"format", "guardrails", "analysis"};
+        }
+
+        std::vector<gates::GateDefinition> selected;
+        for (auto& definition : *plan) {
+          if (requested.count(definition.name) > 0) {
+            selected.push_back(std::move(definition));
+          }
+        }
+        if (selected.empty()) {
+          return error_result("TOOL_INVALID_ARGUMENTS",
+                              "no declared gate matches the requested scope");
+        }
+
+        std::error_code directory_error;
+        std::filesystem::create_directories(context->build_dir, directory_error);
+        if (directory_error) {
+          return error_result("TOOL_UNAVAILABLE",
+                              "cannot create the check build directory: " +
+                                  directory_error.message());
+        }
+
+        gates::GateRunOptions options;
+        options.step_context.src_dir = context->worktree.string();
+        options.step_context.build_dir = context->build_dir.string();
+        options.step_context.standard = context->standard;
+        options.step_context.standard_number = gates::standard_number(context->standard);
+        options.step_context.standard_var = context->standard_var;
+        options.step_context.rules_dir = context->rules_dir.string();
+        options.step_context.coverage_line =
+            gates::coverage_percent(context->profile.coverage.line);
+        options.step_context.coverage_branch =
+            gates::coverage_percent(context->profile.coverage.branch);
+        options.step_context.mutation_min_score =
+            gates::ratio_string(context->profile.mutation.min_score);
+        options.step_context.changed_files =
+            worktree_changed_files(*context->executor, context->worktree);
+        options.working_directory = context->worktree.string();
+        options.step_timeout = context->step_timeout;
+
+        gates::GateRunner runner(*context->executor);
+        const gates::GateReport report = runner.run(selected, options);
+        ToolResult result;
+        result.structured = gate_report_json(report);
+        result.text = gate_report_text(report);
+        if (result.text.empty()) {
+          result.text = default_scope ? "no cheap gates are declared in the profile"
+                                      : "no gates ran";
+        }
+        return result;
       }});
 
   return registry;

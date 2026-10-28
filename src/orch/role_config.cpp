@@ -77,6 +77,13 @@ nlohmann::json build_role_config(const RoleConfigSpec& spec) {
   if (!spec.docs_dir.empty()) {
     mcp_command.push_back("--docs=" + spec.docs_dir);
   }
+  if (!spec.reference_docs_dir.empty()) {
+    mcp_command.push_back("--reference-docs=" + spec.reference_docs_dir);
+  }
+  if (!spec.reference_versions_file.empty()) {
+    mcp_command.push_back("--reference-versions=" +
+                          spec.reference_versions_file);
+  }
   if (!spec.product.empty()) {
     mcp_command.push_back("--product=" + spec.product);
   }
@@ -105,6 +112,42 @@ nlohmann::json build_role_config(const RoleConfigSpec& spec) {
   if (spec.rag_vector_weight.has_value()) {
     mcp_command.push_back("--rag-vector-weight=" +
                           std::to_string(*spec.rag_vector_weight));
+  }
+  if (spec.waiver_deadline_business_days > 0) {
+    mcp_command.push_back("--waiver-deadline-days=" +
+                          std::to_string(spec.waiver_deadline_business_days));
+  }
+  if (!spec.embeddings_model.empty()) {
+    mcp_command.push_back("--embeddings-model=" + spec.embeddings_model);
+  }
+  if (!spec.embeddings_base_url.empty()) {
+    mcp_command.push_back("--embeddings-base-url=" + spec.embeddings_base_url);
+  }
+  if (!spec.embeddings_api_key_env.empty()) {
+    mcp_command.push_back("--embeddings-api-key-env=" +
+                          spec.embeddings_api_key_env);
+  }
+  if (!spec.profile_path.empty()) {
+    mcp_command.push_back("--profile=" + spec.profile_path);
+  }
+  if (!spec.rules_dir.empty()) {
+    mcp_command.push_back("--rules-dir=" + spec.rules_dir);
+  }
+  if (!spec.check_build_dir.empty()) {
+    mcp_command.push_back("--build-dir=" + spec.check_build_dir);
+  }
+  if (!spec.profile_build_system.empty()) {
+    mcp_command.push_back("--profile-build-system=" + spec.profile_build_system);
+  }
+  if (!spec.profile_test_framework.empty()) {
+    mcp_command.push_back("--profile-test-framework=" +
+                          spec.profile_test_framework);
+  }
+  if (!spec.target_standard.empty()) {
+    mcp_command.push_back("--standard=" + spec.target_standard);
+  }
+  if (!spec.standard_var.empty()) {
+    mcp_command.push_back("--standard-var=" + spec.standard_var);
   }
   if (spec.rag_precedence.has_value() && !spec.rag_precedence->empty()) {
     std::string joined;

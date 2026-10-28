@@ -1,0 +1,34 @@
+# Company guardrail rule coverage (design section 6.5).
+#
+# `automated` rules are enforced by a gate check. `reviewer-only` rules have
+# no deterministic check yet and remain the reviewer's responsibility.
+version: 1
+source: eval/rag/docs/company-guidelines.md
+rules:
+  - id: CG-4.2
+    title: Ownership and resource lifetime
+    status: automated
+    checks:
+      - cf-swt-no-raw-new
+      - cf-swt-no-raw-delete
+      - cf-swt-no-raw-malloc
+      - cf-swt-no-detached-thread
+  - id: CG-SECRETS
+    title: Secrets are read at runtime and never hardcoded
+    status: automated
+    checks:
+      - cf-swt-no-hardcoded-secret
+  - id: CG-INTERFACES
+    title: Interfaces are explicit and avoid boolean mode switches
+    status: automated
+    checks:
+      - cf-swt-no-bool-param
+  - id: CG-ERRORS
+    title: Typed errors, stable codes and contextual wrapping
+    status: reviewer-only
+  - id: CG-NAMING
+    title: Type, function, variable and constant naming
+    status: reviewer-only
+  - id: CG-TESTS
+    title: Deterministic tests and regression coverage
+    status: reviewer-only

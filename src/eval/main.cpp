@@ -28,6 +28,7 @@
 #include "cf/rag/evaluation.hpp"
 #include "cf/rag/loader.hpp"
 #include "cf/rag/retriever.hpp"
+#include "cf/telemetry/logging.hpp"
 
 namespace {
 
@@ -361,6 +362,7 @@ int run_bench(const BenchOptions& options) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  cf::telemetry::configure_json_logging();
   CLI::App app{"cf-eval: golden evaluation suite harness (design section 17.2)"};
 
   std::string suite_path;

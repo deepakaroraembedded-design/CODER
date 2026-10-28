@@ -22,6 +22,7 @@
     "sqlitecpp",
     "tl-expected",
     "tree-sitter",
-    "yaml-cpp"
+    "yaml-cpp",
+    "zlib"
   ]
 }

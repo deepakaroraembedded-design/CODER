@@ -25,6 +25,7 @@ inline constexpr const char* kProfileDuplicate = "PROFILE_DUPLICATE";
 inline constexpr const char* kProfileNotFound = "PROFILE_NOT_FOUND";
 inline constexpr const char* kNoMatchingToolchain = "PROFILE_NO_MATCH";
 inline constexpr const char* kUnknownPlaceholder = "PROFILE_UNKNOWN_PLACEHOLDER";
+inline constexpr const char* kCoverageReport = "GATE_COVERAGE_REPORT";
 }  // namespace error_codes
 
 // One trusted command: an argument list, never a shell string.
@@ -62,11 +63,22 @@ struct CoverageSpec {
   std::string tool;  // e.g. llvm-cov
   double line = 0.0;
   double branch = 0.0;
+  // Report format (go-cover, coverage-json, lcov) and path for the built-in
+  // threshold check.
+  std::string format;
+  std::string report;
+  // Trusted steps for the stage-3 coverage gate. Empty means the profile has
+  // no coverage runner; steps may use {coverage_line} and {coverage_branch}
+  // (percentages) and the usual source/build/changed-file placeholders.
+  std::vector<GateStep> steps;
 };
 
 struct MutationSpec {
   std::string tool;  // e.g. mull
   double min_score = 0.0;
+  // Trusted steps for the stage-3 mutation gate; may use
+  // {mutation_min_score}. Empty means no mutation runner is configured.
+  std::vector<GateStep> steps;
 };
 
 struct Profile {
@@ -81,6 +93,9 @@ struct Profile {
   CoverageSpec coverage;
   MutationSpec mutation;
   std::vector<std::string> exec_from_source;  // exact paths (design 6.8.1)
+  // The file this profile was loaded from; empty for an in-memory profile.
+  // The run copies it into the run directory for the agent-side run_checks.
+  std::filesystem::path source_path;
 };
 
 Result<Profile> load_profile_string(std::string_view text);
@@ -118,6 +133,10 @@ struct StepContext {
   std::string standard;         // e.g. "c++20"
   std::string standard_number;  // e.g. "20"
   std::string standard_var;     // e.g. CMAKE_CXX_STANDARD
+  std::string rules_dir;          // company guardrail rules (Semgrep)
+  std::string coverage_line;      // percentage, e.g. "85"
+  std::string coverage_branch;    // percentage, e.g. "75"
+  std::string mutation_min_score; // e.g. "0.60"
 };
 
 // Expands one trusted step into a concrete argument list. The placeholder
@@ -126,6 +145,10 @@ struct StepContext {
 // syntax. Unknown placeholders are rejected.
 Result<std::vector<std::string>> expand_step(const GateStep& step,
                                              const StepContext& context);
+
+// Placeholder values for the stage-3 gates.
+std::string coverage_percent(double ratio);
+std::string ratio_string(double ratio);
 
 // Derives the numeric language standard ("c++20" -> "20", "c11" -> "11").
 // Returns an empty string when the standard has no digit run.

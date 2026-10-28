@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -36,6 +37,12 @@ struct GithubFlowConfig {
   std::string title_prefix = "CF";
   // Runs on the exact commit before any push (design section 10.4.6).
   github::PrePushConfig pre_push;
+  // When the flow pushes (design sections 10.4.4, 15). A disabled event
+  // performs no push (and no escalation comment). The PR is marked ready
+  // only when run_done is enabled.
+  bool push_on_milestone_done = true;
+  bool push_on_run_done = true;
+  bool push_on_escalation = true;
   // Pull-request policy (design sections 10.4.4, 10.4.8): when
   // draft_until_done is false the PR opens ready; labels are applied to the
   // PR; request_codeowners controls the ready-time reviewer request.
@@ -45,6 +52,9 @@ struct GithubFlowConfig {
   // Path shown in the PR body for the full run report (design section
   // 10.4.8); empty omits the link.
   std::string report_path;
+  // Run directory holding usage-<role>.jsonl; empty omits agent usage from
+  // the summary.
+  std::filesystem::path run_dir;
 };
 
 class GithubFlow {

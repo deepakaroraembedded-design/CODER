@@ -23,6 +23,8 @@
 #include "cf/common/hash.hpp"
 #include "cf/github/client.hpp"
 #include "cf/orch/run_process.hpp"
+#include "cf/orch/state_machine.hpp"
+#include "cf/store/run_store.hpp"
 #include "fake_http_transport.hpp"
 
 namespace {
@@ -476,6 +478,103 @@ TEST(RunProcessTest, DrivesAFullRunToDoneWithFakeOpencode) {
 
   store.reset();
   repository.reset();
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(RunProcessPauseTest, APendingWaiverRequestPausesBeforeAnyTurn) {
+  const auto dir = make_temp_dir();
+  cf::process::LocalProcessExecutor executor;
+  auto repository = cf::git::Repository::create(dir / "repo", executor);
+  ASSERT_TRUE(repository.has_value()) << repository.error().message;
+  write_file(dir / "repo" / "README.md", "initial\n");
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.op_id = "op_init";
+  ASSERT_TRUE(repository
+                  ->commit_paths(dir / "repo", {"README.md"}, "chore: init",
+                                 trailers)
+                  .has_value());
+
+  std::filesystem::create_directories(dir / "runs" / "R12");
+  auto opened =
+      cf::store::RunStore::open(dir / "runs" / "R12" / "run.db");
+  ASSERT_TRUE(opened.has_value()) << opened.error().message;
+  auto store = std::move(*opened);
+  cf::store::RunRecord run;
+  run.run_id = "R12";
+  run.state = "Executing";
+  run.created_at = cf::store::unix_now();
+  ASSERT_TRUE(store->create_run(run).has_value());
+  cf::store::WaiverRequestRecord request;
+  request.run_id = "R12";
+  request.milestone_id = "M1";
+  request.rule = "guardrails";
+  request.scope = "src/a.cpp:1";
+  request.justification = "waiting for a human";
+  request.requested_by = "coder";
+  request.requested_at = cf::store::unix_now();
+  request.deadline_at = request.requested_at + 1000;
+  ASSERT_TRUE(store->record_waiver_request(request).has_value());
+
+  const char* profile_yaml = R"yaml(
+id: pause-profile
+image: img
+languages:
+  cpp:
+    standard_var: CMAKE_CXX_STANDARD
+    guardrails: { steps: [[true]] }
+    format: { steps: [[true]] }
+build_systems:
+  cmake: { steps: [[true]] }
+test_frameworks:
+  gtest: { steps: [[true]], languages: [cpp] }
+)yaml";
+  auto profile = cf::gates::load_profile_string(profile_yaml);
+  ASSERT_TRUE(profile.has_value()) << profile.error().message;
+  cf::plan::Plan plan;
+  plan.plan_id = "PLAN-PAUSE";
+  plan.product = "Y";
+  plan.version = "1";
+  plan.target.language = "cpp";
+  plan.target.standard = "c++20";
+  plan.target.build_system = "cmake";
+  plan.target.test_framework = "gtest";
+  cf::plan::MilestoneSpec milestone;
+  milestone.id = "M1";
+  milestone.title = "Core";
+  milestone.requirements = {"REQ-1"};
+  plan.milestones.push_back(milestone);
+
+  cf::orch::RunProcessConfig config;
+  config.run_id = "R12";
+  config.workspace_root = dir;
+  config.integration_branch = "cf/R12/integration";
+  config.base_branch = "main";
+  config.profile = *profile;
+  config.profile_language = "cpp";
+  config.profile_build_system = "cmake";
+  config.profile_test_framework = "gtest";
+  config.mcp_command = "cf-mcp";
+  config.opencode_binary = "opencode";
+
+  int drivers_created = 0;
+  cf::orch::RunProcess process(*store, plan, config, *repository, executor);
+  process.set_session_driver_factory(
+      [&drivers_created](const std::string&, const std::string&)
+          -> cf::Result<std::unique_ptr<cf::orch::SessionDriver>> {
+        ++drivers_created;
+        return cf::fail("TEST_NO_DRIVER", "a turn should not have started");
+      });
+  const auto state = process.execute(cf::store::unix_now());
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, cf::orch::RunState::Executing);
+  EXPECT_EQ(drivers_created, 0);
+  auto requests = store->list_waiver_requests("R12");
+  ASSERT_TRUE(requests.has_value());
+  ASSERT_EQ(requests->size(), 1u);
+  EXPECT_EQ((*requests)[0].status, "PENDING");
+
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
 }

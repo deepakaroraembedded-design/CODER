@@ -1,14 +1,19 @@
 #include "cf/llm/client.hpp"
 
+#include "cf/common/archive.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <condition_variable>
+#include <cstdlib>
+#include <filesystem>
 #include <mutex>
 #include <random>
 #include <thread>
 #include <utility>
 
 #include <cpr/cpr.h>
+#include <spdlog/spdlog.h>
 
 namespace cf::llm {
 namespace {
@@ -278,6 +283,47 @@ struct FireworksClient::Impl {
     }
   }
 
+  std::optional<std::filesystem::path> archive_call(
+      std::string_view path, const Json& body, const CallContext& context,
+      const std::string& model, const Json& response, long status,
+      const Usage& usage) {
+    if (options.archive_dir.empty()) {
+      return std::nullopt;
+    }
+    auto key = common::archive::key_from_env(options.archive_key_env);
+    if (!key) {
+      return std::nullopt;
+    }
+    const std::string call_id = common::archive::new_id("call_");
+    const Json document = {
+        {"version", 1},
+        {"call_id", call_id},
+        {"run_id", context.run_id},
+        {"role", context.role},
+        {"milestone_id", context.milestone_id},
+        {"model", model},
+        {"base_url", options.base_url},
+        {"path", std::string(path)},
+        {"request", body},
+        {"response", response},
+        {"status", status},
+        {"usage",
+         Json{{"prompt_tokens", usage.prompt_tokens},
+              {"completion_tokens", usage.completion_tokens},
+              {"cached_tokens", usage.cached_tokens}}},
+        {"at", std::chrono::duration_cast<std::chrono::seconds>(
+                   std::chrono::system_clock::now().time_since_epoch())
+                   .count()}};
+    const std::filesystem::path file =
+        options.archive_dir / (call_id + ".cfar");
+    if (!common::archive::write_encrypted(file, *key, document.dump())) {
+      spdlog::warn("cannot archive the LLM call {} at {}", call_id,
+                   file.string());
+      return std::nullopt;
+    }
+    return file;
+  }
+
   Result<Json> post_json(std::string_view path, const Json& body,
                          const CallContext& context, const std::string& model,
                          CallRecord& record) {
@@ -333,6 +379,11 @@ struct FireworksClient::Impl {
         const auto usage_it = parsed.find("usage");
         if (usage_it != parsed.end()) {
           usage = parse_usage(*usage_it);
+        }
+        if (auto archived = archive_call(path, body, context, model, parsed,
+                                         last_status, usage)) {
+          record.prompt_ref = archived->string();
+          record.response_ref = archived->string();
         }
         finish(record, attempts, last_status, usage, start);
         return parsed;
@@ -475,6 +526,41 @@ Result<EmbedResponse> FireworksClient::embed(const EmbedRequest& request) {
     response.embeddings.push_back(std::move(vector));
   }
   return response;
+}
+
+Result<ArchivedCall> read_archived_call(const std::filesystem::path& path) {
+  auto key = common::archive::key_from_env("CF_ARCHIVE_KEY");
+  if (!key) {
+    return fail(error_codes::kArchiveKey,
+                "CF_ARCHIVE_KEY must be 64 hex characters to read the archive");
+  }
+  auto plaintext = common::archive::read_encrypted(path, *key);
+  if (!plaintext) {
+    return fail(error_codes::kArchiveInvalid,
+                "cannot read the LLM archive (wrong key, wrong format or corruption)");
+  }
+  const Json document = Json::parse(*plaintext, nullptr, false);
+  if (document.is_discarded() || !document.is_object()) {
+    return fail(error_codes::kArchiveInvalid,
+                "the LLM archive payload is not JSON");
+  }
+  ArchivedCall call;
+  call.call_id = document.value("call_id", "");
+  call.run_id = document.value("run_id", "");
+  call.role = document.value("role", "");
+  call.milestone_id = document.value("milestone_id", "");
+  call.model = document.value("model", "");
+  call.base_url = document.value("base_url", "");
+  call.path = document.value("path", "");
+  call.request = document.value("request", Json::object());
+  call.response = document.value("response", Json::object());
+  call.status = document.value("status", 0);
+  call.at = document.value("at", int64_t{0});
+  const Json usage = document.value("usage", Json::object());
+  call.usage.prompt_tokens = usage.value("prompt_tokens", int64_t{0});
+  call.usage.completion_tokens = usage.value("completion_tokens", int64_t{0});
+  call.usage.cached_tokens = usage.value("cached_tokens", int64_t{0});
+  return call;
 }
 
 }  // namespace cf::llm

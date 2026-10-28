@@ -45,6 +45,24 @@ TEST(RagEmbedderTest, MapsEmbeddingsAndForwardsTheModel) {
   ASSERT_EQ(raw->last_body["input"].size(), 2u);
 }
 
+TEST(RagEmbedderTest, CarriesTheRunContextToTheLedger) {
+  auto transport = std::make_unique<FakeTransport>();
+  cf::llm::ClientOptions options;
+  options.api_key = "test-key";
+  options.base_url = "https://example.invalid/v1";
+  options.max_attempts = 1;
+  std::vector<cf::llm::CallRecord> records;
+  cf::llm::FireworksClient client(
+      options, std::move(transport),
+      [&records](const cf::llm::CallRecord& record) { records.push_back(record); });
+  cf::rag::FireworksEmbedder embedder(client, "embed-model", "R12");
+  ASSERT_TRUE(embedder.embed({"alpha"}).has_value());
+  ASSERT_EQ(records.size(), 1u);
+  EXPECT_EQ(records[0].run_id, "R12");
+  EXPECT_EQ(records[0].role, "rag");
+  EXPECT_EQ(records[0].model, "embed-model");
+}
+
 TEST(RagEmbedderTest, EmptyInputSkipsTheCall) {
   auto transport = std::make_unique<FakeTransport>();
   cf::llm::ClientOptions options;

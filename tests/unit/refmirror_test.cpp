@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "cf/common/hash.hpp"
+#include "cf/common/process.hpp"
 #include "cf/refmirror/manifest.hpp"
 #include "cf/refmirror/mirror.hpp"
 
@@ -163,6 +164,66 @@ TEST(RefMirrorTest, MirrorsAndWritesFrontMatterDocuments) {
   EXPECT_EQ(json["sets"][0]["status"], "ok");
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
+}
+
+TEST(RefMirrorTest, ExtractsMatchingDocumentsFromAnArchive) {
+  const auto dir = make_temp_dir();
+  const auto source = dir / "archive-src";
+  std::filesystem::create_directories(source / "doc/html/sub");
+  std::filesystem::create_directories(source / "doc/other");
+  {
+    std::ofstream out(source / "doc/html/a.html");
+    out << kHtml;
+  }
+  {
+    std::ofstream out(source / "doc/html/sub/b.md");
+    out << "# B\n\nArchive document.\n";
+  }
+  {
+    std::ofstream out(source / "doc/other/ignored.txt");
+    out << "not extracted\n";
+  }
+  const auto archive = dir / "reference.tar";
+  cf::process::LocalProcessExecutor executor;
+  cf::process::ProcessRequest request;
+  request.argv = {"tar", "-cf", archive.string(), "-C", source.string(), "."};
+  const auto packed = executor.run(request);
+  ASSERT_TRUE(packed.launched);
+  ASSERT_EQ(packed.exit_code, 0) << packed.stderr_text;
+
+  const std::string manifest_text =
+      "sets:\n"
+      "  - id: boost\n"
+      "    version: \"1\"\n"
+      "    source: " + archive.string() + "\n"
+      "    extract: [\"doc/html\"]\n"
+      "    license: BSL-1.0\n";
+  auto manifest = cf::refmirror::load_manifest_string(manifest_text);
+  ASSERT_TRUE(manifest.has_value()) << manifest.error().message;
+
+  FakeTransport transport;
+  cf::refmirror::MirrorOptions options;
+  options.out_dir = dir / "mirror";
+  options.executor = &executor;
+  auto report = cf::refmirror::run_mirror(*manifest, options, transport);
+  ASSERT_TRUE(report.has_value()) << report.error().message;
+  ASSERT_EQ(report->sets.size(), 1u);
+  EXPECT_EQ(report->sets[0].status, "ok") << report->sets[0].detail;
+  EXPECT_EQ(report->sets[0].documents, 2u);
+
+  ASSERT_TRUE(std::filesystem::exists(options.out_dir / "boost-1-1.md"));
+  ASSERT_TRUE(std::filesystem::exists(options.out_dir / "boost-1-2.md"));
+  EXPECT_FALSE(std::filesystem::exists(options.out_dir / "boost-1-3.md"));
+  EXPECT_TRUE(std::filesystem::exists(options.out_dir / "boost-1.archive"));
+  std::ifstream extracted(options.out_dir / "boost-1-1.md");
+  const std::string text((std::istreambuf_iterator<char>(extracted)),
+                         std::istreambuf_iterator<char>());
+  EXPECT_NE(text.find("archive_path: \"doc/html/a.html\""), std::string::npos);
+  EXPECT_NE(text.find("# std::vector"), std::string::npos);
+  EXPECT_EQ(text.find("Home"), std::string::npos);
+
+  std::error_code error;
+  std::filesystem::remove_all(dir, error);
 }
 
 TEST(RefMirrorTest, ChecksumMismatchHoldsTheSet) {
