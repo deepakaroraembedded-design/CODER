@@ -1060,3 +1060,9 @@ AGENTS.md                   # agent guardrails (process safety, conventions)
   (`FIREWORKS_API_KEY`, `VLLM_API_KEY`); the LLM/opencode archive key comes
   from `CF_ARCHIVE_KEY` (64 hex characters), and
   `OTEL_EXPORTER_OTLP_ENDPOINT` enables the metrics export.
+
+---
+
+## 12. License
+
+MIT — see [`LICENSE`](LICENSE).
