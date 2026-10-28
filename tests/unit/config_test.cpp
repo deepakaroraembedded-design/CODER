@@ -295,7 +295,10 @@ TEST_F(ConfigTest, UnknownRolesAndBadTypesAreRejected) {
 }
 
 TEST_F(ConfigTest, RejectsInvalidRagSettings) {
-  auto index = cf::cli::load_config(write_config("rag: {index: faiss}\n"));
+  auto faiss = cf::cli::load_config(write_config("rag: {index: faiss}\n"));
+  ASSERT_TRUE(faiss.has_value()) << faiss.error().message;
+
+  auto index = cf::cli::load_config(write_config("rag: {index: flat}\n"));
   ASSERT_FALSE(index.has_value());
   EXPECT_NE(index.error().message.find("rag.index"), std::string::npos);
 

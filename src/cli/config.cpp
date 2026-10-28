@@ -547,9 +547,9 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
       return tl::make_unexpected(status.error());
     }
     if (config.rag.index.has_value() && *config.rag.index != "hnswlib" &&
-        *config.rag.index != "brute-force") {
+        *config.rag.index != "brute-force" && *config.rag.index != "faiss") {
       return invalid("rag.index",
-                     "expected 'hnswlib' or 'brute-force'");
+                     "expected 'hnswlib', 'faiss' or 'brute-force'");
     }
     if (auto status = read_optional(rag["top_k"], "rag.top_k",
                                     config.rag.top_k);

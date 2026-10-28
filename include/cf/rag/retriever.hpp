@@ -40,6 +40,8 @@ struct RetrieverOptions {
   // hnswlib is the default vector index (design section 6.3); false uses the
   // exact brute-force index (the parity reference and small collections).
   bool hnsw = true;
+  // Optional FAISS HNSW backend when CF_HAS_FAISS is available.
+  bool faiss = false;
   // Observes one latency sample per search in milliseconds (design section
   // 14: cf_rag_latency_ms). The callback must be thread-safe when the
   // retriever is shared.

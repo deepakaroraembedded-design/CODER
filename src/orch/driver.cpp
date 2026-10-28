@@ -104,15 +104,26 @@ bool is_build_artifact(std::string_view path) {
       "build",        "out",           "dist",          "target",
       "node_modules", "__pycache__",   ".cache",        ".pytest_cache",
       ".mypy_cache",  ".ruff_cache",   "cmake-build-debug", "cmake-build-release"};
-  const auto slash = path.find('/');
-  const std::string_view first =
-      slash == std::string_view::npos ? path : path.substr(0, slash);
-  if (ignored.count(first) > 0) {
-    return true;
+  // Test runners create caches below the source tree (for example
+  // tests/__pycache__/x.pyc), so inspect every component rather than only the
+  // first. Build trees can also be nested inside a role worktree.
+  std::size_t begin = 0;
+  while (begin < path.size()) {
+    const std::size_t slash = path.find('/', begin);
+    const std::string_view component =
+        path.substr(begin, slash == std::string_view::npos
+                               ? std::string_view::npos
+                               : slash - begin);
+    if (ignored.count(component) > 0 || component.rfind("build", 0) == 0 ||
+        component.rfind("cmake-build", 0) == 0) {
+      return true;
+    }
+    if (slash == std::string_view::npos) {
+      break;
+    }
+    begin = slash + 1;
   }
-  // Agents name build trees in many ways: build, build2, build_strict,
-  // build-debug, cmake-build-release.
-  return first.rfind("build", 0) == 0 || first.rfind("cmake-build", 0) == 0;
+  return path.size() >= 4 && path.substr(path.size() - 4) == ".pyc";
 }
 
 // True when a changed path is inside the milestone's declared write set

@@ -257,6 +257,35 @@ target_link_libraries(cf_rag PUBLIC
   hnswlib::hnswlib
   yaml-cpp::yaml-cpp)
 
+# Optional FAISS backend (design section 6.3). Point FAISS_ROOT at a FAISS
+# installation prefix; without it the hnswlib/brute-force indexes remain.
+set(FAISS_ROOT "" CACHE PATH "Optional FAISS installation prefix")
+find_path(FAISS_INCLUDE_DIR NAMES faiss/IndexHNSW.h
+  HINTS "${FAISS_ROOT}/include")
+find_library(FAISS_LIBRARY NAMES faiss
+  HINTS "${FAISS_ROOT}/lib/x86_64-linux-gnu" "${FAISS_ROOT}/lib")
+if(FAISS_INCLUDE_DIR AND FAISS_LIBRARY)
+  find_package(OpenMP REQUIRED)
+  find_file(FAISS_BLAS_LIBRARY NAMES libblas.so.3 libblas.so
+    HINTS /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu)
+  find_file(FAISS_LAPACK_LIBRARY NAMES liblapack.so.3 liblapack.so
+    HINTS /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu)
+  find_file(FAISS_GFORTRAN_LIBRARY NAMES libgfortran.so.5 libgfortran.so
+    HINTS /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu)
+  if(FAISS_BLAS_LIBRARY AND FAISS_LAPACK_LIBRARY AND FAISS_GFORTRAN_LIBRARY)
+    target_sources(cf_rag PRIVATE src/rag/faiss_index.cpp)
+    target_include_directories(cf_rag SYSTEM PRIVATE "${FAISS_INCLUDE_DIR}")
+    target_compile_definitions(cf_rag PUBLIC CF_HAS_FAISS=1)
+    target_link_libraries(cf_rag PUBLIC
+      "${FAISS_LIBRARY}"
+      "${FAISS_BLAS_LIBRARY}"
+      "${FAISS_LAPACK_LIBRARY}"
+      "${FAISS_GFORTRAN_LIBRARY}"
+      OpenMP::OpenMP_CXX)
+    message(STATUS "cf-rag: FAISS HNSW backend enabled")
+  endif()
+endif()
+
 # cf-git: repository layer (design sections 6.8.3, 10.4.5)
 add_library(cf_git STATIC
   src/git/repository.cpp)

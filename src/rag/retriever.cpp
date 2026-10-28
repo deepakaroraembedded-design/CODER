@@ -80,10 +80,17 @@ InMemoryRetriever::InMemoryRetriever(RetrieverOptions options)
 void InMemoryRetriever::set_embedder(std::shared_ptr<Embedder> embedder) {
   embedder_ = std::move(embedder);
   if (embedder_ && vector_index_ == nullptr) {
-    vector_index_ = options_.hnsw ? std::unique_ptr<VectorIndex>(
-                                        std::make_unique<HnswVectorIndex>())
-                                  : std::unique_ptr<VectorIndex>(
-                                        std::make_unique<BruteForceVectorIndex>());
+#ifdef CF_HAS_FAISS
+    if (options_.faiss) {
+      vector_index_ = make_faiss_vector_index();
+    }
+#endif
+    if (vector_index_ == nullptr) {
+      vector_index_ = options_.hnsw ? std::unique_ptr<VectorIndex>(
+                                          std::make_unique<HnswVectorIndex>())
+                                    : std::unique_ptr<VectorIndex>(
+                                          std::make_unique<BruteForceVectorIndex>());
+    }
   }
 }
 

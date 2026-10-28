@@ -1,0 +1,24 @@
+# Java toolchain profile for the golden benchmark (requires Maven or Gradle).
+id: java-bench
+image: cf-toolchain-java:2026.10
+codeintel_backend: tree-sitter
+
+languages:
+  java:
+    standard_var: JAVA_VERSION
+
+build_systems:
+  maven:
+    steps:
+      - [mvn, -q, -DskipTests, package]
+    agent_commands: [mvn]
+  gradle:
+    steps:
+      - [./gradlew, --no-daemon, build, -x, test]
+    agent_commands: [./gradlew, gradle]
+
+test_frameworks:
+  junit5: { steps: [[mvn, -q, test]], languages: [java] }
+  junit5-gradle: { steps: [[./gradlew, --no-daemon, test]], languages: [java] }
+
+exec_from_source: []

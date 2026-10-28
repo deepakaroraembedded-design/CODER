@@ -399,7 +399,8 @@ Result<orch::DesignPackage> refine_or_load(
         };
   }
   if (options.rag_index.has_value()) {
-    retriever_options.hnsw = *options.rag_index != "brute-force";
+    retriever_options.hnsw = *options.rag_index == "hnswlib";
+    retriever_options.faiss = *options.rag_index == "faiss";
   }
   if (options.rag_bm25_weight.has_value()) {
     retriever_options.bm25_weight = *options.rag_bm25_weight;

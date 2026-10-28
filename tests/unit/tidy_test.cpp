@@ -11,6 +11,7 @@
 
 #include <yaml-cpp/yaml.h>
 
+#include "cf/common/process.hpp"
 #include "cf/tidy/checks.hpp"
 
 namespace {
@@ -37,6 +38,20 @@ void write_compile_commands(const fs::path& dir, const std::string& file,
   std::ofstream out(dir / "compile_commands.json", std::ios::binary);
   out << R"([{"directory":")" << dir.generic_string() << R"(","file":")"
       << file << R"(","command":")" << command << " -c " << file << R"("}])";
+}
+
+TEST(TidyTest, ReportsRuleCoverageFromTheCatalog) {
+  cf::process::LocalProcessExecutor executor;
+  cf::process::ProcessRequest request;
+  request.argv = {std::string(CF_BINARY_DIR) + "/cf-tidy",
+                  std::string("--coverage=") + CF_SOURCE_DIR +
+                      "/rules/guardrails.yaml"};
+  request.timeout = std::chrono::seconds(30);
+  const auto result = executor.run(request);
+  ASSERT_TRUE(result.launched) << result.error;
+  ASSERT_EQ(result.exit_code, 0) << result.stderr_text;
+  EXPECT_NE(result.stdout_text.find("automated rules:"), std::string::npos);
+  EXPECT_NE(result.stdout_text.find("compiled checks: 18"), std::string::npos);
 }
 
 TEST(TidyTest, FlagsRawNewButNotPlacementOrExemptNamespace) {

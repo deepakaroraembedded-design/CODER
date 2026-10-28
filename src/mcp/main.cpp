@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
   app.add_option("--top-k", top_k,
                  "Default number of results for search_guidelines (default 8)");
   app.add_option("--rag-index", rag_index,
-                 "Vector index: hnswlib (default) or brute-force");
+                 "Vector index: hnswlib (default), faiss or brute-force");
   app.add_option("--rag-bm25-weight", rag_bm25_weight,
                  "Hybrid BM25 weight (default 1.0)");
   app.add_option("--rag-vector-weight", rag_vector_weight,
@@ -159,8 +159,9 @@ int main(int argc, char** argv) {
     return 2;
   }
   cf::telemetry::ScopedContext log_context(run_id, milestone_id, role_text);
-  if (rag_index != "hnswlib" && rag_index != "brute-force") {
-    spdlog::error("--rag-index must be hnswlib or brute-force");
+  if (rag_index != "hnswlib" && rag_index != "brute-force" &&
+      rag_index != "faiss") {
+    spdlog::error("--rag-index must be hnswlib, faiss or brute-force");
     return 2;
   }
   if ((rag_bm25_weight < 0.0) || (rag_vector_weight < 0.0) ||
@@ -174,7 +175,8 @@ int main(int argc, char** argv) {
   }
 
   cf::rag::RetrieverOptions retriever_options;
-  retriever_options.hnsw = rag_index != "brute-force";
+  retriever_options.hnsw = rag_index == "hnswlib";
+  retriever_options.faiss = rag_index == "faiss";
   retriever_options.bm25_weight = rag_bm25_weight;
   retriever_options.vector_weight = rag_vector_weight;
   if (!rag_precedence.empty()) {

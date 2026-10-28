@@ -49,7 +49,8 @@ void anchor_binary(std::string& binary) {
 Result<rag::RetrieverOptions> retriever_options(const RunProcessConfig& config) {
   rag::RetrieverOptions options;
   if (config.rag_index.has_value()) {
-    options.hnsw = *config.rag_index != "brute-force";
+    options.hnsw = *config.rag_index == "hnswlib";
+    options.faiss = *config.rag_index == "faiss";
   }
   if (config.rag_bm25_weight.has_value()) {
     options.bm25_weight = *config.rag_bm25_weight;

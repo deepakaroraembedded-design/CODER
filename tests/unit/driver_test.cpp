@@ -853,6 +853,9 @@ TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
                "binary\n");
     write_file(std::filesystem::path(request.worktree) / "build_strict" / "artifact.o",
                "binary\n");
+    write_file(std::filesystem::path(request.worktree) / "tests" / "__pycache__" /
+                   "test_stats.cpython-310-pytest.pyc",
+               "bytecode\n");
     AgentTurnOutcome outcome;
     outcome.completed = true;
     return outcome;
@@ -866,6 +869,7 @@ TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
   EXPECT_NE(result.detail.find("src/elsewhere/bad.cpp"), std::string::npos);
   EXPECT_EQ(result.detail.find("build/artifact.o"), std::string::npos);
   EXPECT_EQ(result.detail.find("build_strict/artifact.o"), std::string::npos);
+  EXPECT_EQ(result.detail.find("__pycache__"), std::string::npos);
 
   // Nothing was committed.
   const auto coder_worktree = driver.worktree_for("M3", "coder");

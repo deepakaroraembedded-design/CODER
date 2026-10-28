@@ -67,4 +67,8 @@ class HnswVectorIndex final : public VectorIndex {
   std::unique_ptr<Impl> impl_;
 };
 
+// Optional FAISS index. Built only when CF_HAS_FAISS is defined; returns a
+// null pointer otherwise so callers can fall back to hnswlib.
+std::unique_ptr<VectorIndex> make_faiss_vector_index();
+
 }  // namespace cf::rag

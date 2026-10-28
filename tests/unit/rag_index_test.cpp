@@ -243,3 +243,21 @@ TEST(RagVectorIndexTest, HnswMatchesBruteForceAndGrows) {
 }
 
 }  // namespace
+
+#ifdef CF_HAS_FAISS
+TEST(RagVectorIndexTest, FaissRanksByCosineSimilarity) {
+  auto index = cf::rag::make_faiss_vector_index();
+  ASSERT_NE(index, nullptr);
+  ASSERT_TRUE(index->add("x", {1.0f, 0.0f}).has_value());
+  ASSERT_TRUE(index->add("y", {0.0f, 1.0f}).has_value());
+  ASSERT_TRUE(index->add("z", {0.7f, 0.7f}).has_value());
+  const auto results = index->search({0.9f, 0.1f}, 3);
+  ASSERT_EQ(results.size(), 3u);
+  EXPECT_EQ(results[0].first, "x");
+  EXPECT_GT(results[0].second, results[1].second);
+
+  const auto mismatch = index->add("bad", {1.0f, 2.0f, 3.0f});
+  ASSERT_FALSE(mismatch.has_value());
+  EXPECT_EQ(mismatch.error().code, cf::rag::error_codes::kDimensionMismatch);
+}
+#endif
