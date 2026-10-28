@@ -81,7 +81,9 @@ void InMemoryRetriever::set_embedder(std::shared_ptr<Embedder> embedder) {
   embedder_ = std::move(embedder);
   if (embedder_ && vector_index_ == nullptr) {
 #ifdef CF_HAS_FAISS
-    if (options_.faiss) {
+    if (options_.faiss_ivfpq) {
+      vector_index_ = make_faiss_ivfpq_vector_index();
+    } else if (options_.faiss) {
       vector_index_ = make_faiss_vector_index();
     }
 #endif

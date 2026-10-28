@@ -1,5 +1,7 @@
 #include "cf/gates/runner.hpp"
 
+#include "cf/common/utf8.hpp"
+
 #include <algorithm>
 #include <fstream>
 #include <set>
@@ -401,9 +403,9 @@ GateResult run_gate(const GateDefinition& gate, ProcessExecutor& executor,
     }
     if (process.exit_code != 0) {
       result.passed = false;
-      std::string message = summarize_output(process.stderr_text);
+      std::string message = summarize_output(sanitize_utf8(process.stderr_text));
       if (message.empty()) {
-        message = summarize_output(process.stdout_text);
+        message = summarize_output(sanitize_utf8(process.stdout_text));
       }
       if (message.empty()) {
         message = "step exited with code " + std::to_string(process.exit_code) + ": " +

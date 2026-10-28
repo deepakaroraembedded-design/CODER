@@ -1,6 +1,8 @@
 // cf-agents: opencode adapter implementation (design section 6.6).
 #include "cf/agents/opencode_client.hpp"
 
+#include "cf/common/utf8.hpp"
+
 #include "cf/common/archive.hpp"
 
 #include <atomic>
@@ -78,7 +80,7 @@ Json parse_body(std::string_view body) {
     return Json();
   }
   Json parsed = Json::parse(body, nullptr, false);
-  return parsed.is_discarded() ? Json(std::string(body)) : parsed;
+  return parsed.is_discarded() ? Json(sanitize_utf8(body)) : parsed;
 }
 
 void archive_http_call(const OpencodeClientOptions& options,
@@ -522,6 +524,29 @@ void SseParser::dispatch() {
   event_name_.clear();
 }
 
+// Agent prompts and tool output are untrusted: JSON serialisation is strict
+// about UTF-8, so replace malformed bytes before they reach the wire.
+Json sanitize_json_strings(const Json& value) {
+  if (value.is_string()) {
+    return Json(sanitize_utf8(value.get_ref<const std::string&>()));
+  }
+  if (value.is_array()) {
+    Json out = Json::array();
+    for (const auto& item : value) {
+      out.push_back(sanitize_json_strings(item));
+    }
+    return out;
+  }
+  if (value.is_object()) {
+    Json out = Json::object();
+    for (const auto& [key, item] : value.items()) {
+      out[key] = sanitize_json_strings(item);
+    }
+    return out;
+  }
+  return value;
+}
+
 // --- OpencodeClient ---------------------------------------------------------
 
 struct OpencodeClient::Impl {
@@ -552,7 +577,8 @@ Result<Json> OpencodeClient::get(std::string_view path) const {
 }
 
 Result<Json> OpencodeClient::post(std::string_view path, const Json& body) const {
-  const std::string payload = body.is_null() ? std::string("{}") : body.dump();
+  const Json safe_body = sanitize_json_strings(body);
+  const std::string payload = safe_body.is_null() ? std::string("{}") : safe_body.dump();
   auto response = do_request(impl_->options, http::verb::post, std::string(path), payload,
                              impl_->options.request_timeout);
   if (!response) {

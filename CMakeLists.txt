@@ -76,7 +76,8 @@ target_compile_options(cf_project_options INTERFACE
 add_library(cf_common STATIC
   src/common/archive.cpp
   src/common/hash.cpp
-  src/common/process.cpp)
+  src/common/process.cpp
+  src/common/utf8.cpp)
 target_include_directories(cf_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(cf_common PUBLIC
   cf_project_options
@@ -405,6 +406,10 @@ else()
   message(STATUS "cf-codeintel: Clang LibTooling back end disabled; tree-sitter fallback only")
   message(STATUS "cf-codeintel: cf-tidy company checks disabled")
 endif()
+
+# cf-ns-agent: bridges a daemon-free namespace opencode server to the host.
+add_executable(cf-ns-agent src/sandbox/ns_agent_main.cpp)
+target_link_libraries(cf-ns-agent PRIVATE cf_sandbox cf_common Threads::Threads)
 
 # cf-sandbox: Docker and daemon-free namespace executors (design section 6.8)
 add_library(cf_sandbox STATIC

@@ -11,6 +11,7 @@
 // limits come from a delegated cgroup when one is available.
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <string>
 #include <utility>
@@ -25,6 +26,9 @@ struct NamespaceSandboxSpec {
   std::vector<std::string> writable_paths;  // relative to the worktree
   // Additional read-only bind mounts, e.g. a dependency cache.
   std::vector<std::pair<std::string, std::string>> extra_readonly_mounts;
+  // Additional writable bind mounts, e.g. the run directory shared with the
+  // orchestrator. The sandbox process can modify their contents.
+  std::vector<std::pair<std::string, std::string>> extra_writable_mounts;
   std::string container_workdir = "/work";
   std::size_t tmp_mb = 64;
   std::size_t build_mb = 1024;
@@ -44,10 +48,15 @@ class NamespaceExecutor final : public process::ProcessExecutor {
 
   process::ProcessResult run(const process::ProcessRequest& request) override;
 
+  // Stops the command and its namespace (safe from a signal handler).
+  void stop();
+
   const NamespaceSandboxSpec& spec() const { return spec_; }
 
  private:
   NamespaceSandboxSpec spec_;
+  std::atomic<pid_t> child_pid_{-1};
+  std::atomic<bool> stopping_{false};
 };
 
 }  // namespace cf::sandbox

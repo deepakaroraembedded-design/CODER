@@ -1,6 +1,7 @@
 #include "cf/orch/opencode_factory.hpp"
 
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <thread>
 #include <utility>
@@ -13,6 +14,49 @@
 
 namespace cf::orch {
 namespace {
+
+std::string resolve_host_binary(const std::string& name) {
+  std::error_code ec;
+  if (name.find('/') != std::string::npos) {
+    const auto absolute = std::filesystem::absolute(name, ec);
+    return ec ? std::string() : absolute.string();
+  }
+  const char* path = std::getenv("PATH");
+  if (path == nullptr) {
+    return {};
+  }
+  std::string_view remaining(path);
+  while (!remaining.empty()) {
+    const std::size_t colon = remaining.find(':');
+    const std::string_view entry =
+        remaining.substr(0, colon == std::string_view::npos ? remaining.size()
+                                                            : colon);
+    if (!entry.empty()) {
+      const auto candidate =
+          std::filesystem::path(entry) / name;
+      if (std::filesystem::is_regular_file(candidate, ec)) {
+        return candidate.string();
+      }
+    }
+    if (colon == std::string_view::npos) {
+      break;
+    }
+    remaining.remove_prefix(colon + 1);
+  }
+  return {};
+}
+
+std::string url_host(std::string_view url) {
+  const auto scheme = url.find("://");
+  if (scheme == std::string_view::npos) {
+    return {};
+  }
+  const std::size_t begin = scheme + 3;
+  const std::size_t end = url.find('/', begin);
+  return std::string(url.substr(begin, end == std::string_view::npos
+                                           ? std::string_view::npos
+                                           : end - begin));
+}
 
 void add_option(std::vector<std::string>& argv, const std::string& name,
                 const std::string& value) {
@@ -196,6 +240,27 @@ std::vector<std::string> sandboxed_server_launcher(
   return argv;
 }
 
+std::vector<std::string> namespace_server_launcher(
+    const OpencodeFactoryConfig& config, const std::string& role,
+    const std::string& worktree, uint16_t port, const std::string& proxy_url,
+    const std::string& mcp_source) {
+  std::vector<std::string> argv = {
+      config.ns_agent_binary, "host", "--worktree", worktree,
+      "--run-dir", config.run_dir.string(),
+      "--bridge-dir", (config.run_dir / "bridge").string(),
+      "--role", role,
+      "--host-port", std::to_string(port),
+      "--proxy", proxy_url,
+      "--inner-binary", "/cf/bin/cf-ns-agent"};
+  if (!mcp_source.empty()) {
+    argv.push_back("--mcp-source");
+    argv.push_back(mcp_source);
+  }
+  argv.push_back("--log");
+  argv.push_back("/cf/opencode-" + role + ".log");
+  return argv;
+}
+
 OpencodeRoleFactory::RoleState::~RoleState() {
   if (stream) {
     stream->stop();
@@ -237,39 +302,53 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   // Start the egress allow-listing proxy once (design section 6.8.2). On an
   // internal network the proxy binds to the bridge gateway; the kernel
   // already blocks everything else, so the proxy only serves the model calls.
-  if (!config_.sandbox_image.empty()) {
-    const std::string network_name =
-        config_.sandbox_network.empty() ? "cf-sandbox" : config_.sandbox_network;
-    auto network = ensure_sandbox_network(config_.docker_binary, network_name);
-    if (!network) {
-      return tl::make_unexpected(network.error());
+  const bool namespace_agent = config_.sandbox_namespaces;
+  if (!config_.sandbox_image.empty() || namespace_agent) {
+    std::string proxy_listen_host = "127.0.0.1";
+    if (!config_.sandbox_image.empty()) {
+      const std::string network_name =
+          config_.sandbox_network.empty() ? "cf-sandbox" : config_.sandbox_network;
+      auto network = ensure_sandbox_network(config_.docker_binary, network_name);
+      if (!network) {
+        return tl::make_unexpected(network.error());
+      }
+      config_.sandbox_network = network->name;
+      config_.sandbox_internal_network = network->internal;
+      if (network->internal) {
+        proxy_listen_host = network->gateway;
+      }
     }
-    config_.sandbox_network = network->name;
-    config_.sandbox_internal_network = network->internal;
-    if (!config_.sandbox_allowed_hosts.empty() && proxy_ == nullptr) {
+    if (config_.sandbox_allowed_hosts.empty()) {
+      const std::string provider_host = url_host(config_.provider_base_url);
+      if (!provider_host.empty()) {
+        config_.sandbox_allowed_hosts.push_back(provider_host);
+      }
+    }
+    if (config_.sandbox_allowed_hosts.empty()) {
+      return fail("ORCH_SANDBOX_EGRESS",
+                  "sandboxed opencode servers require sandbox_allowed_hosts");
+    }
+    if (proxy_ == nullptr) {
       cf::sandbox::ProxyOptions proxy_options;
       proxy_options.allowed_hosts = config_.sandbox_allowed_hosts;
-      proxy_options.listen_host =
-          network->internal ? network->gateway : "127.0.0.1";
+      proxy_options.listen_host = proxy_listen_host;
       auto proxy = cf::sandbox::EgressProxy::start(proxy_options);
       if (!proxy) {
         return tl::make_unexpected(proxy.error());
       }
       proxy_ = std::move(*proxy);
       config_.sandbox_proxy_url =
-          network->internal
-              ? "http://" + network->gateway + ":" + std::to_string(proxy_->port())
-              : "http://host.docker.internal:" + std::to_string(proxy_->port());
+          "http://" + proxy_listen_host + ":" + std::to_string(proxy_->port());
       spdlog::info("opencode egress proxy on {}:{} ({} allow-listed host "
                    "pattern(s))",
-                   proxy_options.listen_host, proxy_->port(),
+                   proxy_listen_host, proxy_->port(),
                    config_.sandbox_allowed_hosts.size());
     }
   }
 
   // 1. The role's config and calls file. Sandboxed servers see the run
   // directory at /cf, so every path in the config is a container path.
-  const bool sandboxed = !config_.sandbox_image.empty();
+  const bool sandboxed = !config_.sandbox_image.empty() || namespace_agent;
   const std::filesystem::path calls_file =
       config_.run_dir / ("calls-" + role + ".jsonl");
   RoleConfigSpec spec;
@@ -288,7 +367,10 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   if (role == "reviewer") {
     spec.allowed_commands.clear();
   }
-  spec.mcp_command = sandboxed ? "/usr/local/bin/cf-mcp" : config_.mcp_command;
+  spec.mcp_command =
+      namespace_agent
+          ? "/cf/bin/cf-mcp"
+          : (sandboxed ? "/usr/local/bin/cf-mcp" : config_.mcp_command);
   spec.embeddings_model = config_.embeddings_model;
   spec.embeddings_base_url = config_.embeddings_base_url;
   spec.embeddings_api_key_env = config_.embeddings_api_key_env;
@@ -312,7 +394,8 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   }
   spec.run_id = config_.run_id;
   spec.db_path = sandboxed ? "/cf/run.db" : config_.db_path;
-  spec.docs_dir = sandboxed ? "/cf/docs" : config_.docs_dir;
+  spec.docs_dir = sandboxed ? (config_.docs_dir.empty() ? "" : "/cf/docs")
+                            : config_.docs_dir;
   if (!config_.reference_docs_dir.empty()) {
     spec.reference_docs_dir =
         sandboxed ? "/cf/reference-docs" : config_.reference_docs_dir;
@@ -379,7 +462,62 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   server_options.working_directory = worktree;
   server_options.log_path = config_.run_dir / ("opencode-" + role + ".log");
   server_options.start_timeout = config_.start_timeout;
-  if (sandboxed) {
+  if (namespace_agent) {
+    const std::string mcp_source = resolve_host_binary(
+        config_.mcp_binary_host.empty() ? config_.mcp_command
+                                        : config_.mcp_binary_host);
+    if (mcp_source.empty()) {
+      return fail("ORCH_NS_MCP", "cannot resolve the cf-mcp binary");
+    }
+    const std::string ns_agent = resolve_host_binary(config_.ns_agent_binary);
+    if (ns_agent.empty()) {
+      return fail("ORCH_NS_AGENT", "cannot resolve the cf-ns-agent binary");
+    }
+    OpencodeFactoryConfig launcher_config = config_;
+    launcher_config.ns_agent_binary = ns_agent;
+    std::vector<std::string> launcher = namespace_server_launcher(
+        launcher_config, role, worktree, port, config_.sandbox_proxy_url,
+        mcp_source);
+    std::string binary = config_.sandbox_binary;
+    if (binary == "opencode") {
+      const std::string opencode_source =
+          resolve_host_binary(config_.opencode_binary);
+      if (opencode_source.empty()) {
+        return fail("ORCH_NS_OPENCODE", "cannot resolve the opencode binary");
+      }
+      launcher.push_back("--opencode-source");
+      launcher.push_back(opencode_source);
+      binary = "/cf/bin/opencode";
+    }
+    const auto add_source = [&launcher](const char* flag,
+                                        const std::string& source) {
+      if (!source.empty()) {
+        launcher.push_back(flag);
+        launcher.push_back(source);
+      }
+    };
+    add_source("--docs-source", config_.docs_dir);
+    add_source("--reference-docs-source", config_.reference_docs_dir);
+    add_source("--reference-versions-source", config_.reference_versions_file);
+    add_source("--designs-source", config_.designs_dir);
+    add_source("--patterns-source", config_.patterns_dir);
+    launcher.push_back("--");
+    server_options.launcher = std::move(launcher);
+    server_options.binary = binary;
+    server_options.hostname = "127.0.0.1";
+    server_options.environment = config_.environment;
+    server_options.environment.push_back(
+        {"OPENCODE_CONFIG", "/cf/" + config_path.filename().string()});
+    server_options.environment.push_back(
+        {"CF_MCP_CALLS_FILE", "/cf/" + calls_file.filename().string()});
+    server_options.environment.push_back({"CF_ROLE", role});
+    state.client = std::make_unique<agents::OpencodeClient>(client_options);
+    auto server = OpencodeServerProcess::start(server_options, *state.client);
+    if (!server) {
+      return tl::make_unexpected(server.error());
+    }
+    state.server = std::move(*server);
+  } else if (sandboxed) {
     server_options.launcher =
         sandboxed_server_launcher(config_, role, worktree, port, config_path,
                                   calls_file);

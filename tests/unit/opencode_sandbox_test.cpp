@@ -10,8 +10,10 @@
 #include <string>
 #include <vector>
 
+#include <sched.h>
 #include <unistd.h>
 
+#include "cf/orch/opencode_factory.hpp"
 #include "cf/orch/run_process.hpp"
 #include "cf/sandbox/docker.hpp"
 #include "fake_http_transport.hpp"
@@ -19,6 +21,7 @@
 namespace {
 
 using cf::orch::OpencodeFactoryConfig;
+using cf::orch::OpencodeRoleFactory;
 using cf::orch::RunProcess;
 using cf::orch::RunProcessConfig;
 using cf::orch::RunState;
@@ -239,6 +242,200 @@ build_systems:
 test_frameworks:
   gtest: { steps: [[true]], languages: [cpp] }
 )yaml";
+
+bool user_namespaces_available() {
+  const pid_t pid = ::fork();
+  if (pid < 0) {
+    return false;
+  }
+  if (pid == 0) {
+    ::_exit(::unshare(CLONE_NEWUSER) == 0 ? 0 : 1);
+  }
+  int status = 0;
+  if (::waitpid(pid, &status, 0) != pid) {
+    return false;
+  }
+  return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+TEST(OpencodeSandboxTest, NamespaceSandboxedServerStarts) {
+  if (!user_namespaces_available()) {
+    GTEST_SKIP() << "unprivileged user namespaces are not available";
+  }
+  const auto dir = make_temp_dir();
+  const auto worktree = dir / "worktree";
+  const auto run_dir = dir / "run";
+  std::filesystem::create_directories(worktree / "src");
+  std::filesystem::create_directories(worktree / "include");
+  std::filesystem::create_directories(run_dir);
+  write_file(worktree / "README.md", "x\n");
+  const auto fake = run_dir / "fake-opencode";
+  write_file(fake, kFakeOpencode);
+  std::filesystem::permissions(fake,
+                               std::filesystem::perms::owner_all |
+                                   std::filesystem::perms::group_read |
+                                   std::filesystem::perms::others_read,
+                               std::filesystem::perm_options::replace);
+  write_file(run_dir / "script.json", "{}");
+
+  OpencodeFactoryConfig config;
+  config.run_id = "R12";
+  config.run_dir = run_dir;
+  config.mcp_command = std::string(CF_BINARY_DIR) + "/cf-mcp";
+  config.mcp_binary_host = config.mcp_command;
+  config.ns_agent_binary = std::string(CF_BINARY_DIR) + "/cf-ns-agent";
+  config.sandbox_namespaces = true;
+  config.sandbox_binary = "/cf/fake-opencode";
+  config.sandbox_allowed_hosts = {"api.fireworks.ai"};
+  config.environment = {{"CF_FAKE_SCRIPT", "/cf/script.json"}};
+  config.start_timeout = std::chrono::seconds(60);
+
+  OpencodeRoleFactory factory(std::move(config));
+  auto driver = factory.create("coder", worktree.string());
+  ASSERT_TRUE(driver.has_value()) << driver.error().message;
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(OpencodeSandboxTest, NamespaceSandboxedRunProcessReachesDone) {
+  if (!user_namespaces_available()) {
+    GTEST_SKIP() << "unprivileged user namespaces are not available";
+  }
+  const auto dir = make_temp_dir();
+  cf::process::LocalProcessExecutor executor;
+
+  // Target repository with an initial commit and a bare remote.
+  auto created = cf::git::Repository::create(dir / "repo", executor);
+  ASSERT_TRUE(created.has_value()) << created.error().message;
+  auto repository = std::make_unique<cf::git::Repository>(std::move(*created));
+  write_file(dir / "repo" / "README.md", "initial\n");
+  cf::git::CommitTrailers init;
+  init.run_id = "R12";
+  init.milestone_id = "M1";
+  init.op_id = "op_init";
+  ASSERT_TRUE(repository
+                  ->commit_paths(dir / "repo", {"README.md"}, "chore: init", init)
+                  .has_value());
+  {
+    cf::process::ProcessRequest bare;
+    bare.argv = {"git", "init", "--bare", (dir / "remote.git").string()};
+    bare.timeout = std::chrono::seconds(30);
+    const auto result = executor.run(bare);
+    ASSERT_TRUE(result.launched && result.exit_code == 0) << result.stderr_text;
+    ASSERT_TRUE(repository
+                    ->command({"remote", "add", "origin",
+                               (dir / "remote.git").string()})
+                    .has_value());
+  }
+
+  auto opened = cf::store::RunStore::open(dir / "run.db");
+  ASSERT_TRUE(opened.has_value());
+  auto store = std::move(*opened);
+  cf::store::RunRecord run;
+  run.run_id = "R12";
+  run.state = "Executing";
+  run.created_at = cf::store::unix_now();
+  ASSERT_TRUE(store->create_run(run).has_value());
+
+  cf::plan::Plan plan;
+  plan.plan_id = "PLAN-X";
+  plan.product = "Y";
+  plan.version = "1";
+  cf::plan::MilestoneSpec milestone;
+  milestone.id = "M3";
+  milestone.title = "Registry";
+  plan.milestones.push_back(milestone);
+  plan.target.language = "cpp";
+  plan.target.standard = "c++20";
+  plan.target.build_system = "cmake";
+  plan.target.test_framework = "gtest";
+
+  auto profile = cf::gates::load_profile_string(kProfile);
+  ASSERT_TRUE(profile.has_value()) << profile.error().message;
+
+  // The fake opencode and its script live in the run directory, which the
+  // sandbox mounts at /cf.
+  const auto run_dir = dir / "workspace" / "runs" / "R12";
+  std::filesystem::create_directories(run_dir);
+  const auto fake_binary = run_dir / "fake-opencode";
+  write_file(fake_binary, kFakeOpencode);
+  std::filesystem::permissions(fake_binary,
+                               std::filesystem::perms::owner_all |
+                                   std::filesystem::perms::group_read |
+                                   std::filesystem::perms::others_read,
+                               std::filesystem::perm_options::replace);
+  write_file(run_dir / "script.json", kScript);
+
+  RunProcessConfig config;
+  config.run_id = "R12";
+  config.workspace_root = dir / "workspace";
+  config.integration_branch = "cf/R12/integration";
+  config.base_branch = "main";
+  config.opencode_binary = "unused";
+  config.role_models = {{"coder", "test/coder"}, {"reviewer", "test/reviewer"},
+                        {"qa", "test/qa"}};
+  config.mcp_command = std::string(CF_BINARY_DIR) + "/cf-mcp";
+  config.sandbox_mcp_binary_host = config.mcp_command;
+  config.environment = {{"CF_FAKE_SCRIPT", "/cf/script.json"}};
+  config.turn_timeout = std::chrono::seconds(60);
+  config.profile = *profile;
+  config.profile_language = "cpp";
+  config.profile_build_system = "cmake";
+  config.profile_test_framework = "gtest";
+  config.step_timeout = std::chrono::seconds(60);
+  config.orchestrator.escalation_dir = (run_dir / "escalations").string();
+  // The agents run in the daemon-free namespace sandbox; the fake needs no
+  // model egress, but the factory still starts its allow-listing proxy.
+  config.agent_sandbox_namespaces = true;
+  config.ns_agent_binary = std::string(CF_BINARY_DIR) + "/cf-ns-agent";
+  config.agent_sandbox_binary = "/cf/fake-opencode";
+  config.sandbox_allowed_hosts = {"api.fireworks.ai"};
+
+  cf::test::ScriptedHttpTransport github;
+  github.script(200, "[]");
+  github.script(201,
+                R"({"number": 7, "html_url": "u", "state": "open", "body": "b",
+                    "draft": true, "head": {"ref": "cf/R12/integration"},
+                    "base": {"ref": "main"}})");
+  github.script(200,
+                R"({"number": 7, "html_url": "u", "state": "open", "body": "b",
+                    "draft": false, "head": {"ref": "cf/R12/integration"},
+                    "base": {"ref": "main"}})");
+  config.github_transport = &github;
+  config.github_token = "ghs_test";
+  config.github_owner = "o";
+  config.github_repo = "r";
+  config.export_defects = false;
+
+  RunProcess process(*store, plan, config, *repository, executor);
+  const auto state = process.execute(cf::store::unix_now());
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, RunState::Done);
+
+  // The container wrote into the mounted worktrees and the run directory.
+  const auto integration = config.workspace_root / "wt" / "R12" / "integration";
+  EXPECT_TRUE(std::filesystem::exists(integration / "src" / "m3.cpp"));
+  EXPECT_TRUE(std::filesystem::exists(integration / "tests" / "m3_test.cpp"));
+  auto calls = std::ifstream(run_dir / "calls-coder.jsonl");
+  const std::string calls_text((std::istreambuf_iterator<char>(calls)),
+                               std::istreambuf_iterator<char>());
+  EXPECT_NE(calls_text.find("submit_work"), std::string::npos);
+
+  // No sandboxed server is left behind (the launcher and its process group
+  // are gone when the run process exits).
+  cf::process::ProcessRequest list;
+  list.argv = {"pgrep", "-f", "cf-ns-agent inner"};
+  list.timeout = std::chrono::seconds(10);
+  const auto leftovers = executor.run(list);
+  EXPECT_EQ(leftovers.stdout_text.find("cf-ns-agent inner"), std::string::npos)
+      << leftovers.stdout_text;
+
+  store.reset();
+  repository.reset();
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
 
 TEST(OpencodeSandboxTest, SandboxedRunProcessReachesDone) {
   if (!cf::sandbox::docker_available()) {

@@ -85,7 +85,10 @@ struct OpencodeFactoryConfig {
   // Sandbox (design section 6.8): when sandbox_image is set, each opencode
   // server runs in a container with the design's mount layout instead of on
   // the host. The container sees the worktree at /work and the run directory
-  // at /cf (config, calls file, store, docs).
+  // at /cf (config, calls file, store, docs). When sandbox_namespaces is set,
+  // the daemon-free namespace executor and cf-ns-agent replace Docker.
+  bool sandbox_namespaces = false;
+  std::string ns_agent_binary = "cf-ns-agent";
   std::string sandbox_image;
   std::string sandbox_binary = "opencode";  // program inside the container
   // Empty: the default bridge network. The server must be reachable through

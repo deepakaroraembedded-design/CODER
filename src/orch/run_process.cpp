@@ -51,6 +51,7 @@ Result<rag::RetrieverOptions> retriever_options(const RunProcessConfig& config) 
   if (config.rag_index.has_value()) {
     options.hnsw = *config.rag_index == "hnswlib";
     options.faiss = *config.rag_index == "faiss";
+    options.faiss_ivfpq = *config.rag_index == "faiss-ivfpq";
   }
   if (config.rag_bm25_weight.has_value()) {
     options.bm25_weight = *config.rag_bm25_weight;
@@ -301,7 +302,9 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     factory_config.language = plan_.target.language;
     factory_config.profile_path = profile_copy;
     factory_config.rules_dir =
-        config_.agent_sandbox_image.empty() ? rules_copy : "/cf/rules";
+        (config_.agent_sandbox_image.empty() && !config_.agent_sandbox_namespaces)
+            ? rules_copy
+            : "/cf/rules";
     factory_config.profile_build_system = config_.profile_build_system;
     factory_config.profile_test_framework = config_.profile_test_framework;
     factory_config.target_standard = plan_.target.standard;
@@ -340,6 +343,8 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     factory_config.retriever = retriever.get();
     factory_config.ambiguities_file = run_dir / "ambiguities.jsonl";
     factory_config.codeintel_db = codeintel_db;
+    factory_config.sandbox_namespaces = config_.agent_sandbox_namespaces;
+    factory_config.ns_agent_binary = config_.ns_agent_binary;
     factory_config.sandbox_image = config_.agent_sandbox_image;
     factory_config.sandbox_network = config_.agent_sandbox_network;
     factory_config.sandbox_binary = config_.agent_sandbox_binary;

@@ -261,3 +261,20 @@ TEST(RagVectorIndexTest, FaissRanksByCosineSimilarity) {
   EXPECT_EQ(mismatch.error().code, cf::rag::error_codes::kDimensionMismatch);
 }
 #endif
+
+#ifdef CF_HAS_FAISS
+TEST(RagVectorIndexTest, FaissIvfPqTrainsAndSearches) {
+  auto index = cf::rag::make_faiss_ivfpq_vector_index();
+  ASSERT_NE(index, nullptr);
+  for (int i = 0; i < 300; ++i) {
+    std::vector<float> value(8, 0.0f);
+    value[static_cast<std::size_t>(i % 8)] = 1.0f;
+    value[7] += static_cast<float>(i) / 1000.0f;
+    ASSERT_TRUE(index->add("v" + std::to_string(i), value).has_value());
+  }
+  const auto results = index->search({1, 0, 0, 0, 0, 0, 0, 0.3f}, 3);
+  EXPECT_FALSE(results.empty());
+  const auto mismatch = index->add("bad", {1, 2, 3});
+  ASSERT_FALSE(mismatch.has_value());
+}
+#endif

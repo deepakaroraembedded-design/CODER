@@ -232,7 +232,8 @@ class DriverTest : public ::testing::Test {
 
 TEST_F(DriverTest, FullLoopReachesDoneWithRealCommitsAndGates) {
   FakeAgentRunner runner;
-  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+  bool reviewer_saw_code = false;
+  runner.on_turn = [&](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
     switch (request.phase) {
       case MilestonePhase::AuthorTests:
         write_file(std::filesystem::path(request.worktree) / "tests" / "m3_test.cpp",
@@ -241,6 +242,11 @@ TEST_F(DriverTest, FullLoopReachesDoneWithRealCommitsAndGates) {
       case MilestonePhase::Code:
         write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp",
                    "int registry() { return 0; }\n");
+        break;
+      case MilestonePhase::Review:
+        reviewer_saw_code =
+            std::filesystem::exists(std::filesystem::path(request.worktree) / "src" /
+                                    "m3.cpp");
         break;
       case MilestonePhase::Validate: {
         AgentTurnOutcome outcome;
@@ -280,6 +286,7 @@ TEST_F(DriverTest, FullLoopReachesDoneWithRealCommitsAndGates) {
   const auto integration = driver.integration_worktree();
   EXPECT_TRUE(std::filesystem::exists(integration / "src" / "m3.cpp"));
   EXPECT_TRUE(std::filesystem::exists(integration / "tests" / "m3_test.cpp"));
+  EXPECT_TRUE(reviewer_saw_code);
 
   // Commits carry the CF trailers on the milestone branch.
   auto commit = repository_->find_commit_by_trailer("cf-local/R12/M3/coder",
@@ -298,6 +305,52 @@ TEST_F(DriverTest, FullLoopReachesDoneWithRealCommitsAndGates) {
   ASSERT_TRUE(stored.has_value());
   EXPECT_EQ(stored->state, "Done");
   EXPECT_EQ(stored->iterations, 1u);
+}
+
+TEST_F(DriverTest, AuthorTestsCommitsLanguageSpecificTestPaths) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    const std::filesystem::path worktree(request.worktree);
+    switch (request.phase) {
+      case MilestonePhase::AuthorTests:
+        write_file(worktree / "src" / "test" / "java" / "cf_golden" /
+                       "BoundedStackTest.java",
+                   "class BoundedStackTest {}\n");
+        break;
+      case MilestonePhase::Code:
+        write_file(worktree / "src" / "main" / "java" / "cf_golden" /
+                       "BoundedStack.java",
+                   "class BoundedStack {}\n");
+        break;
+      case MilestonePhase::Validate: {
+        AgentTurnOutcome outcome;
+        outcome.completed = true;
+        outcome.exit_criteria_met = true;
+        return outcome;
+      }
+      default:
+        break;
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
+                         runner, store_.get());
+  StateMachine machine(*store_, "R12");
+  ASSERT_TRUE(machine.register_milestone("M3").has_value());
+  ASSERT_TRUE(machine.apply("M3", MilestoneEvent::Start, now_).has_value());
+  MilestoneLoop loop(*store_, machine, driver);
+
+  const auto state = loop.drive("M3", now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, MilestoneState::Done);
+
+  const auto integration = driver.integration_worktree();
+  EXPECT_TRUE(std::filesystem::exists(integration / "src" / "test" / "java" /
+                                      "cf_golden" / "BoundedStackTest.java"));
 }
 
 TEST_F(DriverTest, CodeintelIndexTracksTheIntegrationBranch) {
@@ -856,6 +909,8 @@ TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
     write_file(std::filesystem::path(request.worktree) / "tests" / "__pycache__" /
                    "test_stats.cpython-310-pytest.pyc",
                "bytecode\n");
+    write_file(std::filesystem::path(request.worktree) / "package-lock.json",
+               "{}\n");
     AgentTurnOutcome outcome;
     outcome.completed = true;
     return outcome;
@@ -870,6 +925,7 @@ TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
   EXPECT_EQ(result.detail.find("build/artifact.o"), std::string::npos);
   EXPECT_EQ(result.detail.find("build_strict/artifact.o"), std::string::npos);
   EXPECT_EQ(result.detail.find("__pycache__"), std::string::npos);
+  EXPECT_EQ(result.detail.find("package-lock.json"), std::string::npos);
 
   // Nothing was committed.
   const auto coder_worktree = driver.worktree_for("M3", "coder");

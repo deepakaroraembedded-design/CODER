@@ -42,6 +42,8 @@ struct RetrieverOptions {
   bool hnsw = true;
   // Optional FAISS HNSW backend when CF_HAS_FAISS is available.
   bool faiss = false;
+  // Optional FAISS IVF-PQ backend (trains on a bounded sample).
+  bool faiss_ivfpq = false;
   // Observes one latency sample per search in milliseconds (design section
   // 14: cf_rag_latency_ms). The callback must be thread-safe when the
   // retriever is shared.

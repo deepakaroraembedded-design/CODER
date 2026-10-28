@@ -39,6 +39,8 @@ int main(int argc, char** argv) {
   std::string opencode_binary = "opencode";
   std::string mcp_binary = "cf-mcp";
   std::string sandbox_image;
+  bool agent_sandbox_namespaces = false;
+  std::string ns_agent_binary = "cf-ns-agent";
   std::string docs_dir;
   bool skip_refinement = false;
   std::vector<std::string> model_overrides;
@@ -59,6 +61,9 @@ int main(int argc, char** argv) {
   run->add_option("--repo", repository_path, "Target repository (with --execute)");
   run->add_option("--opencode", opencode_binary, "opencode binary");
   run->add_option("--mcp", mcp_binary, "cf-mcp binary");
+  run->add_option("--agent-sandbox-namespaces", agent_sandbox_namespaces,
+                  "Run opencode servers in the daemon-free namespace sandbox");
+  run->add_option("--ns-agent", ns_agent_binary, "cf-ns-agent binary");
   run->add_option("--sandbox-image", sandbox_image,
                   "Run gates in this Docker image (design section 6.8)");
   run->add_option("--docs", docs_dir, "Documentation directory for the RAG index");
@@ -278,6 +283,8 @@ int main(int argc, char** argv) {
     options.opencode_binary = opencode_binary;
     options.mcp_binary = mcp_binary;
     options.sandbox_image = sandbox_image;
+    options.agent_sandbox_namespaces = agent_sandbox_namespaces;
+    options.ns_agent_binary = ns_agent_binary;
     options.docs_dir = docs_dir;
     options.skip_refinement = skip_refinement;
     options.patterns_dir = patterns_dir;

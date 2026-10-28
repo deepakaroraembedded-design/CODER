@@ -285,6 +285,7 @@ tests:
   EXPECT_EQ(spec->compile[0].name, "build");
   ASSERT_EQ(spec->tests.size(), 2u);
   EXPECT_EQ(spec->tests[1].argv.size(), 2u);
+  EXPECT_FALSE(spec->tests[1].disable_aslr);
 
   // The crash-injection trigger (design section 6.12.5).
   auto recovery = cf::eval::parse_hidden_test_spec(R"yaml(
@@ -299,6 +300,14 @@ tests:
   EXPECT_TRUE(recovery->recovery);
   EXPECT_EQ(recovery->crash_after_milestone, "M1");
   EXPECT_EQ(recovery->crash_after_seconds, 90);
+  auto tsan = cf::eval::parse_hidden_test_spec(R"yaml(
+tests:
+  - name: tsan
+    disable_aslr: true
+    argv: ["{build}/tsan_test"]
+)yaml");
+  ASSERT_TRUE(tsan.has_value()) << tsan.error().message;
+  EXPECT_TRUE(tsan->tests[0].disable_aslr);
   EXPECT_EQ(cf::eval::expand_hidden_argv(
                 recovery->tests[0].argv, "/wt", "/hidden", "/build", "/run"),
             (std::vector<std::string>{"python3", "/hidden/check.py", "--run-dir",

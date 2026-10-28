@@ -18,6 +18,7 @@ Result<HiddenStep> parse_step(const YAML::Node& node, std::size_t index) {
   YAML::Node argv_node = node;
   if (node.IsMap()) {
     step.name = node["name"].as<std::string>("");
+    step.disable_aslr = node["disable_aslr"].as<bool>(false);
     argv_node = node["argv"];
     if (!argv_node || !argv_node.IsSequence()) {
       return fail(error_codes::kHiddenParseFailed,
@@ -57,6 +58,23 @@ Result<std::vector<HiddenStep>> parse_steps(const YAML::Node& node,
     steps.push_back(std::move(*parsed));
   }
   return steps;
+}
+
+process::ProcessRequest make_request(const HiddenStep& step,
+                                     const std::filesystem::path& worktree,
+                                     const std::filesystem::path& hidden_dir,
+                                     const std::filesystem::path& build_dir,
+                                     const std::filesystem::path& run_dir,
+                                     std::chrono::milliseconds timeout) {
+  process::ProcessRequest request;
+  request.argv = expand_hidden_argv(step.argv, worktree, hidden_dir, build_dir, run_dir);
+  if (step.disable_aslr && !request.argv.empty()) {
+    request.argv.insert(request.argv.begin(), "-R");
+    request.argv.insert(request.argv.begin(), "setarch");
+  }
+  request.working_directory = worktree.string();
+  request.timeout = timeout;
+  return request;
 }
 
 }  // namespace
@@ -192,11 +210,8 @@ HiddenTestResult run_hidden_tests(const HiddenTestSpec& spec,
   }
 
   for (const auto& step : spec.compile) {
-    process::ProcessRequest request;
-    request.argv =
-        expand_hidden_argv(step.argv, worktree, spec.base_dir, build_dir, run_dir);
-    request.working_directory = worktree.string();
-    request.timeout = timeout;
+    const process::ProcessRequest request =
+        make_request(step, worktree, spec.base_dir, build_dir, run_dir, timeout);
     const process::ProcessResult run = executor.run(request);
     if (!run.launched || run.exit_code != 0) {
       result.ok = false;
@@ -215,11 +230,8 @@ HiddenTestResult run_hidden_tests(const HiddenTestSpec& spec,
   }
 
   for (const auto& step : spec.tests) {
-    process::ProcessRequest request;
-    request.argv =
-        expand_hidden_argv(step.argv, worktree, spec.base_dir, build_dir, run_dir);
-    request.working_directory = worktree.string();
-    request.timeout = timeout;
+    const process::ProcessRequest request =
+        make_request(step, worktree, spec.base_dir, build_dir, run_dir, timeout);
     const process::ProcessResult run = executor.run(request);
     const std::string label =
         step.name.empty() ? request.argv.front() : step.name;

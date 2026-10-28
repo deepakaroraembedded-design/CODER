@@ -28,6 +28,9 @@ inline constexpr const char* kHiddenInvalid = "EVAL_HIDDEN_INVALID";
 struct HiddenStep {
   std::string name;
   std::vector<std::string> argv;
+  // Run under `setarch -R` on Linux: sanitizer runtimes such as TSan abort
+  // with "unexpected memory mapping" under high ASLR entropy.
+  bool disable_aslr = false;
 };
 
 struct HiddenTestSpec {

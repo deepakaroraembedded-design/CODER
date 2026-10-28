@@ -215,6 +215,8 @@ struct BenchOptions {
   std::string mcp_binary;
   std::string docs_dir;
   std::string sandbox_image;
+  bool agent_sandbox_namespaces = false;
+  std::string ns_agent_binary = "cf-ns-agent";
   std::vector<std::string> candidates;  // empty: every candidate
   std::vector<std::string> plans;       // empty: the benchmark's plan list
   bool dry_run = false;
@@ -299,6 +301,8 @@ int run_bench(const BenchOptions& options) {
     executor_options.mcp_binary = options.mcp_binary;
     executor_options.docs_dir = options.docs_dir;
     executor_options.sandbox_image = options.sandbox_image;
+    executor_options.agent_sandbox_namespaces = options.agent_sandbox_namespaces;
+    executor_options.ns_agent_binary = options.ns_agent_binary;
     executor_options.provider_base_url = config->provider_base_url;
     executor_options.api_key_env = config->api_key_env;
     executor_options.role_models = candidate.role_models;
@@ -407,6 +411,11 @@ int main(int argc, char** argv) {
   bench_command->add_option("--docs", bench.docs_dir, "Ingested company documents");
   bench_command->add_option("--sandbox-image", bench.sandbox_image,
                             "Run agent servers in this container image");
+  bench_command->add_flag("--agent-sandbox-namespaces",
+                          bench.agent_sandbox_namespaces,
+                          "Run agent servers in the daemon-free namespace sandbox");
+  bench_command->add_option("--ns-agent", bench.ns_agent_binary,
+                            "cf-ns-agent binary");
   bench_command->add_option("--candidate", bench.candidates,
                             "Only run this candidate (repeatable)");
   bench_command->add_option("--plan", bench.plans,

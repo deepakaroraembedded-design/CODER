@@ -65,6 +65,8 @@ struct RunProcessConfig {
 
   // Sandbox the opencode servers (design section 6.8); empty runs them on the
   // host. The container needs a network for the model endpoint.
+  bool agent_sandbox_namespaces = false;
+  std::string ns_agent_binary = "cf-ns-agent";
   std::string agent_sandbox_image;
   std::string agent_sandbox_network;
   std::string agent_sandbox_binary = "opencode";

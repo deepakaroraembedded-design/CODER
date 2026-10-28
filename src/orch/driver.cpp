@@ -103,7 +103,9 @@ bool is_build_artifact(std::string_view path) {
   static const std::set<std::string_view> ignored = {
       "build",        "out",           "dist",          "target",
       "node_modules", "__pycache__",   ".cache",        ".pytest_cache",
-      ".mypy_cache",  ".ruff_cache",   "cmake-build-debug", "cmake-build-release"};
+      ".mypy_cache",  ".ruff_cache",   "cmake-build-debug", "cmake-build-release",
+      "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml",
+      "yarn.lock",    "bun.lockb"};
   // Test runners create caches below the source tree (for example
   // tests/__pycache__/x.pyc), so inspect every component rather than only the
   // first. Build trees can also be nested inside a role worktree.
@@ -143,6 +145,40 @@ bool commit_has_snapshot_for(const git::Repository& repository,
   const std::string phase_line = "CF-Phase: " + std::string(phase);
   return message->find(milestone) != std::string::npos &&
          message->find(phase_line) != std::string::npos;
+}
+
+bool is_test_path(std::string_view path) {
+  std::string lowered(path);
+  std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  std::size_t begin = 0;
+  while (begin < lowered.size()) {
+    const std::size_t slash = lowered.find('/', begin);
+    const std::string_view component =
+        std::string_view(lowered).substr(begin, slash == std::string::npos
+                                                   ? std::string::npos
+                                                   : slash - begin);
+    if (component == "tests" || component == "test" ||
+        component == "__tests__" || component == "qa") {
+      return true;
+    }
+    if (slash == std::string::npos) {
+      break;
+    }
+    begin = slash + 1;
+  }
+  const std::string_view base = lowered.substr(lowered.find_last_of('/') + 1);
+  const auto ends_with = [base](std::string_view suffix) {
+    return base.size() >= suffix.size() &&
+           base.substr(base.size() - suffix.size()) == suffix;
+  };
+  return ends_with("_test.go") || ends_with("_test.cpp") ||
+         ends_with("_test.cc") || ends_with("_test.cxx") ||
+         ends_with("_test.py") || base.rfind("test_", 0) == 0 ||
+         ends_with(".test.ts") || ends_with(".spec.ts") ||
+         ends_with(".test.tsx") || ends_with(".spec.tsx") ||
+         ends_with(".test.js") || ends_with(".spec.js") ||
+         ends_with("test.java") || ends_with("tests.java");
 }
 
 bool within_write_set(const std::vector<std::string>& writes, std::string_view path) {
@@ -207,6 +243,13 @@ Result<std::filesystem::path> WorkspaceDriver::ensure_worktree(
     auto qa_exists = repository_.branch_exists(qa_branch);
     if (qa_exists.has_value() && *qa_exists) {
       start = qa_branch;
+    }
+  } else if (role == "reviewer") {
+    const std::string coder_branch = "cf-local/" + config_.run_id + "/" +
+                                     std::string(milestone_id) + "/coder";
+    auto coder_exists = repository_.branch_exists(coder_branch);
+    if (coder_exists.has_value() && *coder_exists) {
+      start = coder_branch;
     }
   }
   auto created = repository_.create_worktree(path, branch, start);
@@ -556,6 +599,27 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
                       false, ""};
   }
 
+  // The reviewer judges the coder's current tree. Re-point the read-only
+  // review worktree at the latest coder commit before every review so a fix
+  // iteration cannot leave it on a stale (or initial) revision.
+  if (phase == MilestonePhase::Review && !integration_view) {
+    auto coder_worktree = ensure_worktree(milestone_id, "coder");
+    if (!coder_worktree) {
+      return TurnResult{false, "", coder_worktree.error().message, false, false,
+                        false, false, false, ""};
+    }
+    auto coder_head = repository_.head_sha(*coder_worktree);
+    if (!coder_head) {
+      return TurnResult{false, "", coder_head.error().message, false, false, false,
+                        false, false, ""};
+    }
+    auto reset = repository_.reset_hard(*worktree, *coder_head);
+    if (!reset) {
+      return TurnResult{false, "", reset.error().message, false, false, false,
+                        false, false, ""};
+    }
+  }
+
   // A fix during revalidation targets the new integration head: the
   // milestone's work is already merged, so sync the coder worktree to the
   // integration before the turn (design section 6.13.3). Without this the
@@ -597,7 +661,18 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
 
   switch (phase) {
     case MilestonePhase::AuthorTests: {
-      auto stored = snapshot(milestone_id, role, {"tests", "qa"},
+      auto test_changes = repository_.worktree_changes(*worktree);
+      if (!test_changes) {
+        return TurnResult{false, "", test_changes.error().message, false, false,
+                          false, false, false, ""};
+      }
+      std::vector<std::string> test_paths;
+      for (const auto& change : *test_changes) {
+        if (is_test_path(change)) {
+          test_paths.push_back(change);
+        }
+      }
+      auto stored = snapshot(milestone_id, role, test_paths,
                              "test(" + std::string(milestone_id) + "): " +
                                  outcome->summary,
                              store::new_op_id(), "tests");

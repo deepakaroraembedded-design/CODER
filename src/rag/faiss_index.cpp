@@ -12,7 +12,9 @@
 #include <utility>
 #include <vector>
 
+#include <faiss/IndexFlat.h>
 #include <faiss/IndexHNSW.h>
+#include <faiss/IndexIVFPQ.h>
 
 namespace cf::rag {
 namespace {
@@ -90,10 +92,106 @@ class FaissVectorIndex final : public VectorIndex {
   std::vector<std::string> labels_;
 };
 
+class FaissIvfPqVectorIndex final : public VectorIndex {
+ public:
+  Status add(std::string_view chunk_id, std::vector<float> vector) override {
+    if (vector.empty()) {
+      return fail(error_codes::kEmptyDocument, "empty embedding vector");
+    }
+    normalize(vector);
+    const int dimension = static_cast<int>(vector.size());
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (dimension_ == 0) {
+      dimension_ = dimension;
+    } else if (dimension != dimension_) {
+      return fail(error_codes::kDimensionMismatch,
+                  "embedding dimension mismatch");
+    }
+    labels_.emplace_back(chunk_id);
+    if (index_ != nullptr) {
+      index_->add(1, vector.data());
+    } else {
+      pending_.push_back(std::move(vector));
+      if (pending_.size() >= kTrainThreshold) {
+        train_and_flush();
+      }
+    }
+    return {};
+  }
+
+  std::vector<std::pair<std::string, float>> search(
+      const std::vector<float>& query, std::size_t limit) const override {
+    std::vector<std::pair<std::string, float>> results;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (index_ == nullptr && !pending_.empty()) {
+      const_cast<FaissIvfPqVectorIndex*>(this)->train_and_flush();
+    }
+    if (index_ == nullptr || limit == 0 ||
+        query.size() != static_cast<std::size_t>(dimension_)) {
+      return results;
+    }
+    std::vector<float> normalized = query;
+    normalize(normalized);
+    const std::size_t count = std::min(limit, labels_.size());
+    std::vector<float> distances(count);
+    std::vector<faiss::Index::idx_t> ids(count);
+    index_->search(1, normalized.data(), static_cast<faiss::Index::idx_t>(count),
+                   distances.data(), ids.data());
+    for (std::size_t i = 0; i < count; ++i) {
+      if (ids[i] >= 0 && static_cast<std::size_t>(ids[i]) < labels_.size()) {
+        results.emplace_back(labels_[static_cast<std::size_t>(ids[i])],
+                             distances[i]);
+      }
+    }
+    return results;
+  }
+
+ private:
+  void train_and_flush() {
+    if (pending_.empty() || dimension_ == 0) {
+      return;
+    }
+    int m = std::min(8, dimension_);
+    while (dimension_ % m != 0) {
+      --m;
+    }
+    const bool small = pending_.size() < 10000;
+    const int nlist = small
+                          ? 1
+                          : std::max(1, std::min(64, static_cast<int>(pending_.size()) / 39));
+    const int nbits = small ? 1 : 8;
+    auto quantizer = std::make_unique<faiss::IndexFlatIP>(dimension_);
+    index_ = std::make_unique<faiss::IndexIVFPQ>(
+        quantizer.get(), dimension_, nlist, m, nbits, faiss::METRIC_INNER_PRODUCT);
+    index_->own_fields = false;
+    quantizer_ = std::move(quantizer);
+    std::vector<float> flat;
+    flat.reserve(pending_.size() * dimension_);
+    for (const auto& vector : pending_) {
+      flat.insert(flat.end(), vector.begin(), vector.end());
+    }
+    index_->train(static_cast<faiss::Index::idx_t>(pending_.size()), flat.data());
+    index_->add(static_cast<faiss::Index::idx_t>(pending_.size()), flat.data());
+    pending_.clear();
+  }
+
+  static constexpr std::size_t kTrainThreshold = 10000;
+  mutable std::mutex mutex_;
+  int dimension_ = 0;
+  std::unique_ptr<faiss::IndexFlatIP> quantizer_;
+  std::unique_ptr<faiss::IndexIVFPQ> index_;
+  std::vector<std::vector<float>> pending_;
+  std::vector<std::string> labels_;
+};
+
 }  // namespace
 
 std::unique_ptr<VectorIndex> make_faiss_vector_index() {
   return std::make_unique<FaissVectorIndex>();
+}
+
+std::unique_ptr<VectorIndex> make_faiss_ivfpq_vector_index() {
+  return std::make_unique<FaissIvfPqVectorIndex>();
 }
 
 }  // namespace cf::rag

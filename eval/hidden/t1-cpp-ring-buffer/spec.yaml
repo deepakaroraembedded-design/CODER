@@ -31,4 +31,5 @@ tests:
   - name: semantics
     argv: ["{build}/ring_buffer_test"]
   - name: tsan-concurrency
+    disable_aslr: true
     argv: ["{build}/ring_buffer_tsan_test"]

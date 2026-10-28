@@ -401,6 +401,7 @@ Result<orch::DesignPackage> refine_or_load(
   if (options.rag_index.has_value()) {
     retriever_options.hnsw = *options.rag_index == "hnswlib";
     retriever_options.faiss = *options.rag_index == "faiss";
+    retriever_options.faiss_ivfpq = *options.rag_index == "faiss-ivfpq";
   }
   if (options.rag_bm25_weight.has_value()) {
     retriever_options.bm25_weight = *options.rag_bm25_weight;
@@ -2446,6 +2447,8 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   config.profile_build_system = effective.target.build_system;
   config.profile_test_framework = effective.target.test_framework;
   config.sandbox_image = options.sandbox_image;
+  config.agent_sandbox_namespaces = options.agent_sandbox_namespaces;
+  config.ns_agent_binary = options.ns_agent_binary;
   // Code intelligence (design section 6.5): the available back ends; the
   // run indexes when one matches the plan's target language.
   codeintel::BackendRegistry codeintel_backends;

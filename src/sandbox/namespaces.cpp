@@ -14,8 +14,10 @@
 #include <linux/filter.h>
 #include <linux/landlock.h>
 #include <linux/seccomp.h>
+#include <net/if.h>
 #include <sched.h>
 #include <signal.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
 #include <sys/socket.h>
@@ -149,6 +151,23 @@ std::string host_path_to_container(const NamespaceSandboxSpec& spec, const std::
 // Builds the sandbox root and pivots into it. Runs as root inside the new
 // user namespace; returns 0 or -1 with errno set. The root path is chosen by
 // the parent (inside the pid namespace getpid() would always be 1).
+int bring_up_loopback() {
+  const int fd = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+  if (fd < 0) {
+    return -1;
+  }
+  struct ifreq request {};
+  std::strncpy(request.ifr_name, "lo", IFNAMSIZ - 1);
+  if (::ioctl(fd, SIOCGIFFLAGS, &request) != 0) {
+    ::close(fd);
+    return -1;
+  }
+  request.ifr_flags = static_cast<short>(request.ifr_flags | IFF_UP | IFF_RUNNING);
+  const int rc = ::ioctl(fd, SIOCSIFFLAGS, &request);
+  ::close(fd);
+  return rc;
+}
+
 int setup_root(const NamespaceSandboxSpec& spec, const std::string& root) {
   if (::mount(nullptr, "/", nullptr, MS_REC | MS_PRIVATE, nullptr) != 0) {
     return -1;
@@ -195,9 +214,34 @@ int setup_root(const NamespaceSandboxSpec& spec, const std::string& root) {
       }
     }
   }
-  for (const auto& [source, target] : spec.extra_readonly_mounts) {
+  for (const auto& [source, target] : spec.extra_writable_mounts) {
     if (make_dir(root + target, 0755) != 0) {
       return -1;
+    }
+    if (bind_mount(source, root + target, false) != 0) {
+      return -1;
+    }
+  }
+  for (const auto& [source, target] : spec.extra_readonly_mounts) {
+    struct stat source_stat {};
+    if (::stat(source.c_str(), &source_stat) != 0) {
+      return -1;
+    }
+    if (S_ISDIR(source_stat.st_mode)) {
+      if (make_dir(root + target, 0755) != 0) {
+        return -1;
+      }
+    } else {
+      const auto slash = target.find_last_of('/');
+      if (slash != std::string::npos &&
+          make_dirs(root + target.substr(0, slash), 0755) != 0) {
+        return -1;
+      }
+      const int fd = ::open((root + target).c_str(), O_CREAT | O_WRONLY, 0644);
+      if (fd < 0) {
+        return -1;
+      }
+      ::close(fd);
     }
     if (bind_mount(source, root + target, true) != 0) {
       return -1;
@@ -328,7 +372,16 @@ int apply_landlock(const NamespaceSandboxSpec& spec) {
   }
   for (const auto& [source, target] : spec.extra_readonly_mounts) {
     (void)source;
-    rules.push_back(Rule{target, kLandlockRead});
+    struct stat source_stat {};
+    __u64 access = kLandlockRead;
+    if (::stat(target.c_str(), &source_stat) == 0 && !S_ISDIR(source_stat.st_mode)) {
+      access &= ~LANDLOCK_ACCESS_FS_READ_DIR;
+    }
+    rules.push_back(Rule{target, access});
+  }
+  for (const auto& [source, target] : spec.extra_writable_mounts) {
+    (void)source;
+    rules.push_back(Rule{target, handled});
   }
 
   for (const auto& rule : rules) {
@@ -470,6 +523,15 @@ bool cgroup_delegated() {
 
 NamespaceExecutor::NamespaceExecutor(NamespaceSandboxSpec spec) : spec_(std::move(spec)) {}
 
+void NamespaceExecutor::stop() {
+  stopping_.store(true);
+  const pid_t pid = child_pid_.load();
+  if (pid > 0) {
+    ::kill(-pid, SIGKILL);
+    ::kill(pid, SIGKILL);
+  }
+}
+
 process::ProcessResult NamespaceExecutor::run(const process::ProcessRequest& request) {
   if (request.argv.empty() || request.argv[0].empty()) {
     process::ProcessResult result;
@@ -514,11 +576,19 @@ process::ProcessResult NamespaceExecutor::run(const process::ProcessRequest& req
     result.error = std::string("fork: ") + std::strerror(errno);
     return result;
   }
+  child_pid_.store(pid);
 
   if (pid == 0) {
     // Intermediate: enters the namespaces, then forks the command as PID 1
     // of the new pid namespace and mirrors its exit status.
     ::setpgid(0, 0);
+    // A supervisor (for example the namespace agent launcher) can die without
+    // unwinding; the kernel must then tear the sandbox down with it.
+    ::prctl(PR_SET_PDEATHSIG, SIGKILL);
+    if (::getppid() == 1) {
+      // The parent may have died between fork and prctl.
+      ::_exit(127);
+    }
     ::dup2(out_pipe.write_fd(), STDOUT_FILENO);
     ::dup2(err_pipe.write_fd(), STDERR_FILENO);
     out_pipe.close_read();
@@ -548,6 +618,9 @@ process::ProcessResult NamespaceExecutor::run(const process::ProcessRequest& req
     }
     if (::unshare(CLONE_NEWNS | CLONE_NEWNET | CLONE_NEWUTS | CLONE_NEWIPC |
                   CLONE_NEWPID) != 0) {
+      fail(exec_pipe.write_fd(), errno);
+    }
+    if (bring_up_loopback() != 0) {
       fail(exec_pipe.write_fd(), errno);
     }
 
@@ -642,6 +715,7 @@ process::ProcessResult NamespaceExecutor::run(const process::ProcessRequest& req
   auto result = process::supervise_child(pid, out_pipe.release_read(), err_pipe.release_read(),
                                          exec_pipe.release_read(), request);
 
+  child_pid_.store(-1);
   cgroup.remove();
   remove_root(sandbox_root);
   return result;

@@ -200,6 +200,9 @@ struct ExecuteOptions {
   // cf.yaml (design section 15, models.roles).
   std::map<std::string, nlohmann::json, std::less<>> role_options;
   std::string sandbox_image;  // empty: gates run through the local executor
+  // Run opencode servers in the daemon-free namespace sandbox (design 6.8).
+  bool agent_sandbox_namespaces = false;
+  std::string ns_agent_binary = "cf-ns-agent";
   std::string docs_dir;
   // Design refinement (design section 6.2). Unless --skip-refinement is set,
   // the first execution refines the plan, writes the design package and stops

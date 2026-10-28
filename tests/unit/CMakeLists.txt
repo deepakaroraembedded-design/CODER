@@ -3,6 +3,7 @@ add_executable(cf_unit_tests
   archive_test.cpp
   sse_parser_test.cpp
   hash_test.cpp
+  utf8_test.cpp
   run_store_test.cpp
   dispatcher_test.cpp
   state_machine_test.cpp

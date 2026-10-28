@@ -29,6 +29,8 @@ OpencodeAgentRunner* SessionAgentRunner::runner_for(const AgentTurnRequest& requ
   }
   auto driver = factory_(request.role, request.worktree);
   if (!driver) {
+    spdlog::warn("opencode driver for {} failed: {}: {}", key,
+                 driver.error().code, driver.error().message);
     return nullptr;
   }
   OpencodeRunnerOptions options = base_;

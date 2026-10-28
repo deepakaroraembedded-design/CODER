@@ -18,25 +18,25 @@ is still missing.
 |---|---|
 | Phase 0a — opencode harness go/no-go | **Complete**: 300/300 iterations passed (H1–H15 × 20) against pinned opencode 1.18.35; recommendation **Go** (`docs/phase0a/decision.md`) |
 | Run store, side-effect protocol, crash recovery | Implemented and tested; startup recovery (§6.12.4) runs automatically at the start of `cf run --execute` (lease takeover, leftover-container removal, in-flight grace period, reconcile), and `cf resume` releases the lease it takes |
-| State machines, scheduler, review rules, milestone loop, run orchestrator | Implemented and tested; refined plans' declared write sets are enforced at snapshot time (§6.13.2), and a merge that changes a public interface revalidates the Done milestones that use it against the new integration head (§6.13.3; a revalidation fix starts from that head, gates run in a separate build directory, and test-only gate failures are repaired by QA). Human-waiting states have configurable business-day deadlines (§12.1): `cf run --execute` and `cf approve` move an expired design approval or escalation to `Aborted` with `approval_timeout`/`escalation_timeout`, and the resolved deadlines are stored on the run so every command sees the same values |
+| State machines, scheduler, review rules, milestone loop, run orchestrator | Implemented and tested; refined plans' declared write sets are enforced at snapshot time (§6.13.2); generated dependency lockfiles and nested build/cache paths are treated as artifacts, and a merge that changes a public interface revalidates the Done milestones that use it against the new integration head (§6.13.3; a revalidation fix starts from that head, gates run in a separate build directory, and test-only gate failures are repaired by QA). Human-waiting states have configurable business-day deadlines (§12.1): `cf run --execute` and `cf approve` move an expired design approval or escalation to `Aborted` with `approval_timeout`/`escalation_timeout`, and the resolved deadlines are stored on the run so every command sees the same values |
 | Toolchain profiles and staged gate runner | Implemented and tested: stages 1–2 plus profile-driven stage-3 coverage/mutation gates, trusted step expansion and `cf.yaml` threshold overrides. C/C++, Python, Go, TypeScript/JavaScript and Java profiles are provided (`profiles/`); the built-in checker reads coverage.py/llvm-cov JSON, Go cover profiles, LCOV and JaCoCo XML and enforces the configured thresholds; C/C++ and Java coverage ship instrumented scripts (CMake/Meson/Make llvm-cov and Maven/Gradle JaCoCo) and Python mutation runs through a mutmut wrapper, Go mutation through gremlins, Java mutation through PIT, TypeScript/JavaScript mutation through Stryker and C/C++ mutation through Mull, with Python's `mutmut-json` score enforced by the gate |
-| RAG retrieval (BM25 + vectors, precedence, conflicts) and document ingestion | Implemented and tested; the `rag` config section selects hnswlib, optional FAISS HNSW or brute force, the hybrid BM25/vector weights, the default `top_k` (refiner, MCP search and role servers) and the document-type precedence. `models.embeddings` wires the OpenAI-compatible embeddings provider into the refiner, question answering and every role MCP server, so hybrid vector search is active when configured (BM25-only otherwise). `cf ingest` also converts PDFs with poppler and DOCX with Pandoc when a `<file>.meta.yaml` metadata sidecar is present |
+| RAG retrieval (BM25 + vectors, precedence, conflicts) and document ingestion | Implemented and tested; the `rag` config section selects hnswlib, optional FAISS HNSW/IVF-PQ or brute force, the hybrid BM25/vector weights, the default `top_k` (refiner, MCP search and role servers) and the document-type precedence. `models.embeddings` wires the OpenAI-compatible embeddings provider into the refiner, question answering and every role MCP server, so hybrid vector search is active when configured (BM25-only otherwise). `cf ingest` also converts PDFs with poppler and DOCX with Pandoc when a `<file>.meta.yaml` metadata sidecar is present |
 | MCP tool surface (role-filtered, schema-validated) | Implemented and tested: RAG, reference lookup, code intelligence, defects, submissions, `run_checks` and `request_waiver` |
 | Reference documentation mirror (`cf-refmirror`) | Implemented and tested: manifest validation, fetch, checksum, HTML→Markdown cleaning, injection scan, audit snapshot and report. `cf run` can now mirror the manifest into the run, pin the versions named by `vcpkg.json`/`requirements.txt`/`package.json`, index the result in the refiner, question answering and role MCP servers, and filter `lookup_reference` to the pinned version. Archive sources with `extract` patterns are unpacked with the system `tar`/`unzip`; generated Doxygen sets clone their approved repo/ref, run Doxygen and index the cleaned HTML. Remaining: the checked-in manifest still has placeholder URLs/checksums |
 | Git layer (worktrees, trailers, diffs, squash merges) | Implemented and tested |
 | Code intelligence (§6.5) | **Foundation + run integration**: the back-end interface and registry, the SQLite symbol index (incremental per file), tree-sitter back ends with the vendored **C, C++, Python, Go, TypeScript/JavaScript and Java** grammars, and a **Clang LibTooling** back end for C/C++ when LLVM/Clang 17 is available (symbols, methods qualified `Class.method`/`Receiver.Method`, call edges with caller attribution, imports/includes, doc comments and docstrings, the layering check; tree-sitter remains the fallback), the context packer (seeds → dependencies → callers → file siblings, cut to the token budget) and the `find_symbol`/`get_callers`/`get_context` MCP tools reading the index (`cf-mcp --codeintel-db`). When a back end matches the plan's language, the run indexes the integration worktree at start-up and refreshes the index incrementally at every merge (`CodeIntelSync`), and the role MCP servers are pointed at it. `get_context` also appends design/architecture hits (ADRs and contracts) within the remaining token budget. Remaining: the rest of the company guardrail rule set |
-| Workspace milestone driver (agents + git + gates) | Implemented and tested; fix turns receive the milestone's open defects and every fix turn counts one attempt per defect (escalates at 4, §12) |
-| opencode-backed `AgentRunner` | Implemented end to end: turn driving with event-driven (`session.idle`) turn completion, permission broker, event routing, role configs, versioned prompt templates, RAG-backed question answering, server spawning, dead-server detection and restart before the next turn (§6.12, H8), `RunProcess` and `cf run --execute` |
+| Workspace milestone driver (agents + git + gates) | Implemented and tested; fix turns receive the milestone's open defects and every fix turn counts one attempt per defect (escalates at 4, §12); test authoring commits language-specific test paths (`tests/`, `src/test/`, `*_test.go`, `*.test.ts`, …), and each review resets the reviewer worktree to the coder's current HEAD |
+| opencode-backed `AgentRunner` | Implemented end to end: turn driving with event-driven (`session.idle`) turn completion, permission broker, event routing, role configs, versioned prompt templates, RAG-backed question answering, server spawning, dead-server detection and restart before the next turn (§6.12, H8), UTF-8 sanitization of untrusted prompt/tool output before JSON and HTTP, `RunProcess` and `cf run --execute` |
 | GitHub operations | Complete lifecycle: client (PRs, issues, comments, `cf-op` + fingerprint markers), pre-push checks (branch policy, protected paths, size, binaries, trailers, signatures, base freshness, secret scanning, dependency licences) that run on the exact commit before every flow push — a rejection records no intent and escalates the run, dispatcher handlers (`push`, `pr_create`, `pr_update` incl. close, `issue_create` with fingerprint de-dupe, `issue_update`, `comment` with late-landing duplicate deletion, §6.12.6 rule 4), `GithubFlow` (milestone pushes, PR open/update/ready with `pr.draft_until_done`/labels/`request_codeowners` policy and a report-derived body — milestone/gate summary, requirement traceability, defects, waivers and cost, escalation branch + comment, abort closes the PR), defect export to GitHub Issues (`DefectExporter`: one issue per defect with labels, status sync, human closure → WONT_FIX, secret-scanning and restricted-run redaction), GitHub App auth (RS256 JWT → short-lived installation tokens), SSH commit signing, branch-retention cleanup (`cf cleanup`), base-move rebase/re-gate, generated ruleset payloads (`cf rulesets`) and CLI wiring. Marking the PR ready requests the CODEOWNERS reviewers (`@user` → reviewer, `@org/team` → team reviewer; GitHub's `.github/`, root and `docs/` lookup order; absent file is fine; repeated on reconcile, which is idempotent) |
 | CLI (`cf check/run/status/resume/escalations/report/approve/abort/ingest/cleanup/remind/replay/rulesets`) | Implemented and tested |
 | Configuration file (§15) | `cf run --config` (default `./cf.yaml`): strict schema, flags > file > defaults, plan budget wins over file defaults; provider/role-model resolution with no provider mixing (§13.1); budget (cost, tokens, iterations, defect attempts and the active wall-clock limit, which excludes states waiting for people, §12), design-approval, escalation and waiver deadlines in business days (§12.1), GitHub push scheduling (`push_on`) and commit signing (`signing_key_ref`), pre-push policy (`branch_prefix`, `protected_paths`, `max_file_mb`) and PR policy (`draft_until_done`, `labels`, `request_codeowners`), RAG policy (`index`, `top_k`, hybrid weights, precedence), reference-docs manifest/version policy, branch retention, coverage/mutation overrides, loop/review-threshold/gate-resource knobs wired |
 | Design refinement (Phase 4) | Implemented and verified with the real planner model: the refiner turns the plan into a design package (`runs/<run>/design.{json,md}` — component design, refined milestone DAG with write sets/uses/interfaces for the scheduler, ADRs), self-critiques and revises once, stops at the human approval gate, and the approved package drives execution. A reviewer can request changes with written feedback, which is archived and fed into the next refinement. Approving publishes the design as a product-scoped RAG design document (`<workspace>/designs/`, status `approved`; an earlier design for the same plan becomes `superseded` and is no longer retrieved), and the run's MCP servers and question policy carry the product/language applicability context. The curated pattern catalog (`catalog/patterns/`, six entries) is loaded by `cf-mcp --patterns`, is authoritative for `get_pattern` and is indexed into retrieval; the refiner prompt carries it, every ADR must name a catalog `pattern_id`, and refinement rejects a design that misses or invents one |
 | Observability (§6.11, §14) | `cf-telemetry` emits one JSON object per log line with `run_id`, `milestone_id`, `agent` and `trace_id`; `cf`/`cf-mcp`/`cf-eval`/`cf-refmirror` install it, and the run process plus driver scopes each turn and gate run. The report and PR body aggregate `usage-<role>.jsonl` into cost/tokens per role and milestone, and `report.json` carries the design's metric samples (gate pass ratio, iterations, open defects, LLM tokens/USD, escalations, RAG latency) and exports it as OTLP/HTTP JSON when `OTEL_EXPORTER_OTLP_ENDPOINT` is set. Direct `cf-llm` calls and opencode HTTP/SSE agent traffic are archived gzip-compressed and AES-256-GCM encrypted under `runs/<run>/llm` and `runs/<run>/opencode` (`CF_ARCHIVE_KEY`, 64 hex characters); `cf replay` re-sends direct LLM calls. |
-| Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the starter suite now has 26 plans spanning C++, Python, Go, Java and TypeScript, including cross-component C++, Go, Java, Python and TypeScript pipelines, plus crash-injection reliability and security scenarios; the full benchmark (3 candidates × 7 plans) is complete and confirms the pinned models; the benchmark config now covers 19 plans, with a fresh run pending |
-| Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout plus run-labelled cleanup on recovery; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise). Both escape-tested |
+| Golden evaluation suite (`cf-eval`) | Implemented and tested: suite validation, scoring with confidence intervals and target checks, RAG retrieval evaluation, hidden acceptance tests, and the Phase 0b model benchmark (`cf-eval bench`) that runs candidates through the real run pipeline and ranks them; the starter suite now has 26 plans spanning C++, Python, Go, Java and TypeScript, including cross-component C++, Go, Java, Python and TypeScript pipelines, plus crash-injection reliability and security scenarios; the full benchmark (3 candidates × 7 plans) is complete and confirms the pinned models; the benchmark config now covers 19 plans; the Python, Java, Go and TypeScript smoke plans pass their hidden acceptance tests (6/6, 8/8, 14/14 and 4/4), with the full expanded run pending |
+| Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout plus run-labelled cleanup on recovery; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`) **and opencode servers** (`agent_sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns with loopback, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise), and `cf-ns-agent` bridging the host API port and the allow-listing egress proxy over Unix sockets. The Docker and gate-namespace executors run the escape suite; the namespace agent bridge has end-to-end coverage |
 | Company guardrail checks (`cf-swt-*` / `swt.*`) | **Foundation**: 18 `cf-tidy` checks plus 32 Semgrep rules. `cf-tidy` runs `cf-swt-no-raw-new`, `cf-swt-no-raw-delete`, `cf-swt-no-raw-malloc`, `cf-swt-no-detached-thread` (CG-4.2), `cf-swt-no-hardcoded-secret`, `cf-swt-no-bool-param`, `cf-swt-no-c-style-cast`, `cf-swt-no-using-namespace-in-header`, `cf-swt-no-goto`, `cf-swt-no-reinterpret-cast`, `cf-swt-no-const-cast`, `cf-swt-no-raw-array`, `cf-swt-no-unsafe-c-function`, `cf-swt-no-multiple-inheritance`, `cf-swt-no-public-data-member`, `cf-swt-no-public-static-data`, `cf-swt-no-sleep-in-test` and `cf-swt-no-weak-hash` over the target's compilation database, with fixture tests for placement new, exempt namespaces, C allocation, macro use sites and clean sources. The C/C++ profile runs the standard clang-tidy check set plus `cf-tidy`. The Python, TypeScript/JavaScript, Java and Go profiles load starter `swt.*` Semgrep rules for shell/eval/HTML injection, unsafe YAML/TLS, stack traces, hardcoded secrets, unsafe eval/exec/os.system/pickle, disabled TLS verification, document.write, weak hashes, Java object deserialization and sleeps in tests. A starter rule-coverage catalog lives in `rules/guardrails.yaml`, and `cf-tidy --list-checks` lists the compiled checks. Remaining: the rest of the guideline rule set and optional plugin packaging for shared-LLVM distributions |
 
-Test suite: **774 tests**, green on `debug`; CI also runs the `release`, ASan and TSan presets.
+Test suite: **782 tests**, green on `debug`; CI also runs the `release`, ASan and TSan presets.
 
 ---
 
@@ -53,10 +53,10 @@ The design's module map and the implemented directories:
 | cf-plan | `include/cf/plan`, `src/plan` | 6.2, 8.1 | Implementation plan parser (YAML or Markdown front matter), schema + DAG validation, FR-18 toolchain check |
 | cf-eval | `include/cf/eval`, `src/eval` | 17.2, 18.2 | Golden evaluation suite harness: stratified manifest, outcome records, scoring with confidence intervals, held-out split, target checks, JSON/Markdown reports; hidden acceptance tests; Phase 0b model benchmark (`cf-eval bench`) that drives candidates through the real run pipeline |
 | cf-gates | `include/cf/gates`, `src/gates` | 6.7 | Toolchain profiles (YAML), staged gate runner (prerequisites → cheap → expensive), gate plan builder, trusted step expansion |
-| cf-rag | `include/cf/rag`, `src/rag` | 6.3 | Tokenizer, structure-aware chunking, BM25, hnswlib vector index, optional FAISS HNSW backend (brute-force fallback behind the same interface), embeddings, front-matter loader, HTML cleaner, injection scanner, hybrid retriever with applicability and precedence, labeled retrieval evaluation (recall@k, MRR) |
+| cf-rag | `include/cf/rag`, `src/rag` | 6.3 | Tokenizer, structure-aware chunking, BM25, hnswlib vector index, optional FAISS HNSW/IVF-PQ backends (brute-force fallback behind the same interface), embeddings, front-matter loader, HTML cleaner, injection scanner, hybrid retriever with applicability and precedence, labeled retrieval evaluation (recall@k, MRR) |
 | cf-refmirror | `include/cf/refmirror`, `src/refmirror` | 6.3.1 | Approved-documentation manifest, fetch + checksum + clean + scan + publish pipeline |
 | cf-git | `include/cf/git`, `src/git` | 6.8.3, 10.4.5 | Worktrees, snapshot commits with CF trailers, diffs, file hashes, trailer recovery, squash merges |
-| cf-sandbox | `include/cf/sandbox`, `src/sandbox` | 6.8 | Sandbox executors behind `ProcessExecutor`: Docker (gate jobs + opencode servers, internal-network egress) and daemon-free namespaces (user/mount/net/UTS/IPC/PID namespaces, Landlock, seccomp, cgroups) |
+| cf-sandbox | `include/cf/sandbox`, `src/sandbox` | 6.8 | Sandbox executors behind `ProcessExecutor`: Docker (gate jobs + opencode servers, internal-network egress) and daemon-free namespaces for gates and opencode servers, with the `cf-ns-agent` host/namespace bridge, Landlock, seccomp and cgroups |
 | cf-github | `include/cf/github`, `src/github` | 6.10, 10.4 | REST client (PRs, issues, comments, branches, `cf-op` markers), pre-push checks and ruleset payloads |
 | cf-mcp | `include/cf/mcp`, `src/mcp` | 6.4, 9.1 | MCP stdio server, role-filtered tool registry with JSON-schema validation, structured errors, agent-side gate dry run (`run_checks`) and waiver requests |
 | cf-codeintel | `include/cf/codeintel`, `src/codeintel` | 6.5 | Language back-end interface + registry, SQLite symbol index (per-file incremental), Clang LibTooling C/C++ back end (optional LLVM 17) with tree-sitter fallback, tree-sitter back ends (vendored C, C++, Python, Go, TypeScript/JavaScript and Java grammars), context packer, architecture layering check |
@@ -167,7 +167,7 @@ cmake --build build/debug -j"$(nproc)"
 #   -DClang_DIR=/path/to/llvm/lib/cmake/clang
 # Without these, cf-codeintel builds the tree-sitter C/C++ fallback and the
 # cf-tidy company-check target is omitted.
-# Optional FAISS HNSW RAG index:
+# Optional FAISS RAG indexes:
 # cmake --preset debug -DFAISS_ROOT=/path/to/faiss/prefix
 
 # test
@@ -180,6 +180,9 @@ Presets (`CMakePresets.json`): `debug`, `release`, `asan` (ASan+UBSan),
 
 **TSan note:** TSan needs low ASLR entropy on some kernels. Either
 `sudo sysctl -w vm.mmap_rnd_bits=28` or run `setarch $(uname -m) -R ctest --test-dir build/tsan`.
+Hidden benchmark steps can set `disable_aslr: true`, which makes the evaluator
+wrap that step in `setarch -R`; this covers the hidden TSan programs but not
+TSan builds the QA agent runs itself.
 GCC's libtsan before GCC 13 does not intercept `pthread_cond_clockwait`, so the
 two cross-thread idle-tracker tests skip under that runtime (Clang TSan and
 GCC 13+ run them); the namespace-sandbox tests skip under any TSan runtime, as
@@ -197,6 +200,7 @@ and GCC 11's cannot suppress them (the small HNSW tests still run).
 | `cf-refmirror` | Reference documentation mirroring job |
 | `cf-tidy` | Company C/C++ guardrail checks (`cf-swt-*`) over a compilation database |
 | `cf-eval` | Golden suite validation/scoring, RAG evaluation, Phase 0b model benchmark |
+| `cf-ns-agent` | Host ↔ namespace bridge for sandboxed opencode servers |
 | `cf-harness-spike` | opencode compatibility suite (H1–H15) |
 
 ---
@@ -242,7 +246,8 @@ cf run --plan plans/product-x.yaml --profiles profiles --workspace cf-work --run
        --execute --repo /path/to/target-repo [--config cf.yaml] \
        [--design-model accounts/fireworks/models/<planner>] \
        [--model coder=accounts/fireworks/models/<model>] \
-       [--sandbox-image cf-toolchain-c-cpp:2026.10] [--docs cf-work/docs]
+       [--sandbox-image cf-toolchain-c-cpp:2026.10] [--docs cf-work/docs] \
+       [--agent-sandbox-namespaces --ns-agent build/debug/cf-ns-agent]
 
 # review the design package, then approve it (AwaitingDesignApproval -> Executing)
 cf approve --run R12 --workspace cf-work --stage design
@@ -505,7 +510,7 @@ budget:                         # defaults only; a plan's budget wins
   max_wall_clock_hours: 24      # active time; Created/human-waiting excluded
 
 rag:
-  index: hnswlib                # hnswlib, faiss or brute-force (parity reference)
+  index: hnswlib                # hnswlib, faiss, faiss-ivfpq or brute-force
   top_k: 8                      # refiner context, MCP search default
   hybrid: { bm25_weight: 1.0, vector_weight: 1.0 }  # RRF contributions
   precedence: [policy, requirements, architecture, design, guideline, pattern, external_reference]
@@ -650,7 +655,7 @@ cf-mcp --role coder --run R12 --milestone M3 \
        --docs cf-work/docs \
        [--codeintel-db cf-work/runs/R12/codeintel.db] \
        [--rules-dir /cf/rules] \
-       [--top-k 8] [--rag-index hnswlib|faiss|brute-force] \
+       [--top-k 8] [--rag-index hnswlib|faiss|faiss-ivfpq|brute-force] \
        [--rag-bm25-weight 0.4 --rag-vector-weight 0.6] \
        [--rag-precedence policy,requirements,architecture,design,guideline,pattern,external_reference]
 ```
@@ -710,7 +715,7 @@ the skipped sets are recorded in the same JSON file.
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 774 unit tests
+ctest --test-dir build/debug --output-on-failure     # 782 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -785,8 +790,14 @@ Each candidate writes `<name>-outcomes.json` and `<name>-report.{json,md}` into
 `--out`, plus the combined `benchmark.{json,md}`; the run's scratch tree (plan
 repositories, run stores, worktrees) is kept under `--workspace` unless
 `--drop-scratch` is given. It needs `FIREWORKS_API_KEY` and the pinned opencode
-binary. Plans with TSan tests need ASLR entropy lowered: run the bench under
-`setarch $(uname -m) -R` (or apply the `vm.mmap_rnd_bits` sysctl from §4).
+binary. Plans with TSan tests need ASLR entropy lowered when the QA agent runs
+its own TSan build: run the whole bench under `setarch $(uname -m) -R` (or
+apply the `vm.mmap_rnd_bits` sysctl from §4). Hidden TSan steps can instead
+declare `disable_aslr: true`, which the evaluator applies to that step.
+`cf-eval bench --agent-sandbox-namespaces --ns-agent <path> --opencode <real-ELF>`
+runs the same plan with agent servers in the namespace sandbox instead of
+Docker. Pass the real opencode ELF (not a wrapper that references hidden host
+paths) and make the target toolchain visible under the sandbox's `/usr`.
 
 **RAG evaluation sets** (design §6.3) live in `eval/rag/`: a collection, a
 cutoff `k`, a docs directory and queries with known relevant chunks
@@ -826,9 +837,10 @@ opencode version.
   prompts come from the versioned `prompts/<role>.md` templates with embedded
   defaults. `cf run --execute` drives it (with `cf approve` for the design gate);
   an end-to-end test drives a full milestone to `Done` against a fake opencode
-  server, with real git snapshots, gates and integration. Remaining for full
-  fidelity: running the opencode servers in the daemon-free sandbox (see
-  below); the Phase 0b benchmark has already run end to end with real models.
+  server, with real git snapshots, gates and integration. The same path also
+  runs the opencode servers in the daemon-free namespace sandbox when
+  `--agent-sandbox-namespaces`/`agent_sandbox_namespaces` is set; the Phase 0b
+  benchmark has already run end to end with real models.
 - **Sandbox (design §6.8).** The Docker-based executor covers gate jobs
   (`cf-sandbox`) and, since this session, the opencode servers themselves
   (`agent_sandbox_image` on the run process): each server runs in a container
@@ -857,9 +869,17 @@ opencode version.
   against it (plus probes for the pid namespace, Landlock, seccomp and the
   cgroup fail-closed path); under TSan the tests skip because the sanitizer
   runtime's threads make `unshare(CLONE_NEWUSER)` fail with `EINVAL` (kernel
-  rule), not because of the executor. Remaining: running agent (opencode)
-  servers in the namespace sandbox, which needs a routed egress path for the
-  model endpoint.
+  rule), not because of the executor. Agent servers use the same executor with
+  `cf-ns-agent`: the host API port is bridged into the namespace over a Unix
+  socket, and model traffic goes through a loopback proxy to the
+  allow-listing host proxy over a second Unix socket. The netns has only
+  loopback, so direct egress remains kernel-blocked. The host side installs
+  `cf-mcp` and the opencode binary read-only inside `/cf/bin` and gives the
+  namespace TSan/seccomp the same policy as gate jobs. It uses the host's
+  `/usr` toolchain: binaries outside `/usr` (for example a Maven or Go
+  installation under `/home`) must be on a mounted path or installed in the
+  host system; pass the real opencode ELF, not a wrapper that references
+  hidden host paths.
 - **Company guardrail checks (`cf-swt-*`).** The first checks,
   `cf-swt-no-raw-new`, `cf-swt-no-raw-delete`, `cf-swt-no-raw-malloc` and
   `cf-swt-no-detached-thread` (CG-4.2), `cf-swt-no-hardcoded-secret` and
@@ -969,11 +989,16 @@ opencode version.
   of a dirty worktree). Both verify the run still reaches Done with no
   duplicated commits or operations.
   TSan-involving plans need `setarch $(uname -m) -R` on hosts with high ASLR
-  entropy (same note as §4). The expanded suite is now being benchmarked; the
-  first new-plan smoke run, `t1-python-stats`, completed with 6/6 hidden tests
-  at $0.3706 per milestone. Remaining: grow the suite (more plans per tier,
-  reliability and governance scenarios) and re-run the full benchmark as it
-  grows.
+  entropy (same note as §4); hidden TSan steps can declare `disable_aslr` to
+  have the evaluator apply it. The expanded-suite smoke runs now pass for
+  Python (`t1-python-stats`, 6/6 at $0.3706), Java (`t1-java-stack`, 8/8 at
+  $0.1138), Go (`t1-go-lru`, 14/14 at $0.1218) and TypeScript
+  (`t1-typescript-slug`, 4/4 at $0.2433). C++ T1's hidden tests pass (12/12
+  semantics and 1/1 TSan), but a QA-run TSan build still needs the outer
+  `setarch`, and the M2 coder also exposed occasional no-submission
+  flakiness, so its run-completion number remains unstable. Remaining: grow
+  the suite (more plans per tier, reliability and governance scenarios) and
+  re-run the full benchmark as it grows.
 - **Reliability fault injection.** The driver records a checkpoint before
   every agent turn (design section 6.12.3), and the bench kills the run
   process at a milestone boundary or mid-turn (repeatedly, with
@@ -1010,9 +1035,10 @@ opencode version.
   suites. A broader kill matrix remains.
 - **RAG production index.** hnswlib is the default vector index (brute force
   stays behind the same `VectorIndex` interface and is selectable with
-  `rag.index: brute-force`); an optional FAISS HNSW index is enabled with
-  `FAISS_ROOT` and `rag.index: faiss`. FAISS IVF-PQ tuning for collections over
-  5M chunks is still pending. PDF/DOCX ingestion uses the external converters
+  `rag.index: brute-force`); optional FAISS HNSW and IVF-PQ indexes are enabled
+  with `FAISS_ROOT` and `rag.index: faiss`/`faiss-ivfpq`. IVF-PQ trains on a
+  bounded sample; production tuning for collections over 5M chunks is still
+  pending. PDF/DOCX ingestion uses the external converters
   (`pdftotext`/`pandoc`) and a metadata sidecar. The labeled retrieval set has
   205 queries (above the 200-per-collection target) and the adversarial
   conflict set is in place.
@@ -1034,7 +1060,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (774)
+tests/unit/                 # GoogleTest unit tests (782)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

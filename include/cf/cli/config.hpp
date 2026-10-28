@@ -113,7 +113,7 @@ struct FrameworkConfig {
   Approvals approvals;
 
   struct Rag {
-    // "hnswlib" (default), "faiss" or "brute-force" (design sections 6.3, 15).
+    // "hnswlib" (default), "faiss", "faiss-ivfpq" or "brute-force" (design sections 6.3, 15).
     std::optional<std::string> index;
     std::optional<std::uint32_t> top_k;
     std::optional<double> bm25_weight;
