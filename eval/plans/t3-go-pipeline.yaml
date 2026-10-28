@@ -1,0 +1,53 @@
+# Golden plan: three-component Go order pipeline (T3).
+plan_id: GOLD-T3-GO-PIPELINE
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Represent money and line items
+    requirements: [REQ-GO-PIPE-1]
+    writes: [go.mod, order/models.go]
+    uses: []
+    writes_interfaces: [order/models.go]
+    acceptance:
+      - "Go module cf_golden (go 1.22) with package order at order/"
+      - "type Money struct { Cents int64 } with Add and Multiply methods"
+      - "type LineItem struct { SKU string; Quantity int; UnitPrice Money }"
+      - "Negative money and non-positive quantities return errors"
+  - id: M2
+    title: Apply line items to a ledger
+    requirements: [REQ-GO-PIPE-2]
+    depends_on: [M1]
+    writes: [order/ledger.go]
+    uses: [order/models.go]
+    writes_interfaces: [order/ledger.go]
+    acceptance:
+      - "Ledger stores line items and exposes Total() Money and ItemCount() int"
+      - "Total uses checked integer cent arithmetic"
+  - id: M3
+    title: Process orders
+    requirements: [REQ-GO-PIPE-3]
+    depends_on: [M2]
+    writes: [order/processor.go]
+    uses: [order/ledger.go]
+    writes_interfaces: [order/processor.go]
+    acceptance:
+      - "Process(items []LineItem) (*Ledger, Money, error)"
+      - "Empty input returns a zero-total ledger; duplicate SKUs remain distinct line items"
+      - "go build ./... and go vet ./... pass"
+target:
+  language: go
+  standard: "1.22"
+  build_system: go
+  test_framework: gotest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["third-party dependencies", "floating-point money"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 40
+  max_wall_clock_hours: 10

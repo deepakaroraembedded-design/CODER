@@ -50,6 +50,10 @@ common:
     report: "{build_dir}/jacoco.xml"
     steps:
       - [bash, "{rules_dir}/scripts/java-coverage.sh", "{src_dir}", "{build_dir}"]
-  mutation: { tool: pit, min_score: 0.60 }
+  mutation:
+    tool: pit
+    min_score: 0.60
+    steps:
+      - [bash, "{rules_dir}/scripts/java-mutation.sh", "{src_dir}", "{mutation_min_score}"]
 
 exec_from_source: []

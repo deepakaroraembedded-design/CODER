@@ -1,0 +1,14 @@
+# Hidden cross-component acceptance tests for the T2 Java pipeline.
+compile:
+  - name: compile
+    argv:
+      - javac
+      - -d
+      - "{build}/classes"
+      - "{worktree}/src/main/java/cf_golden/Record.java"
+      - "{worktree}/src/main/java/cf_golden/RecordParser.java"
+      - "{worktree}/src/main/java/cf_golden/Aggregator.java"
+      - "{hidden}/PipelineTest.java"
+tests:
+  - name: contract
+    argv: [java, -cp, "{build}/classes", PipelineTest]

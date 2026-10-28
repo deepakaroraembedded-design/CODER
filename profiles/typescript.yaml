@@ -61,6 +61,10 @@ common:
     report: "{build_dir}/coverage/lcov.info"
     steps:
       - [npx, c8, --reporter=lcov, "--report-dir={build_dir}/coverage", npm, test]
-  mutation: { tool: stryker, min_score: 0.60 }
+  mutation:
+    tool: stryker
+    min_score: 0.60
+    steps:
+      - [bash, "{rules_dir}/scripts/ts-mutation.sh", "{src_dir}", "{build_dir}", "{mutation_min_score}"]
 
 exec_from_source: []

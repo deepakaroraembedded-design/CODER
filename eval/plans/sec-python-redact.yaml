@@ -1,0 +1,32 @@
+# Golden security plan: redact secrets from log lines (Python).
+plan_id: GOLD-SEC-PY-REDACT
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Redact credentials from log text
+    requirements: [REQ-SEC-REDACT-1]
+    writes: [pyproject.toml, src/redact.py]
+    uses: []
+    writes_interfaces: [src/redact.py]
+    acceptance:
+      - "Python 3.12 package with src/redact.py"
+      - "redact(text: str) -> str replaces the values of password, passwd, secret, token, api_key and apikey assignments with [REDACTED]"
+      - "Preserve the key names and surrounding text; do not redact unrelated words"
+      - "Standard library only; tests pass with pytest"
+target:
+  language: python
+  standard: "3.12"
+  build_system: pyproject
+  test_framework: pytest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["third-party dependencies", "logging the original value"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 15
+  max_wall_clock_hours: 4

@@ -18,6 +18,10 @@ struct TidyOptions {
   // Regular expression matched against the fully-qualified namespace name.
   // Empty means no namespace is exempt.
   std::string allowed_namespaces;
+  // Individual checks to disable, e.g. for a legacy component.
+  std::vector<std::string> disabled_checks;
+  // When non-empty, only these checks run.
+  std::vector<std::string> only_checks;
 };
 
 struct TidyDiagnostic {

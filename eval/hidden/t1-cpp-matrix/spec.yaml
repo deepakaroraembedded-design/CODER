@@ -1,0 +1,7 @@
+# Hidden acceptance tests for the T1 C++ matrix.
+compile:
+  - name: compile
+    argv: [g++, -std=c++20, -Wall, -Wextra, -Werror, -I, "{worktree}/include", "{hidden}/matrix_test.cpp", -o, "{build}/matrix_test"]
+tests:
+  - name: contract
+    argv: ["{build}/matrix_test"]

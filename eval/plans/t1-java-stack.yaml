@@ -1,0 +1,35 @@
+# Golden plan: bounded stack (T1, Java).
+plan_id: GOLD-T1-JAVA-STACK
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Bounded stack with typed operations
+    requirements: [REQ-JAVA-1]
+    writes: [pom.xml, src/main/java/cf_golden/BoundedStack.java]
+    uses: []
+    writes_interfaces: [src/main/java/cf_golden/BoundedStack.java]
+    acceptance:
+      - "Maven project cf-golden with Java 17 and package cf_golden"
+      - "public final class BoundedStack<E> with public BoundedStack(int capacity)"
+      - "push(E value) adds an element and throws IllegalStateException when full; capacity below 1 is rejected with IllegalArgumentException"
+      - "pop() removes and returns the newest element, or throws java.util.NoSuchElementException when empty"
+      - "peek() returns the newest element without removing it, or throws NoSuchElementException when empty"
+      - "size() and isEmpty() report the current state; iteration order is LIFO"
+      - "mvn -q test succeeds and the project compiles with Java 17"
+target:
+  language: java
+  standard: "17"
+  build_system: maven
+  test_framework: junit5
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["raw types", "external dependencies beyond JUnit"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 20
+  max_wall_clock_hours: 6

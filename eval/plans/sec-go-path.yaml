@@ -1,0 +1,32 @@
+# Golden security plan: confine untrusted paths (Go).
+plan_id: GOLD-SEC-GO-PATH
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Confine untrusted relative paths
+    requirements: [REQ-SEC-PATH-1]
+    writes: [go.mod, pathguard/guard.go]
+    uses: []
+    writes_interfaces: [pathguard/guard.go]
+    acceptance:
+      - "Go module cf_golden (go 1.22) with package pathguard at pathguard/"
+      - "func Join(root, untrusted string) (string, error)"
+      - "Reject absolute paths, empty paths, and any path escaping root via . or ..; return a cleaned path inside root"
+      - "Standard library only; go build ./... and go vet ./... pass"
+target:
+  language: go
+  standard: "1.22"
+  build_system: go
+  test_framework: gotest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["third-party dependencies", "path traversal"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 15
+  max_wall_clock_hours: 4

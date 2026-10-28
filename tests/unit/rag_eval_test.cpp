@@ -270,7 +270,7 @@ TEST(RagEvalCliTest, EvaluatesTheStarterSet) {
   const auto result = executor.run(run);
   ASSERT_EQ(result.exit_code, 0) << result.stderr_text;
   EXPECT_NE(result.stdout_text.find("targets met"), std::string::npos);
-  EXPECT_NE(result.stdout_text.find("queries: 15"), std::string::npos);
+  EXPECT_NE(result.stdout_text.find("queries: 205"), std::string::npos);
 
   // The adversarial conflict set scores conflict expectations only.
   const std::string conflicts =

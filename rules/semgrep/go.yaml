@@ -12,6 +12,23 @@ rules:
     message: Do not disable TLS certificate verification.
     pattern: "tls.Config{..., InsecureSkipVerify: true, ...}"
 
+  - id: swt.go.no-sleep-in-test
+    languages: [go]
+    severity: ERROR
+    message: Do not sleep in tests; synchronize explicitly or inject a clock.
+    paths:
+      include:
+        - "**/*_test.go"
+    pattern: time.Sleep(...)
+
+  - id: swt.go.no-weak-hash
+    languages: [go]
+    severity: ERROR
+    message: Do not use MD5 or SHA-1 for security-sensitive hashing.
+    pattern-either:
+      - pattern: md5.New(...)
+      - pattern: sha1.New(...)
+
   - id: swt.go.no-hardcoded-secret
     languages: [go]
     severity: ERROR

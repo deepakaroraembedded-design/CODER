@@ -1,0 +1,32 @@
+# Golden plan: slugify utility (T1, TypeScript).
+plan_id: GOLD-T1-TS-SLUG
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Slugify text deterministically
+    requirements: [REQ-TS-1]
+    writes: [package.json, tsconfig.json, src/slugify.ts]
+    uses: []
+    writes_interfaces: [src/slugify.ts]
+    acceptance:
+      - "npm project with TypeScript and a build script that emits CommonJS to dist/"
+      - "export function slugify(text: string): string"
+      - "Lowercase the input, trim surrounding whitespace, replace runs of non-alphanumeric characters with one hyphen, remove leading/trailing hyphens, and return an empty string for empty input"
+      - "npm run build succeeds with strict TypeScript"
+target:
+  language: typescript
+  standard: "20"
+  build_system: npm
+  test_framework: vitest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["runtime dependencies", "network access at runtime"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 15
+  max_wall_clock_hours: 4

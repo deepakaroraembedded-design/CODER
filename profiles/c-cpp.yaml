@@ -63,6 +63,10 @@ common:
     report: "{build_dir}/coverage/coverage.json"
     steps:
       - [bash, "{rules_dir}/scripts/cpp-coverage.sh", "{src_dir}", "{build_dir}", "{standard_var}", "{standard_number}"]
-  mutation: { tool: mull, min_score: 0.60 }
+  mutation:
+    tool: mull
+    min_score: 0.60
+    steps:
+      - [bash, "{rules_dir}/scripts/cpp-mutation.sh", "{src_dir}", "{build_dir}", "{mutation_min_score}"]
 
 exec_from_source: []

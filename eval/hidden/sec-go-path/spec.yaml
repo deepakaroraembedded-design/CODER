@@ -1,0 +1,7 @@
+# Hidden acceptance tests for the Go path-confinement plan.
+compile:
+  - name: build
+    argv: [go, build, ./...]
+tests:
+  - name: contract
+    argv: [go, run, "{hidden}/path_check.go"]

@@ -114,6 +114,7 @@ std::string format_commit_message(const std::string& subject,
   }
   add("CF-Agents", trailers.agents);
   add("CF-Gates", trailers.gates);
+  add("CF-Phase", trailers.phase);
   add("CF-Waivers", trailers.waivers);
   add("CF-Op", trailers.op_id);
   add("CF-Squashed-From", trailers.squashed_from);
@@ -618,6 +619,38 @@ Status Repository::abort_rebase(const std::filesystem::path& worktree) const {
   auto aborted = run({"rebase", "--abort"}, worktree);
   if (!aborted) {
     return tl::make_unexpected(aborted.error());
+  }
+  return {};
+}
+
+Result<std::vector<std::string>> Repository::conflicted_files(
+    const std::filesystem::path& worktree) const {
+  auto output = run({"diff", "--name-only", "--diff-filter=U"}, worktree);
+  if (!output) {
+    return tl::make_unexpected(output.error());
+  }
+  std::vector<std::string> files;
+  std::istringstream lines(*output);
+  for (std::string line; std::getline(lines, line);) {
+    if (!line.empty()) {
+      files.push_back(line);
+    }
+  }
+  return files;
+}
+
+Status Repository::stage_all(const std::filesystem::path& worktree) const {
+  auto staged = run({"add", "-A"}, worktree);
+  if (!staged) {
+    return tl::make_unexpected(staged.error());
+  }
+  return {};
+}
+
+Status Repository::continue_rebase(const std::filesystem::path& worktree) const {
+  auto continued = run({"-c", "core.editor=true", "rebase", "--continue"}, worktree);
+  if (!continued) {
+    return tl::make_unexpected(continued.error());
   }
   return {};
 }

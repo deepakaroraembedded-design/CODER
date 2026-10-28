@@ -1,0 +1,44 @@
+# Golden plan: two-component C++ record pipeline (T2).
+plan_id: GOLD-T2-CPP-SYSTEM
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Parse key=value records
+    requirements: [REQ-CPP-SYS-1]
+    writes: [CMakeLists.txt, include/golden/parser.hpp]
+    uses: []
+    writes_interfaces: [include/golden/parser.hpp]
+    acceptance:
+      - "Header-only component at include/golden/parser.hpp in namespace golden"
+      - "std::optional<std::pair<std::string, int>> parse_record(std::string_view line)"
+      - "Trim surrounding whitespace; accept exactly key=value with a non-empty key and integer value; malformed input returns std::nullopt"
+      - "Compiles standalone with g++ -std=c++20 -Wall -Wextra -Werror"
+  - id: M2
+    title: Aggregate records by key
+    requirements: [REQ-CPP-SYS-2]
+    depends_on: [M1]
+    writes: [include/golden/accumulator.hpp]
+    uses: [include/golden/parser.hpp]
+    writes_interfaces: [include/golden/accumulator.hpp]
+    acceptance:
+      - "Header-only component at include/golden/accumulator.hpp in namespace golden"
+      - "std::map<std::string, int> accumulate(const std::vector<std::string>& lines) uses parse_record"
+      - "Malformed lines are ignored; values for the same key are summed"
+      - "Compiles with the parser header and g++ -std=c++20 -Wall -Wextra -Werror"
+target:
+  language: cpp
+  standard: c++20
+  build_system: cmake
+  test_framework: gtest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["raw new/delete", "exceptions across module boundaries"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 25
+  max_wall_clock_hours: 7

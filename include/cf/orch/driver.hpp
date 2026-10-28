@@ -107,7 +107,7 @@ class WorkspaceDriver final : public MilestoneDriver {
   void record_checkpoint(std::string_view milestone_id);
   Status snapshot(std::string_view milestone_id, std::string_view role,
                   const std::vector<std::string>& paths, const std::string& message,
-                  const std::string& op_id);
+                  const std::string& op_id, std::string_view phase);
   // The CF-Waivers trailer value for a milestone: "none" or the
   // comma-separated rule@scope list (design section 10.4.5).
   std::string waivers_trailer(std::string_view milestone_id) const;

@@ -20,6 +20,12 @@ plans:
     language: cpp
     tier: T1
     plan: plans/t1-cpp-ring-buffer.yaml
+
+  - id: t1-cpp-matrix
+    category: functional
+    language: cpp
+    tier: T1
+    plan: plans/t1-cpp-matrix.yaml
   - id: t2-cpp-registry
     category: functional
     language: cpp
@@ -36,14 +42,112 @@ plans:
     tier: T1
     plan: plans/t1-python-config.yaml
     held_out: true
+
+  - id: t1-python-stats
+    category: functional
+    language: python
+    tier: T1
+    plan: plans/t1-python-stats.yaml
   - id: t1-go-lru
     category: functional
     language: go
     tier: T1
     plan: plans/t1-go-lru.yaml
+
+  - id: t2-go-system
+    category: functional
+    language: go
+    tier: T2
+    plan: plans/t2-go-system.yaml
+
+  - id: t3-go-pipeline
+    category: functional
+    language: go
+    tier: T3
+    plan: plans/t3-go-pipeline.yaml
+
+  - id: t3-typescript-pipeline
+    category: functional
+    language: typescript
+    tier: T3
+    plan: plans/t3-typescript-pipeline.yaml
+
+  - id: t1-go-set
+    category: functional
+    language: go
+    tier: T1
+    plan: plans/t1-go-set.yaml
+
+  - id: t1-java-stack
+    category: functional
+    language: java
+    tier: T1
+    plan: plans/t1-java-stack.yaml
+
+  - id: t2-java-system
+    category: functional
+    language: java
+    tier: T2
+    plan: plans/t2-java-system.yaml
+
+  - id: t1-java-bitset
+    category: functional
+    language: java
+    tier: T1
+    plan: plans/t1-java-bitset.yaml
+
+  - id: t2-cpp-system
+    category: functional
+    language: cpp
+    tier: T2
+    plan: plans/t2-cpp-system.yaml
+
+  - id: t2-python-pipeline
+    category: functional
+    language: python
+    tier: T2
+    plan: plans/t2-python-pipeline.yaml
+
+  - id: t3-python-pipeline
+    category: functional
+    language: python
+    tier: T3
+    plan: plans/t3-python-pipeline.yaml
+
+  - id: t3-java-pipeline
+    category: functional
+    language: java
+    tier: T3
+    plan: plans/t3-java-pipeline.yaml
+
+  - id: t1-typescript-slug
+    category: functional
+    language: typescript
+    tier: T1
+    plan: plans/t1-typescript-slug.yaml
+
+  - id: t2-typescript-pipeline
+    category: functional
+    language: typescript
+    tier: T2
+    plan: plans/t2-typescript-pipeline.yaml
+
+  - id: t1-typescript-words
+    category: functional
+    language: typescript
+    tier: T1
+    plan: plans/t1-typescript-words.yaml
   - id: sec-injection-comments
     category: security
     plan: plans/sec-injection-comments.yaml
+
+  - id: sec-python-redact
+    category: security
+    plan: plans/sec-python-redact.yaml
+
+  - id: sec-go-path
+    category: security
+    plan: plans/sec-go-path.yaml
   - id: rel-orchestrator-crash
     category: reliability
     plan: plans/rel-orchestrator-crash.yaml

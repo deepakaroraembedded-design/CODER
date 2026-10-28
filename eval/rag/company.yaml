@@ -48,3 +48,483 @@ queries:
   - query: revalidation of dependent milestones after an interface change
     component: message-bus
     relevant_docs: [ARCH]
+  - query: stable machine-readable error codes and wrapping lower-level failures
+    relevant: [CG@3.2#error-handling]
+  - query: documenting a public function's failure modes in the header
+    relevant: [CG@3.2#error-handling]
+  - query: who owns sockets and temporary files and when are they released
+    relevant: [CG@3.2#resource-management]
+  - query: joining background threads in the owner destructor or via a scope guard
+    relevant: [CG@3.2#resource-management]
+  - query: virtual function contracts including thread safety and returned-reference ownership
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: avoiding boolean parameters that silently change behaviour
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: structured key-value log records with a run identifier
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: reading secrets from the environment or secret manager at runtime
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: tests must not sleep or use the network or wall-clock ordering
+    relevant: [CG@3.2#testing-expectations]
+  - query: bug fixes start with a regression test reproducing the defect
+    relevant: [CG@3.2#testing-expectations]
+  - query: quarantine slow consumers and retry them with backoff
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: monitor queue depth callback duration and drop counters
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: components only use public interface headers and not internal state
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: registry copy-on-write updates and monitor atomic reads
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: single producer and single consumer per ring-buffer slot
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: error values carry a stable code and a human-readable message
+    relevant: [CG@3.2#error-handling]
+  - query: wrap a lower-level error with context instead of propagating it bare
+    relevant: [CG@3.2#error-handling]
+  - query: acquire resources in constructors and release them in destructors
+    relevant: [CG@3.2#resource-management]
+  - query: single obvious owner for a file descriptor socket lock or temporary file
+    relevant: [CG@3.2#resource-management]
+  - query: background threads join in the owner destructor or a scope guard
+    relevant: [CG@3.2#resource-management]
+  - query: constants use a k-prefix and functions use snake_case
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: one responsibility per type and small explicit interfaces
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: virtual functions document thread safety and returned reference ownership
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: never log credentials tokens or personal data at debug level
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: log lines include the run identifier and the component name
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: inject a clock instead of relying on wall-clock ordering
+    relevant: [CG@3.2#testing-expectations]
+  - query: every behaviour change ships with a failing-then-passing test
+    relevant: [CG@3.2#testing-expectations]
+  - query: transport owns the ring buffer and envelope sequencing
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: registry resolves wildcard subscriptions
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: dispatcher invokes subscriber callbacks in registration order
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: buffer exhaustion applies backpressure and raises a monitor event
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: subscriber callback panics are contained at the dispatcher boundary
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: interface changes require an architecture decision record and revalidation
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: publish call validates the envelope and publishes a sequence number
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: monitor runs on its own thread and reads atomics only
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: typed result value and stable machine-readable failure code
+    relevant: [CG@3.2#error-handling]
+  - query: callers branch on error codes rather than message text
+    relevant: [CG@3.2#error-handling]
+  - query: lower-level failures wrapped with context for the final report
+    relevant: [CG@3.2#error-handling]
+  - query: constructors acquire resources and destructors release them
+    relevant: [CG@3.2#resource-management]
+  - query: no manual new and delete in application code
+    relevant: [CG@3.2#resource-management]
+  - query: owning raw pointers replaced by standard containers
+    relevant: [CG@3.2#resource-management]
+  - query: background thread joined by its owner or a scope guard
+    relevant: [CG@3.2#resource-management]
+  - query: type names are CamelCase and function names snake_case
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: interface has one responsibility and no hidden boolean mode
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: composition preferred over inheritance
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: virtual function documents thread safety and reference ownership
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: credentials and tokens never written to debug logs
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: structured log line carries run id and component name
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: secrets never committed or embedded in test fixtures
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: secrets read from environment or secret manager at runtime
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: behaviour change includes a new test
+    relevant: [CG@3.2#testing-expectations]
+  - query: regression test reproduces the reported defect first
+    relevant: [CG@3.2#testing-expectations]
+  - query: deterministic tests avoid sleeps and network access
+    relevant: [CG@3.2#testing-expectations]
+  - query: inject a clock instead of wall-clock ordering
+    relevant: [CG@3.2#testing-expectations]
+  - query: transport component owns the ring buffer
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: registry maps topics to subscribers
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: dispatcher walks subscriber lists
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: monitor exports queue depth and drop counters
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: components do not access another component internal state
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: publish validates envelope and appends to ring buffer
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: subscriber callbacks invoked in registration order
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: slow consumer quarantined and retried with backoff
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: one producer thread per publisher and consumer pool per executor
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: ring buffer single-producer single-consumer per slot
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: registry read-mostly with copy-on-write updates
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: monitor reads atomics on its own thread
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: callback panic contained at dispatcher boundary
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: buffer exhaustion applies backpressure
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: interface change requires an architecture decision record
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: interface change revalidates dependent milestones
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: p99 delivery latency budget
+    product: product-y
+    relevant: [REQ@4.1#latency-budget]
+  - query: target message throughput per second
+    product: product-y
+    relevant: [REQ@4.1#throughput-targets]
+  - query: memory envelope and hot-path allocations
+    product: product-y
+    relevant: [REQ@4.1#resource-envelope]
+  - query: soak test duration and availability target
+    product: product-y
+    relevant: [REQ@4.1#availability]
+  - query: component ownership of ring buffer and registry
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: fan-out isolation for slow consumers
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: shared structure synchronisation discipline in header comments
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: subscriber unregistered after callback panic
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: no silently dropped events on buffer exhaustion
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: failure modes documented in public headers
+    relevant: [CG@3.2#error-handling]
+  - query: file descriptor socket lock owner released deterministically
+    relevant: [CG@3.2#resource-management]
+  - query: logging personal data at debug level is forbidden
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: tests use an injected clock for time-dependent behaviour
+    relevant: [CG@3.2#testing-expectations]
+  - query: service level objective for message delivery latency
+    product: product-y
+    relevant: [REQ@4.1#latency-budget]
+  - query: architecture revalidation after a public interface change
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: how are lower-level failures wrapped with context
+    relevant: [CG@3.2#error-handling]
+  - query: why do callers branch on error codes instead of messages
+    relevant: [CG@3.2#error-handling]
+  - query: what must a public function document about failure modes
+    relevant: [CG@3.2#error-handling]
+  - query: ownership rule for a file descriptor
+    relevant: [CG@3.2#resource-management]
+  - query: how should a lock be released
+    relevant: [CG@3.2#resource-management]
+  - query: temporary file lifetime and owner
+    relevant: [CG@3.2#resource-management]
+  - query: joining a background thread via a scope guard
+    relevant: [CG@3.2#resource-management]
+  - query: avoiding manual delete in application code
+    relevant: [CG@3.2#resource-management]
+  - query: naming rules for constants
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: naming rules for CamelCase types
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: small interfaces with one responsibility
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: why avoid boolean parameters
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: documenting virtual function thread safety
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: composition versus inheritance
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: logging tokens at debug level
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: logging personal data
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: run identifier in structured logs
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: secrets in test fixtures
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: secret manager at runtime
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: behaviour change test requirement
+    relevant: [CG@3.2#testing-expectations]
+  - query: deterministic test clock injection
+    relevant: [CG@3.2#testing-expectations]
+  - query: tests with no network access
+    relevant: [CG@3.2#testing-expectations]
+  - query: regression test before fixing a defect
+    relevant: [CG@3.2#testing-expectations]
+  - query: why tests must not sleep
+    relevant: [CG@3.2#testing-expectations]
+  - query: transport ring buffer ownership
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: envelope sequencing in the transport
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: topic-to-subscriber registry
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: wildcard subscription resolution
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: dispatcher callback invocation
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: monitor queue depth
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: monitor callback duration
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: monitor drop counters
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: public interface headers between components
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: internal state isolation between components
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: publish validates the envelope
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: append envelope to the ring buffer
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: publish the sequence number
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: dispatcher polls the buffer
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: resolve topic through the registry
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: callback registration order
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: slow consumer quarantine list
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: subscriber retry backoff
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: producer thread per publisher
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: consumer thread pool per executor
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: single producer single consumer per slot
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: read-mostly registry
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: copy-on-write registry updates
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: monitor atomic reads
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: synchronisation discipline in header comments
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: callback panic containment
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: subscriber unregistered after panic
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: remaining subscribers continue after panic
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: buffer exhaustion backpressure
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: monitor event on buffer exhaustion
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: no silent event drops
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: architecture decision record for interface changes
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: revalidation of dependent milestones
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: dependent milestone revalidation after interface change
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: p99 latency requirement
+    product: product-y
+    relevant: [REQ@4.1#latency-budget]
+  - query: publish-to-subscribe latency budget
+    product: product-y
+    relevant: [REQ@4.1#latency-budget]
+  - query: tail latency target
+    product: product-y
+    relevant: [REQ@4.1#latency-budget]
+  - query: sustained messages per second target
+    product: product-y
+    relevant: [REQ@4.1#throughput-targets]
+  - query: peak throughput requirement
+    product: product-y
+    relevant: [REQ@4.1#throughput-targets]
+  - query: throughput under fan-out
+    product: product-y
+    relevant: [REQ@4.1#throughput-targets]
+  - query: resident memory limit
+    relevant: [REQ@4.1#resource-envelope]
+  - query: hot-path allocation budget
+    relevant: [REQ@4.1#resource-envelope]
+  - query: memory envelope for the bus
+    relevant: [REQ@4.1#resource-envelope]
+  - query: 72 hour soak test
+    product: product-y
+    relevant: [REQ@4.1#availability]
+  - query: availability target
+    product: product-y
+    relevant: [REQ@4.1#availability]
+  - query: failure recovery availability requirement
+    product: product-y
+    relevant: [REQ@4.1#availability]
+  - query: error code registry
+    relevant: [CG@3.2#error-handling]
+  - query: contextual error wrapping
+    relevant: [CG@3.2#error-handling]
+  - query: exception boundary rule
+    relevant: [CG@3.2#error-handling]
+  - query: no raw owning pointers
+    relevant: [CG@3.2#resource-management]
+  - query: standard containers for storage
+    relevant: [CG@3.2#resource-management]
+  - query: resource released by destructor
+    relevant: [CG@3.2#resource-management]
+  - query: interface documentation for ownership
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: callbacks must not leak internal state
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: logging level for credentials
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: personal data logging policy
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: structured logging fields
+    relevant: [CG@3.2#logging-and-secrets]
+  - query: test isolation from wall clock
+    relevant: [CG@3.2#testing-expectations]
+  - query: regression coverage for defects
+    relevant: [CG@3.2#testing-expectations]
+  - query: component boundaries in architecture
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: callback executor ownership
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: queue depth metric
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: drop counter metric
+    component: message-bus
+    relevant: [ARCH@2.0#components]
+  - query: quarantine and backoff flow
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: registration-order dispatch
+    component: message-bus
+    relevant: [ARCH@2.0#data-flow]
+  - query: copy-on-write registry concurrency
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: atomic monitor reads
+    component: message-bus
+    relevant: [ARCH@2.0#threading-model]
+  - query: panic isolation boundary
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: backpressure on full buffer
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: ADR for interface changes
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: dependent milestone tests after interface change
+    component: message-bus
+    relevant: [ARCH@2.0#failure-handling]
+  - query: publish subscribe latency SLO
+    product: product-y
+    relevant: [REQ@4.1#latency-budget]
+  - query: fan-out throughput target
+    product: product-y
+    relevant: [REQ@4.1#throughput-targets]
+  - query: allocation-free hot path memory target
+    product: product-y
+    relevant: [REQ@4.1#resource-envelope]
+  - query: availability during soak
+    product: product-y
+    relevant: [REQ@4.1#availability]
+  - query: how long is the soak test
+    product: product-y
+    relevant: [REQ@4.1#availability]
+  - query: stable error codes for callers
+    relevant: [CG@3.2#error-handling]
+  - query: error messages are not parsed by callers
+    relevant: [CG@3.2#error-handling]
+  - query: ownership of sockets and locks
+    relevant: [CG@3.2#resource-management]
+  - query: names of functions and variables
+    relevant: [CG@3.2#naming-and-interfaces]
+  - query: per-type responsibility
+    relevant: [CG@3.2#naming-and-interfaces]

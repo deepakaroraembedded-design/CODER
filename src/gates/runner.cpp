@@ -301,6 +301,68 @@ void check_coverage(const GateDefinition& gate, const GateRunOptions& options,
   }
 }
 
+Result<MutationTotals> parse_mutation(std::string_view format,
+                                      std::string_view content) {
+  if (format == "mutmut-json") {
+    const Json document = Json::parse(content.data(), content.data() + content.size(),
+                                     nullptr, false);
+    if (document.is_discarded() || !document.is_object()) {
+      return fail(error_codes::kMutationReport, "mutation JSON is invalid");
+    }
+    const double total = document.value("total", 0.0);
+    const double killed = document.value("killed", 0.0);
+    MutationTotals totals;
+    totals.score = total == 0.0 ? 1.0 : killed / total;
+    return totals;
+  }
+  return fail(error_codes::kMutationReport,
+              "unknown mutation report format '" + std::string(format) + "'");
+}
+
+void check_mutation(const GateDefinition& gate, const GateRunOptions& options,
+                    GateResult& result) {
+  if (gate.mutation.format.empty() || gate.mutation.report.empty()) {
+    return;
+  }
+  GateStep report_step;
+  report_step.argv = {gate.mutation.report};
+  auto expanded = expand_step(report_step, options.step_context);
+  if (!expanded || expanded->empty()) {
+    result.passed = false;
+    result.findings.push_back(
+        GateFinding{gate.name, "error", "cannot expand the mutation report path"});
+    return;
+  }
+  std::filesystem::path path = expanded->front();
+  if (path.is_relative()) {
+    path = std::filesystem::path(options.working_directory) / path;
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    result.passed = false;
+    result.findings.push_back(GateFinding{
+        gate.name, "error", "cannot read the mutation report " + path.string()});
+    return;
+  }
+  std::ostringstream buffer;
+  buffer << in.rdbuf();
+  auto totals = parse_mutation(gate.mutation.format, buffer.str());
+  if (!totals) {
+    result.passed = false;
+    result.findings.push_back(
+        GateFinding{gate.name, "error", totals.error().message});
+    return;
+  }
+  if (gate.mutation.min_score > 0.0 &&
+      totals->score + 1e-9 < gate.mutation.min_score) {
+    result.passed = false;
+    result.findings.push_back(
+        GateFinding{gate.name, "error",
+                    "mutation score " + std::to_string(totals->score) +
+                        " is below " + std::to_string(gate.mutation.min_score)});
+  }
+}
+
 GateResult run_gate(const GateDefinition& gate, ProcessExecutor& executor,
                     const GateRunOptions& options) {
   GateResult result;
@@ -354,6 +416,7 @@ GateResult run_gate(const GateDefinition& gate, ProcessExecutor& executor,
 
   if (result.passed) {
     check_coverage(gate, options, result);
+    check_mutation(gate, options, result);
   }
   result.duration_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::steady_clock::now() - start)
@@ -466,6 +529,11 @@ Result<CoverageTotals> parse_coverage_report(std::string_view format,
   return parse_coverage(format, content);
 }
 
+Result<MutationTotals> parse_mutation_report(std::string_view format,
+                                             std::string_view content) {
+  return parse_mutation(format, content);
+}
+
 GateRunner::GateRunner(ProcessExecutor& executor) : executor_(executor) {}
 
 GateReport GateRunner::run(const std::vector<GateDefinition>& plan,
@@ -550,28 +618,31 @@ Result<std::vector<GateDefinition>> build_gate_plan(const Profile& profile,
   }
 
   std::vector<GateDefinition> plan;
-  plan.push_back(GateDefinition{"build", GateStage::Prerequisites, build_it->second.steps, true, {}});
+  plan.push_back(GateDefinition{"build", GateStage::Prerequisites, build_it->second.steps, true, {}, {}});
   plan.push_back(
-      GateDefinition{"format", GateStage::Cheap, language_it->second.format.steps, true, {}});
+      GateDefinition{"format", GateStage::Cheap, language_it->second.format.steps, true, {}, {}});
   plan.push_back(GateDefinition{"guardrails", GateStage::Cheap,
-                                language_it->second.guardrails.steps, true, {}});
+                                language_it->second.guardrails.steps, true, {}, {}});
   const auto analysis = profile.common.find("analysis");
   if (analysis != profile.common.end()) {
-    plan.push_back(GateDefinition{"analysis", GateStage::Cheap, analysis->second.steps, true, {}});
+    plan.push_back(GateDefinition{"analysis", GateStage::Cheap, analysis->second.steps, true, {}, {}});
   }
   plan.push_back(
-      GateDefinition{"tests", GateStage::Cheap, framework_it->second.steps, true, {}});
+      GateDefinition{"tests", GateStage::Cheap, framework_it->second.steps, true, {}, {}});
   // Stage 3 runs only when every prerequisite and cheap gate passed. A
   // profile without steps has no coverage/mutation runner configured.
   if (!profile.coverage.steps.empty()) {
     plan.push_back(GateDefinition{
         "coverage", GateStage::Expensive, profile.coverage.steps, true,
         CoverageCheck{profile.coverage.format, profile.coverage.report,
-                      profile.coverage.line, profile.coverage.branch}});
+                      profile.coverage.line, profile.coverage.branch},
+        {}});
   }
   if (!profile.mutation.steps.empty()) {
-    plan.push_back(GateDefinition{"mutation", GateStage::Expensive,
-                                  profile.mutation.steps, true, {}});
+    plan.push_back(GateDefinition{
+        "mutation", GateStage::Expensive, profile.mutation.steps, true, {},
+        MutationCheck{profile.mutation.format, profile.mutation.report,
+                      profile.mutation.min_score}});
   }
   return plan;
 }

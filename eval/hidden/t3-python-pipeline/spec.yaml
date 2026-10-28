@@ -1,0 +1,7 @@
+# Hidden cross-component tests for the T3 Python order pipeline.
+compile:
+  - name: compile
+    argv: [python3, -m, py_compile, "{worktree}/src/models.py", "{worktree}/src/ledger.py", "{worktree}/src/processor.py"]
+tests:
+  - name: contract
+    argv: [python3, "{hidden}/order_check.py", "{worktree}/src"]

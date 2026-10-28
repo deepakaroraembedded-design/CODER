@@ -1,0 +1,9 @@
+# Hidden cross-component acceptance tests for the T2 Go queue/pool.
+compile:
+  - name: build
+    argv: [go, build, ./...]
+  - name: vet
+    argv: [go, vet, ./...]
+tests:
+  - name: contract
+    argv: [go, run, "{hidden}/pool_check.go"]

@@ -1,0 +1,15 @@
+# Hidden cross-component acceptance tests for the T3 Java order pipeline.
+compile:
+  - name: compile
+    argv:
+      - javac
+      - -d
+      - "{build}/classes"
+      - "{worktree}/src/main/java/cf_golden/Money.java"
+      - "{worktree}/src/main/java/cf_golden/LineItem.java"
+      - "{worktree}/src/main/java/cf_golden/Ledger.java"
+      - "{worktree}/src/main/java/cf_golden/OrderProcessor.java"
+      - "{hidden}/OrderTest.java"
+tests:
+  - name: contract
+    argv: [java, -cp, "{build}/classes", OrderTest]

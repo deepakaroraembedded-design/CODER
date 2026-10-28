@@ -1,0 +1,44 @@
+# Golden plan: two-component Go queue/worker pool (T2).
+plan_id: GOLD-T2-GO-SYSTEM
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Bounded FIFO queue
+    requirements: [REQ-GO-SYS-1]
+    writes: [go.mod, queue/queue.go]
+    uses: []
+    writes_interfaces: [queue/queue.go]
+    acceptance:
+      - "Go module cf_golden (go 1.22) with package queue at queue/"
+      - "type Queue[T any] with New[T any](capacity int) *Queue[T]"
+      - "Push(T) error returns an error when full; Pop() (T, bool); Len() int; Close()"
+      - "FIFO order is preserved; a closed queue rejects pushes and reports empty pops"
+  - id: M2
+    title: Worker pool backed by the queue
+    requirements: [REQ-GO-SYS-2]
+    depends_on: [M1]
+    writes: [pool/pool.go]
+    uses: [queue/queue.go]
+    writes_interfaces: [pool/pool.go]
+    acceptance:
+      - "Package pool at pool/ with New[T any](workers int, queue *queue.Queue[T]) *Pool[T]"
+      - "Start(func(T)) launches the workers; Close waits for all workers to finish"
+      - "Every queued item is processed exactly once; workers exit after Close"
+      - "go build ./... and go vet ./... pass"
+target:
+  language: go
+  standard: "1.22"
+  build_system: go
+  test_framework: gotest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["third-party dependencies", "data races"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 25
+  max_wall_clock_hours: 7

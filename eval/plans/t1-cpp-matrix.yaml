@@ -1,0 +1,32 @@
+# Golden plan: fixed-size matrix operations (T1, C++).
+plan_id: GOLD-T1-CPP-MATRIX
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Fixed-size 2x2 matrix
+    requirements: [REQ-MAT-1]
+    writes: [CMakeLists.txt, include/golden/matrix.hpp]
+    uses: []
+    writes_interfaces: [include/golden/matrix.hpp]
+    acceptance:
+      - "Header-only component at include/golden/matrix.hpp in namespace golden"
+      - "struct Matrix2 { double a, b, c, d; } with multiply(left, right), transpose(matrix), determinant(matrix)"
+      - "Operations are constexpr-friendly and header-only"
+      - "Compiles standalone with g++ -std=c++20 -Wall -Wextra -Werror"
+target:
+  language: cpp
+  standard: c++20
+  build_system: cmake
+  test_framework: gtest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["raw new/delete", "exceptions across module boundaries"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 15
+  max_wall_clock_hours: 4

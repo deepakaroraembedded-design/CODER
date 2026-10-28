@@ -22,9 +22,11 @@ namespace cf::refmirror {
 struct MirrorOptions {
   std::filesystem::path out_dir;
   std::chrono::milliseconds timeout{120000};
-  // Used to unpack reference archives with the system tar/unzip binaries.
-  // A local executor is created when this is null.
+  // Used to unpack reference archives and run generators. A local executor is
+  // created when this is null.
   process::ProcessExecutor* executor = nullptr;
+  std::string git_binary = "git";
+  std::string doxygen_binary = "doxygen";
 };
 
 struct SetReport {

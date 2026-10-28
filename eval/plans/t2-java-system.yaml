@@ -1,0 +1,51 @@
+# Golden plan: two-component Java record pipeline (T2).
+plan_id: GOLD-T2-JAVA-SYSTEM
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Parse key=value records
+    requirements: [REQ-SYS-1]
+    writes:
+      - pom.xml
+      - src/main/java/cf_golden/RecordParser.java
+      - src/main/java/cf_golden/Record.java
+    uses: []
+    writes_interfaces:
+      - src/main/java/cf_golden/RecordParser.java
+      - src/main/java/cf_golden/Record.java
+    acceptance:
+      - "Maven project cf-golden with Java 17 and package cf_golden"
+      - "public record Record(String key, int value)"
+      - "public final class RecordParser with public static Optional<Record> parse(String line)"
+      - "parse trims surrounding whitespace, accepts exactly key=value with a non-empty key, and rejects malformed lines with Optional.empty()"
+  - id: M2
+    title: Aggregate records by key
+    requirements: [REQ-SYS-2]
+    depends_on: [M1]
+    writes:
+      - src/main/java/cf_golden/Aggregator.java
+    uses:
+      - src/main/java/cf_golden/RecordParser.java
+    writes_interfaces:
+      - src/main/java/cf_golden/Aggregator.java
+    acceptance:
+      - "public final class Aggregator with public static Map<String,Integer> sum(List<String> lines)"
+      - "Invalid lines are ignored; values for the same key are summed; the returned map is immutable"
+      - "mvn -q test succeeds and both components compile with Java 17"
+target:
+  language: java
+  standard: "17"
+  build_system: maven
+  test_framework: junit5
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["unchecked casts", "external dependencies beyond JUnit"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 30
+  max_wall_clock_hours: 8

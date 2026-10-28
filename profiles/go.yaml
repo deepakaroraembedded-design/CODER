@@ -46,6 +46,10 @@ common:
     report: "{build_dir}/coverage.out"
     steps:
       - [go, test, "-coverprofile={build_dir}/coverage.out", ./...]
-  mutation: { tool: gremlins, min_score: 0.60 }
+  mutation:
+    tool: gremlins
+    min_score: 0.60
+    steps:
+      - [bash, "{rules_dir}/scripts/go-mutation.sh", "{src_dir}", "{mutation_min_score}"]
 
 exec_from_source: []

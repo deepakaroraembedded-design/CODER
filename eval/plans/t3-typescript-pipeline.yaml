@@ -1,0 +1,52 @@
+# Golden plan: three-component TypeScript order pipeline (T3).
+plan_id: GOLD-T3-TS-PIPELINE
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Represent money and line items
+    requirements: [REQ-TS-PIPE-1]
+    writes: [package.json, tsconfig.json, src/models.ts]
+    uses: []
+    writes_interfaces: [src/models.ts]
+    acceptance:
+      - "Strict TypeScript project with a CommonJS build to dist/"
+      - "Money has cents: number and add/multiply operations"
+      - "LineItem has sku, quantity and unitPrice; invalid money or quantity throws TypeError"
+  - id: M2
+    title: Apply line items to a ledger
+    requirements: [REQ-TS-PIPE-2]
+    depends_on: [M1]
+    writes: [src/ledger.ts]
+    uses: [src/models.ts]
+    writes_interfaces: [src/ledger.ts]
+    acceptance:
+      - "Ledger stores line items and exposes total() and itemCount()"
+      - "Total uses integer-cent arithmetic"
+  - id: M3
+    title: Process orders
+    requirements: [REQ-TS-PIPE-3]
+    depends_on: [M2]
+    writes: [src/processor.ts]
+    uses: [src/ledger.ts]
+    writes_interfaces: [src/processor.ts]
+    acceptance:
+      - "process(items: LineItem[]): { ledger: Ledger; total: Money }"
+      - "Empty input returns a zero-total ledger; duplicate SKUs remain distinct line items"
+      - "npm run build succeeds with strict TypeScript"
+target:
+  language: typescript
+  standard: "20"
+  build_system: npm
+  test_framework: vitest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["runtime dependencies", "floating-point money"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 40
+  max_wall_clock_hours: 10

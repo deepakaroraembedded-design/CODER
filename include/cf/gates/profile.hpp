@@ -26,6 +26,7 @@ inline constexpr const char* kProfileNotFound = "PROFILE_NOT_FOUND";
 inline constexpr const char* kNoMatchingToolchain = "PROFILE_NO_MATCH";
 inline constexpr const char* kUnknownPlaceholder = "PROFILE_UNKNOWN_PLACEHOLDER";
 inline constexpr const char* kCoverageReport = "GATE_COVERAGE_REPORT";
+inline constexpr const char* kMutationReport = "GATE_MUTATION_REPORT";
 }  // namespace error_codes
 
 // One trusted command: an argument list, never a shell string.
@@ -76,6 +77,9 @@ struct CoverageSpec {
 struct MutationSpec {
   std::string tool;  // e.g. mull
   double min_score = 0.0;
+  // Report format/path for the built-in score checker.
+  std::string format;
+  std::string report;
   // Trusted steps for the stage-3 mutation gate; may use
   // {mutation_min_score}. Empty means no mutation runner is configured.
   std::vector<GateStep> steps;

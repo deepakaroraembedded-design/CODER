@@ -1,0 +1,7 @@
+# Hidden acceptance tests for the T1 Go ordered set.
+compile:
+  - name: build
+    argv: [go, build, ./...]
+tests:
+  - name: contract
+    argv: [go, run, "{hidden}/set_check.go"]

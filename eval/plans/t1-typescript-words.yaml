@@ -1,0 +1,32 @@
+# Golden plan: word frequency counter (T1, TypeScript).
+plan_id: GOLD-T1-TS-WORDS
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Count words deterministically
+    requirements: [REQ-TS-WORDS-1]
+    writes: [package.json, tsconfig.json, src/words.ts]
+    uses: []
+    writes_interfaces: [src/words.ts]
+    acceptance:
+      - "TypeScript project with strict mode and a CommonJS build to dist/"
+      - "export function countWords(text: string): Record<string, number>"
+      - "Words are lowercase alphanumeric runs; punctuation separates words; empty input returns an empty object"
+      - "npm run build succeeds with strict TypeScript"
+target:
+  language: typescript
+  standard: "20"
+  build_system: npm
+  test_framework: vitest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["runtime dependencies"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 15
+  max_wall_clock_hours: 4

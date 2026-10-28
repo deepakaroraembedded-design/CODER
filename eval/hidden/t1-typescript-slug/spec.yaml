@@ -1,0 +1,9 @@
+# Hidden acceptance tests for the T1 TypeScript slugify utility.
+compile:
+  - name: install
+    argv: [npm, install, --no-audit, --no-fund]
+  - name: build
+    argv: [npm, run, build]
+tests:
+  - name: contract
+    argv: [node, "{hidden}/slug_check.js", "{worktree}/dist/slugify.js"]

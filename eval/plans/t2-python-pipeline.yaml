@@ -1,0 +1,42 @@
+# Golden plan: two-component Python record pipeline (T2).
+plan_id: GOLD-T2-PYTHON-PIPELINE
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Parse key=value records
+    requirements: [REQ-PY-1]
+    writes: [pyproject.toml, src/records.py]
+    uses: []
+    writes_interfaces: [src/records.py]
+    acceptance:
+      - "Python 3.12 package layout with src/records.py"
+      - "parse(line: str) -> tuple[str, int] | None: trim whitespace; accept exactly key=value with a non-empty key and integer value; malformed input returns None"
+      - "The module has no third-party dependencies"
+  - id: M2
+    title: Aggregate records by key
+    requirements: [REQ-PY-2]
+    depends_on: [M1]
+    writes: [src/aggregate.py]
+    uses: [src/records.py]
+    writes_interfaces: [src/aggregate.py]
+    acceptance:
+      - "aggregate(lines: Iterable[str]) -> dict[str, int] uses records.parse"
+      - "Malformed lines are ignored and values for the same key are summed"
+      - "The result is a plain dict; tests pass with pytest"
+target:
+  language: python
+  standard: "3.12"
+  build_system: pyproject
+  test_framework: pytest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["third-party dependencies", "network access"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 20
+  max_wall_clock_hours: 6

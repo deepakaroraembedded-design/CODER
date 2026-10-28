@@ -377,6 +377,20 @@ TEST(ProfileTest, LoadsTheTypeScriptAndJavaProfiles) {
   ASSERT_TRUE(checked.has_value()) << checked.error().message;
 }
 
+TEST(ProfileTest, CppProfileRunsMullMutation) {
+  auto profile =
+      cf::gates::load_profile_file(CF_SOURCE_DIR "/profiles/c-cpp.yaml");
+  ASSERT_TRUE(profile.has_value()) << profile.error().message;
+  ASSERT_EQ(profile->mutation.steps.size(), 1u);
+  ASSERT_FALSE(profile->mutation.steps[0].argv.empty());
+  EXPECT_EQ(profile->mutation.steps[0].argv[0], "bash");
+  EXPECT_EQ(profile->mutation.steps[0].argv[2], "{src_dir}");
+  EXPECT_EQ(profile->mutation.steps[0].argv[3], "{build_dir}");
+  EXPECT_EQ(profile->mutation.steps[0].argv[4], "{mutation_min_score}");
+  EXPECT_TRUE(std::filesystem::exists(
+      std::filesystem::path(CF_SOURCE_DIR) / "rules/scripts/cpp-mutation.sh"));
+}
+
 TEST(ProfileTest, PythonProfileRunsMutationWithTheConfiguredScore) {
   auto profile =
       cf::gates::load_profile_file(CF_SOURCE_DIR "/profiles/python.yaml");
@@ -387,6 +401,44 @@ TEST(ProfileTest, PythonProfileRunsMutationWithTheConfiguredScore) {
   EXPECT_EQ(profile->mutation.steps[0].argv[2], "{src_dir}");
   EXPECT_EQ(profile->mutation.steps[0].argv[3], "{build_dir}");
   EXPECT_EQ(profile->mutation.steps[0].argv[4], "{mutation_min_score}");
+}
+
+TEST(ProfileTest, TypeScriptProfileRunsStrykerMutation) {
+  auto profile =
+      cf::gates::load_profile_file(CF_SOURCE_DIR "/profiles/typescript.yaml");
+  ASSERT_TRUE(profile.has_value()) << profile.error().message;
+  ASSERT_EQ(profile->mutation.steps.size(), 1u);
+  ASSERT_FALSE(profile->mutation.steps[0].argv.empty());
+  EXPECT_EQ(profile->mutation.steps[0].argv[0], "bash");
+  EXPECT_EQ(profile->mutation.steps[0].argv[2], "{src_dir}");
+  EXPECT_EQ(profile->mutation.steps[0].argv[3], "{build_dir}");
+  EXPECT_EQ(profile->mutation.steps[0].argv[4], "{mutation_min_score}");
+  EXPECT_TRUE(std::filesystem::exists(
+      std::filesystem::path(CF_SOURCE_DIR) / "rules/scripts/ts-mutation.sh"));
+}
+
+TEST(ProfileTest, JavaProfileRunsPitMutation) {
+  auto profile = cf::gates::load_profile_file(CF_SOURCE_DIR "/profiles/java.yaml");
+  ASSERT_TRUE(profile.has_value()) << profile.error().message;
+  ASSERT_EQ(profile->mutation.steps.size(), 1u);
+  ASSERT_FALSE(profile->mutation.steps[0].argv.empty());
+  EXPECT_EQ(profile->mutation.steps[0].argv[0], "bash");
+  EXPECT_EQ(profile->mutation.steps[0].argv[2], "{src_dir}");
+  EXPECT_EQ(profile->mutation.steps[0].argv[3], "{mutation_min_score}");
+  EXPECT_TRUE(std::filesystem::exists(
+      std::filesystem::path(CF_SOURCE_DIR) / "rules/scripts/java-mutation.sh"));
+}
+
+TEST(ProfileTest, GoProfileRunsMutationWithTheConfiguredScore) {
+  auto profile = cf::gates::load_profile_file(CF_SOURCE_DIR "/profiles/go.yaml");
+  ASSERT_TRUE(profile.has_value()) << profile.error().message;
+  ASSERT_EQ(profile->mutation.steps.size(), 1u);
+  ASSERT_FALSE(profile->mutation.steps[0].argv.empty());
+  EXPECT_EQ(profile->mutation.steps[0].argv[0], "bash");
+  EXPECT_EQ(profile->mutation.steps[0].argv[2], "{src_dir}");
+  EXPECT_EQ(profile->mutation.steps[0].argv[3], "{mutation_min_score}");
+  EXPECT_TRUE(std::filesystem::exists(
+      std::filesystem::path(CF_SOURCE_DIR) / "rules/scripts/go-mutation.sh"));
 }
 
 TEST(ProfileTest, JavaCoverageUsesJacocoXml) {

@@ -108,14 +108,98 @@ struct TempDirectory {
   }
 };
 
-bool run_extractor(process::ProcessExecutor& executor,
-                   const std::vector<std::string>& argv,
-                   std::chrono::milliseconds timeout) {
+bool run_command(process::ProcessExecutor& executor,
+                 const std::vector<std::string>& argv,
+                 const std::filesystem::path& working_directory,
+                 std::chrono::milliseconds timeout) {
   process::ProcessRequest request;
   request.argv = argv;
+  request.working_directory = working_directory.string();
   request.timeout = timeout;
   const process::ProcessResult result = executor.run(request);
   return result.launched && !result.timed_out && result.exit_code == 0;
+}
+
+bool run_extractor(process::ProcessExecutor& executor,
+                   const std::vector<std::string>& argv,
+                   const std::filesystem::path& working_directory,
+                   std::chrono::milliseconds timeout) {
+  return run_command(executor, argv, working_directory, timeout);
+}
+
+struct GeneratedDocument {
+  std::string path;
+  std::string text;
+};
+
+bool looks_like_html(std::string_view content);
+
+Result<std::vector<GeneratedDocument>> generate_doxygen(
+    const ReferenceSet& set, const MirrorOptions& options,
+    process::ProcessExecutor& executor) {
+  if (set.repo.empty()) {
+    return fail("REFMIRROR_GENERATION_FAILED", "doxygen set has no repo");
+  }
+  TempDirectory temporary{options.out_dir / (".gen-" + set.id + "-" + set.version)};
+  std::error_code error;
+  const auto clone = temporary.path / "repo";
+  std::filesystem::create_directories(temporary.path, error);
+  if (error) {
+    return fail("REFMIRROR_GENERATION_FAILED", error.message());
+  }
+  std::vector<std::string> clone_argv = {options.git_binary, "clone", "--depth", "1"};
+  if (!set.ref.empty()) {
+    clone_argv.push_back("--branch");
+    clone_argv.push_back(set.ref);
+  }
+  clone_argv.push_back(set.repo);
+  clone_argv.push_back(clone.string());
+  if (!run_command(executor, clone_argv, temporary.path, options.timeout)) {
+    return fail("REFMIRROR_GENERATION_FAILED", "cannot clone " + set.repo);
+  }
+  const auto html = temporary.path / "documentation";
+  const auto doxyfile = temporary.path / "Doxyfile";
+  {
+    std::ofstream out(doxyfile);
+    if (!out) {
+      return fail("REFMIRROR_GENERATION_FAILED", "cannot write Doxyfile");
+    }
+    out << "PROJECT_NAME = " << set.id << "\n"
+        << "OUTPUT_DIRECTORY = " << html.string() << "\n"
+        << "INPUT = " << clone.string() << "\n"
+        << "RECURSIVE = YES\n"
+        << "GENERATE_HTML = YES\n"
+        << "GENERATE_LATEX = NO\n"
+        << "GENERATE_XML = NO\n"
+        << "HTML_OUTPUT = html\n"
+        << "QUIET = YES\n"
+        << "WARN_IF_UNDOCUMENTED = NO\n";
+  }
+  if (!run_command(executor, {options.doxygen_binary, doxyfile.string()},
+                   temporary.path, options.timeout)) {
+    return fail("REFMIRROR_GENERATION_FAILED", "doxygen failed for " + set.id);
+  }
+  const auto html_root = html / "html";
+  const auto files = extract_document_files(html_root, {"*"});
+  if (files.empty()) {
+    return fail("REFMIRROR_GENERATION_FAILED",
+                "doxygen produced no HTML documents for " + set.id);
+  }
+  std::vector<GeneratedDocument> documents;
+  for (const auto& file : files) {
+    std::ifstream input(file, std::ios::binary);
+    std::string raw((std::istreambuf_iterator<char>(input)),
+                    std::istreambuf_iterator<char>());
+    const std::string cleaned =
+        looks_like_html(raw) ? rag::clean_html_to_markdown(raw) : raw;
+    std::error_code relative_error;
+    const auto relative =
+        std::filesystem::relative(file, html_root, relative_error);
+    documents.push_back(GeneratedDocument{
+        relative_error ? file.filename().string() : relative.generic_string(),
+        cleaned});
+  }
+  return documents;
 }
 
 bool looks_like_html(std::string_view content) {
@@ -218,8 +302,62 @@ Result<MirrorReport> run_mirror(const Manifest& manifest, const MirrorOptions& o
     entry.version = set.version;
 
     if (!set.generate.empty()) {
-      entry.status = "unsupported";
-      entry.detail = "generator not implemented yet: " + set.generate;
+      if (set.generate != "doxygen") {
+        entry.status = "unsupported";
+        entry.detail = "unknown generator: " + set.generate;
+        report.sets.push_back(std::move(entry));
+        continue;
+      }
+      process::LocalProcessExecutor local_executor;
+      process::ProcessExecutor& executor =
+          options.executor != nullptr ? *options.executor : local_executor;
+      auto generated = generate_doxygen(set, options, executor);
+      if (!generated) {
+        entry.status = "generation_failed";
+        entry.detail = generated.error().message;
+        report.sets.push_back(std::move(entry));
+        continue;
+      }
+      bool injected = false;
+      std::string injected_detail;
+      for (const auto& document : *generated) {
+        const auto findings = rag::scan_for_injected_instructions(document.text);
+        if (!findings.empty()) {
+          injected = true;
+          injected_detail = findings.front().pattern + " in " + document.path;
+          break;
+        }
+      }
+      if (injected) {
+        entry.status = "injection_found";
+        entry.detail = "held for human review: " + injected_detail;
+        report.sets.push_back(std::move(entry));
+        continue;
+      }
+      const std::string stem = set.id + "-" + set.version;
+      std::uint32_t number = 0;
+      bool output_failed = false;
+      for (const auto& document : *generated) {
+        ++number;
+        const auto path =
+            options.out_dir / (stem + "-" + std::to_string(number) + ".md");
+        std::ofstream out(path, std::ios::binary);
+        if (!out) {
+          entry.status = "output_failed";
+          entry.detail = "cannot write " + path.string();
+          output_failed = true;
+          break;
+        }
+        out << front_matter(set, document.path) << document.text << "\n";
+      }
+      if (output_failed) {
+        report.sets.push_back(std::move(entry));
+        continue;
+      }
+      entry.status = "ok";
+      entry.detail = "generated " + std::to_string(generated->size()) +
+                     " documents";
+      entry.documents = generated->size();
       report.sets.push_back(std::move(entry));
       continue;
     }
@@ -285,7 +423,7 @@ Result<MirrorReport> run_mirror(const Manifest& manifest, const MirrorOptions& o
         if (suffix == ".tar.xz" || suffix == ".txz") flag = "-xJf";
         argv = {"tar", flag, archive.string(), "-C", extracted.string()};
       }
-      if (!run_extractor(executor, argv, options.timeout)) {
+      if (!run_extractor(executor, argv, extracted, options.timeout)) {
         entry.status = "extract_failed";
         entry.detail = "archive extraction failed for " + set.source;
         report.sets.push_back(std::move(entry));

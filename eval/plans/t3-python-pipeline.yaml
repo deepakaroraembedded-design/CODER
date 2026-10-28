@@ -1,0 +1,52 @@
+# Golden plan: three-component Python order pipeline (T3).
+plan_id: GOLD-T3-PYTHON-PIPELINE
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Represent money and line items
+    requirements: [REQ-PY-PIPE-1]
+    writes: [pyproject.toml, src/models.py]
+    uses: []
+    writes_interfaces: [src/models.py]
+    acceptance:
+      - "Python 3.12 dataclasses Money(cents: int) and LineItem(sku: str, quantity: int, unit_price: Money)"
+      - "Money rejects negative values; LineItem rejects non-positive quantities with ValueError"
+      - "Money.add and Money.multiply are available"
+  - id: M2
+    title: Apply line items to a ledger
+    requirements: [REQ-PY-PIPE-2]
+    depends_on: [M1]
+    writes: [src/ledger.py]
+    uses: [src/models.py]
+    writes_interfaces: [src/ledger.py]
+    acceptance:
+      - "Ledger stores line items and exposes total() and item_count()"
+      - "total multiplies quantity by unit price using integer cents"
+  - id: M3
+    title: Process orders
+    requirements: [REQ-PY-PIPE-3]
+    depends_on: [M2]
+    writes: [src/processor.py]
+    uses: [src/ledger.py]
+    writes_interfaces: [src/processor.py]
+    acceptance:
+      - "process(items: Iterable[LineItem]) -> tuple[Ledger, Money]"
+      - "Empty input returns a zero-total ledger; duplicate SKUs remain distinct line items"
+      - "pytest passes with only the standard library"
+target:
+  language: python
+  standard: "3.12"
+  build_system: pyproject
+  test_framework: pytest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["third-party dependencies", "floating-point money"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 40
+  max_wall_clock_hours: 10

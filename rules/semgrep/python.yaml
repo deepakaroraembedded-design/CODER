@@ -8,6 +8,12 @@ rules:
     patterns:
       - pattern: subprocess.$FUNC(..., shell=True, ...)
 
+  - id: swt.python.no-verify-false
+    languages: [python]
+    severity: ERROR
+    message: Do not disable TLS certificate verification.
+    pattern: requests.$FUNC(..., verify=False, ...)
+
   - id: swt.python.no-unsafe-yaml-load
     languages: [python]
     severity: ERROR
@@ -15,6 +21,49 @@ rules:
     patterns:
       - pattern: yaml.load(...)
       - pattern-not: yaml.load(..., Loader=yaml.SafeLoader, ...)
+
+  - id: swt.python.no-os-system
+    languages: [python]
+    severity: ERROR
+    message: Do not invoke a shell through os.system; use subprocess with an argument list.
+    pattern: os.system(...)
+
+  - id: swt.python.no-weak-hash
+    languages: [python]
+    severity: ERROR
+    message: Do not use MD5 or SHA-1 for security-sensitive hashing.
+    pattern-either:
+      - pattern: hashlib.md5(...)
+      - pattern: hashlib.sha1(...)
+
+  - id: swt.python.no-pickle-load
+    languages: [python]
+    severity: ERROR
+    message: Do not deserialize untrusted pickle data; use a safe data format.
+    pattern-either:
+      - pattern: pickle.load(...)
+      - pattern: pickle.loads(...)
+
+  - id: swt.python.no-eval
+    languages: [python]
+    severity: ERROR
+    message: Do not execute dynamic Python code with eval or exec.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+
+  - id: swt.python.no-sleep-in-test
+    languages: [python]
+    severity: ERROR
+    message: Do not sleep in tests; inject a clock or synchronize explicitly.
+    paths:
+      include:
+        - "**/tests/**"
+        - "**/test_*.py"
+        - "**/*_test.py"
+    pattern-either:
+      - pattern: time.sleep(...)
+      - pattern: asyncio.sleep(...)
 
   - id: swt.python.no-hardcoded-secret
     languages: [python]

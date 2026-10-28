@@ -1,0 +1,13 @@
+# Hidden cross-component tests for the T3 TypeScript order pipeline.
+compile:
+  - name: install
+    argv: [npm, install, --no-audit, --no-fund]
+  - name: build
+    argv: [npm, run, build]
+tests:
+  - name: contract
+    argv:
+      - node
+      - "{hidden}/order_check.js"
+      - "{worktree}/dist/models.js"
+      - "{worktree}/dist/processor.js"

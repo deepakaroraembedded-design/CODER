@@ -226,6 +226,130 @@ TEST(RefMirrorTest, ExtractsMatchingDocumentsFromAnArchive) {
   std::filesystem::remove_all(dir, error);
 }
 
+TEST(RefMirrorTest, ExtractsMatchingDocumentsFromAZipArchive) {
+  const auto dir = make_temp_dir();
+  const auto source = dir / "zip-src";
+  std::filesystem::create_directories(source / "docs");
+  {
+    std::ofstream out(source / "docs" / "guide.md");
+    out << "# Guide\n\nZipped guide.\n";
+  }
+  const auto archive = dir / "reference.zip";
+  cf::process::LocalProcessExecutor executor;
+  cf::process::ProcessRequest request;
+  request.argv = {"zip", "-q", "-r", archive.string(), "."};
+  request.working_directory = source.string();
+  const auto packed = executor.run(request);
+  ASSERT_TRUE(packed.launched);
+  ASSERT_EQ(packed.exit_code, 0) << packed.stderr_text;
+
+  const std::string manifest_text =
+      "sets:\n"
+      "  - id: zipped\n"
+      "    version: \"1\"\n"
+      "    source: " + archive.string() + "\n"
+      "    extract: [\"docs\"]\n";
+  auto manifest = cf::refmirror::load_manifest_string(manifest_text);
+  ASSERT_TRUE(manifest.has_value()) << manifest.error().message;
+  FakeTransport transport;
+  cf::refmirror::MirrorOptions options;
+  options.out_dir = dir / "mirror";
+  options.executor = &executor;
+  auto report = cf::refmirror::run_mirror(*manifest, options, transport);
+  ASSERT_TRUE(report.has_value()) << report.error().message;
+  EXPECT_EQ(report->sets[0].status, "ok") << report->sets[0].detail;
+  EXPECT_EQ(report->sets[0].documents, 1u);
+  EXPECT_TRUE(std::filesystem::exists(options.out_dir / "zipped-1-1.md"));
+
+  std::error_code error;
+  std::filesystem::remove_all(dir, error);
+}
+
+TEST(RefMirrorTest, GeneratesDoxygenDocuments) {
+  const auto dir = make_temp_dir();
+  const auto repo = dir / "source-repo";
+  cf::process::LocalProcessExecutor executor;
+  auto run = [&executor](const std::vector<std::string>& argv,
+                         const std::filesystem::path& cwd) {
+    cf::process::ProcessRequest request;
+    request.argv = argv;
+    request.working_directory = cwd.string();
+    return executor.run(request);
+  };
+  ASSERT_EQ(run({"git", "init", "-b", "main", repo.string()}, dir).exit_code, 0);
+  {
+    std::ofstream out(repo / "api.h");
+    out << "int api();\n";
+  }
+  ASSERT_EQ(run({"git", "-C", repo.string(), "add", "api.h"}, dir).exit_code, 0);
+  ASSERT_EQ(run({"git", "-C", repo.string(), "-c", "user.name=cf",
+                 "-c", "user.email=cf@example.invalid", "commit", "-m", "init"},
+                dir).exit_code, 0);
+
+  const auto fake_doxygen = dir / "fake-doxygen.sh";
+  {
+    std::ofstream out(fake_doxygen);
+    out << "#!/bin/sh\n"
+           "mkdir -p documentation/html/sub\n"
+           "printf '<html><body><h1>API</h1></body></html>\\n' > "
+           "documentation/html/index.html\n"
+           "printf '# Page\\n\\nGenerated page.\\n' > "
+           "documentation/html/sub/page.md\n";
+  }
+  std::filesystem::permissions(
+      fake_doxygen,
+      std::filesystem::perms::owner_all | std::filesystem::perms::group_read |
+          std::filesystem::perms::others_read,
+      std::filesystem::perm_options::replace);
+
+  const std::string manifest_text =
+      "sets:\n"
+      "  - id: generated\n"
+      "    version: \"1\"\n"
+      "    generate: doxygen\n"
+      "    repo: " + repo.string() + "\n"
+      "    ref: main\n";
+  auto manifest = cf::refmirror::load_manifest_string(manifest_text);
+  ASSERT_TRUE(manifest.has_value()) << manifest.error().message;
+  FakeTransport transport;
+  cf::refmirror::MirrorOptions options;
+  options.out_dir = dir / "mirror";
+  options.executor = &executor;
+  options.doxygen_binary = fake_doxygen.string();
+  auto report = cf::refmirror::run_mirror(*manifest, options, transport);
+  ASSERT_TRUE(report.has_value()) << report.error().message;
+  ASSERT_EQ(report->sets.size(), 1u);
+  EXPECT_EQ(report->sets[0].status, "ok") << report->sets[0].detail;
+  EXPECT_EQ(report->sets[0].documents, 2u);
+  EXPECT_TRUE(std::filesystem::exists(options.out_dir / "generated-1-1.md"));
+  EXPECT_TRUE(std::filesystem::exists(options.out_dir / "generated-1-2.md"));
+
+  std::error_code error;
+  std::filesystem::remove_all(dir, error);
+}
+
+TEST(RefMirrorTest, ReportsDoxygenGenerationFailures) {
+  const auto dir = make_temp_dir();
+  const std::string manifest_text =
+      "sets:\n"
+      "  - id: broken\n"
+      "    version: \"1\"\n"
+      "    generate: doxygen\n"
+      "    repo: " + (dir / "missing-repo").string() + "\n";
+  auto manifest = cf::refmirror::load_manifest_string(manifest_text);
+  ASSERT_TRUE(manifest.has_value()) << manifest.error().message;
+  FakeTransport transport;
+  cf::refmirror::MirrorOptions options;
+  options.out_dir = dir / "mirror";
+  auto report = cf::refmirror::run_mirror(*manifest, options, transport);
+  ASSERT_TRUE(report.has_value()) << report.error().message;
+  EXPECT_EQ(report->sets[0].status, "generation_failed");
+  EXPECT_FALSE(report->ok());
+
+  std::error_code error;
+  std::filesystem::remove_all(dir, error);
+}
+
 TEST(RefMirrorTest, ChecksumMismatchHoldsTheSet) {
   const auto dir = make_temp_dir();
   auto manifest = cf::refmirror::load_manifest_string(remote_manifest("deadbeef"));
@@ -293,7 +417,7 @@ TEST(RefMirrorTest, UnsupportedGeneratorsAreSkipped) {
       "sets:\n"
       "  - id: nlohmann-json\n"
       "    version: \"3.12.0\"\n"
-      "    generate: doxygen\n";
+      "    generate: sphinx\n";
   auto manifest = cf::refmirror::load_manifest_string(text);
   ASSERT_TRUE(manifest.has_value());
   FakeTransport transport;

@@ -53,6 +53,8 @@ common:
   mutation:
     tool: mutmut
     min_score: 0.60
+    format: mutmut-json
+    report: "{build_dir}/mutation/mutants/mutmut-cicd-stats.json"
     steps:
       - [bash, "{rules_dir}/scripts/python-mutation.sh", "{src_dir}", "{build_dir}", "{mutation_min_score}"]
 

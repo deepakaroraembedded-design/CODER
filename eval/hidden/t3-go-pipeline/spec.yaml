@@ -1,0 +1,7 @@
+# Hidden cross-component tests for the T3 Go order pipeline.
+compile:
+  - name: build
+    argv: [go, build, ./...]
+tests:
+  - name: contract
+    argv: [go, run, "{hidden}/order_check.go"]

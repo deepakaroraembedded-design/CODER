@@ -19,6 +19,33 @@ rules:
       - pattern-not: $ELEMENT.outerHTML = "..."
       - pattern-not: $ELEMENT.outerHTML = '...'
 
+  - id: swt.javascript.no-sleep-in-test
+    languages: [javascript]
+    severity: ERROR
+    message: Do not sleep in tests; inject a clock or synchronize explicitly.
+    paths:
+      include:
+        - "**/tests/**"
+        - "**/*.test.ts"
+        - "**/*.spec.ts"
+        - "**/*.test.js"
+        - "**/*.spec.js"
+    pattern: setTimeout(...)
+
+  - id: swt.javascript.no-weak-hash
+    languages: [javascript]
+    severity: ERROR
+    message: Do not use MD5 or SHA-1 for security-sensitive hashing.
+    pattern-either:
+      - pattern: crypto.createHash("md5")
+      - pattern: crypto.createHash("sha1")
+
+  - id: swt.javascript.no-document-write
+    languages: [javascript]
+    severity: ERROR
+    message: Do not write raw content with document.write; use a safe DOM API.
+    pattern: document.write(...)
+
   - id: swt.javascript.no-hardcoded-secret
     languages: [javascript]
     severity: ERROR

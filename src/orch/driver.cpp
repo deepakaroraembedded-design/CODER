@@ -117,6 +117,23 @@ bool is_build_artifact(std::string_view path) {
 
 // True when a changed path is inside the milestone's declared write set
 // (design section 6.13.2): an exact entry or a path below a directory entry.
+bool commit_has_snapshot_for(const git::Repository& repository,
+                             const std::filesystem::path& worktree,
+                             std::string_view milestone_id, std::string_view phase) {
+  auto head = repository.head_sha(worktree);
+  if (!head) {
+    return false;
+  }
+  auto message = repository.commit_message(*head);
+  if (!message) {
+    return false;
+  }
+  const std::string milestone = "CF-Milestone: " + std::string(milestone_id);
+  const std::string phase_line = "CF-Phase: " + std::string(phase);
+  return message->find(milestone) != std::string::npos &&
+         message->find(phase_line) != std::string::npos;
+}
+
 bool within_write_set(const std::vector<std::string>& writes, std::string_view path) {
   for (const auto& entry : writes) {
     if (path == entry) {
@@ -196,7 +213,8 @@ Result<std::filesystem::path> WorkspaceDriver::ensure_worktree(
 
 Status WorkspaceDriver::snapshot(std::string_view milestone_id, std::string_view role,
                                  const std::vector<std::string>& paths,
-                                 const std::string& message, const std::string& op_id) {
+                                 const std::string& message, const std::string& op_id,
+                                 std::string_view phase) {
   auto worktree = ensure_worktree(milestone_id, role);
   if (!worktree) {
     return tl::make_unexpected(worktree.error());
@@ -217,6 +235,7 @@ Status WorkspaceDriver::snapshot(std::string_view milestone_id, std::string_view
   trailers.milestone_id = std::string(milestone_id);
   trailers.waivers = waivers_trailer(milestone_id);
   trailers.op_id = op_id;
+  trailers.phase = std::string(phase);
   auto sha = repository_.commit_paths(*worktree, existing, message, trailers);
   if (!sha) {
     return tl::make_unexpected(sha.error());
@@ -570,10 +589,16 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
       auto stored = snapshot(milestone_id, role, {"tests", "qa"},
                              "test(" + std::string(milestone_id) + "): " +
                                  outcome->summary,
-                             store::new_op_id());
+                             store::new_op_id(), "tests");
       if (!stored) {
-        return TurnResult{false, "", stored.error().message, false, false, false, false,
-                          false, ""};
+        const bool no_changes = stored.error().code == git::error_codes::kNoChanges;
+        const bool snapshot_recovered =
+            no_changes && commit_has_snapshot_for(repository_, *worktree,
+                                                  milestone_id, "tests");
+        if (!snapshot_recovered) {
+          return TurnResult{false, "", stored.error().message, false, false, false,
+                            false, false, ""};
+        }
       }
       TurnResult result;
       result.completed = true;
@@ -631,16 +656,22 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
       auto stored = snapshot(milestone_id, role, snapshot_paths,
                              prefix + "(" + std::string(milestone_id) + "): " +
                                  outcome->summary,
-                             store::new_op_id());
+                             store::new_op_id(),
+                             phase == MilestonePhase::Code ? "code" : "fix");
       // A dispute-only turn may have changed nothing, and so may a fix on an
       // already-integrated milestone (the work is merged; the turn resolved a
       // dispute or reviewed comments). Both proceed to the gates. A no-op
       // submission for ordinary, unmerged work is still a failed turn.
       if (!stored) {
         const bool no_changes = stored.error().code == git::error_codes::kNoChanges;
+        const bool snapshot_recovered =
+            no_changes &&
+            commit_has_snapshot_for(repository_, *worktree, milestone_id,
+                                    phase == MilestonePhase::Code ? "code" : "fix");
         const bool permitted =
             no_changes && (!outcome->disputed_test_id.empty() ||
-                           integrated_.count(std::string(milestone_id)) > 0);
+                           integrated_.count(std::string(milestone_id)) > 0 ||
+                           snapshot_recovered);
         if (!permitted) {
           return TurnResult{false, "", stored.error().message, false, false, false,
                             false, false, ""};
@@ -987,11 +1018,80 @@ Status WorkspaceDriver::rebase_integration_onto(std::string_view upstream) {
     return tl::make_unexpected(worktree.error());
   }
   auto rebased = repository_.rebase(*worktree, std::string(upstream));
-  if (!rebased) {
+  if (rebased) {
+    return {};
+  }
+
+  // Design section 10.4.9: a coder resolves rebase conflicts in Fixing, then
+  // the integration is re-gated by the caller. Keep the rebase in progress so
+  // the agent can edit the conflicted files.
+  auto conflicts = repository_.conflicted_files(*worktree);
+  if (!conflicts) {
+    (void)repository_.abort_rebase(*worktree);
+    return tl::make_unexpected(conflicts.error());
+  }
+  if (conflicts->empty()) {
     (void)repository_.abort_rebase(*worktree);
     return fail(git::error_codes::kMergeConflict,
                 "cannot rebase the integration branch onto " +
                     std::string(upstream) + ": " + rebased.error().message);
+  }
+
+  std::string files;
+  for (const auto& file : *conflicts) {
+    if (!files.empty()) {
+      files += ", ";
+    }
+    files += file;
+  }
+  AgentTurnRequest request;
+  request.phase = MilestonePhase::Fix;
+  request.run_id = config_.run_id;
+  request.milestone_id = "integration";
+  request.role = "coder";
+  request.worktree = worktree->string();
+  request.brief =
+      "Resolve the conflicts from rebasing the integration branch onto " +
+      std::string(upstream) + ". Conflicted files: " + files +
+      ". Preserve both sides' intent, run the relevant build/tests, and end "
+      "with submit_work. Do not change files outside the conflict resolution.";
+  auto resolved = agent_runner_.run_turn(request);
+  if (!resolved || !resolved->completed) {
+    (void)repository_.abort_rebase(*worktree);
+    return fail(git::error_codes::kMergeConflict,
+                "coder could not resolve the integration rebase conflicts: " +
+                    (resolved ? resolved->detail : resolved.error().message));
+  }
+  for (const auto& file : *conflicts) {
+    std::ifstream input(*worktree / file, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(input)),
+                           std::istreambuf_iterator<char>());
+    if (text.find("<<<<<<<") != std::string::npos ||
+        text.find(">>>>>>>") != std::string::npos) {
+      (void)repository_.abort_rebase(*worktree);
+      return fail(git::error_codes::kMergeConflict,
+                  "coder left conflict markers in " + file);
+    }
+  }
+  auto staged = repository_.stage_all(*worktree);
+  if (!staged) {
+    (void)repository_.abort_rebase(*worktree);
+    return tl::make_unexpected(staged.error());
+  }
+  auto remaining = repository_.conflicted_files(*worktree);
+  if (!remaining || !remaining->empty()) {
+    (void)repository_.abort_rebase(*worktree);
+    return fail(git::error_codes::kMergeConflict,
+                "coder left unresolved rebase conflicts: " +
+                    (remaining ? (!remaining->empty() ? remaining->front() : "")
+                               : remaining.error().message));
+  }
+  auto continued = repository_.continue_rebase(*worktree);
+  if (!continued) {
+    (void)repository_.abort_rebase(*worktree);
+    return fail(git::error_codes::kMergeConflict,
+                "rebase could not continue after conflict resolution: " +
+                    continued.error().message);
   }
   return {};
 }

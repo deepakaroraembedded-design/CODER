@@ -1,0 +1,32 @@
+# Golden plan: numeric summary utility (T1, Python).
+plan_id: GOLD-T1-PYTHON-STATS
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Summarize numeric samples
+    requirements: [REQ-PY-STATS-1]
+    writes: [pyproject.toml, src/stats.py]
+    uses: []
+    writes_interfaces: [src/stats.py]
+    acceptance:
+      - "Python 3.12 package with src/stats.py"
+      - "summarize(values: Iterable[float]) -> dict[str, float]"
+      - "Return mean, minimum, maximum and count; empty input returns count 0 and no mean/min/max keys"
+      - "Reject non-numeric input with TypeError; standard library only"
+target:
+  language: python
+  standard: "3.12"
+  build_system: pyproject
+  test_framework: pytest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["third-party dependencies", "network access"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 15
+  max_wall_clock_hours: 4

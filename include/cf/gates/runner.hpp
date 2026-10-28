@@ -29,12 +29,19 @@ struct CoverageCheck {
   double branch = 0.0; // required ratio, 0 disables
 };
 
+struct MutationCheck {
+  std::string format;  // mutmut-json
+  std::string report;  // report path (placeholders expanded)
+  double min_score = 0.0;
+};
+
 struct GateDefinition {
   std::string name;
   GateStage stage = GateStage::Cheap;
   std::vector<GateStep> steps;  // trusted steps, executed as argument lists
   bool blocking = true;
   CoverageCheck coverage;  // stage-3 coverage gates only
+  MutationCheck mutation;  // stage-3 mutation gates only
 };
 
 struct CoverageTotals {
@@ -43,8 +50,14 @@ struct CoverageTotals {
   bool has_branch = false;
 };
 
-// Parses a coverage report produced by a profile's stage-3 steps.
+struct MutationTotals {
+  double score = 0.0;
+};
+
+// Parses a coverage/mutation report produced by a profile's stage-3 steps.
 Result<CoverageTotals> parse_coverage_report(std::string_view format,
+                                             std::string_view content);
+Result<MutationTotals> parse_mutation_report(std::string_view format,
                                              std::string_view content);
 
 struct GateFinding {

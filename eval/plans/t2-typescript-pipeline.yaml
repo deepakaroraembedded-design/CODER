@@ -1,0 +1,42 @@
+# Golden plan: two-component TypeScript record pipeline (T2).
+plan_id: GOLD-T2-TS-PIPELINE
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Parse key=value records
+    requirements: [REQ-TS-SYS-1]
+    writes: [package.json, tsconfig.json, src/parser.ts]
+    uses: []
+    writes_interfaces: [src/parser.ts]
+    acceptance:
+      - "TypeScript project with strict mode and a CommonJS build to dist/"
+      - "export function parseRecord(line: string): { key: string; value: number } | null"
+      - "Trim whitespace; accept exactly key=value with a non-empty key and integer value; malformed input returns null"
+  - id: M2
+    title: Aggregate records by key
+    requirements: [REQ-TS-SYS-2]
+    depends_on: [M1]
+    writes: [src/aggregate.ts]
+    uses: [src/parser.ts]
+    writes_interfaces: [src/aggregate.ts]
+    acceptance:
+      - "export function aggregate(lines: string[]): Record<string, number> uses parseRecord"
+      - "Malformed lines are ignored; values for the same key are summed"
+      - "npm run build succeeds with strict TypeScript"
+target:
+  language: typescript
+  standard: "20"
+  build_system: npm
+  test_framework: vitest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["runtime dependencies", "network access at runtime"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 25
+  max_wall_clock_hours: 7

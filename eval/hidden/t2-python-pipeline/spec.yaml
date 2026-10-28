@@ -1,0 +1,7 @@
+# Hidden cross-component acceptance tests for the T2 Python pipeline.
+compile:
+  - name: compile
+    argv: [python3, -m, py_compile, "{worktree}/src/records.py", "{worktree}/src/aggregate.py"]
+tests:
+  - name: contract
+    argv: [python3, "{hidden}/pipeline_check.py", "{worktree}/src"]

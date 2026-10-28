@@ -35,6 +35,7 @@ struct CommitTrailers {
   std::vector<std::string> requirements;   // CF-Requirements
   std::string agents;                      // CF-Agents: coder=..; reviewer=..
   std::string gates;                       // CF-Gates
+  std::string phase;                       // CF-Phase (snapshot recovery)
   std::string waivers = "none";            // CF-Waivers
   std::string op_id;                       // CF-Op: the creating operation
   std::string squashed_from;               // CF-Squashed-From (integration only)
@@ -170,6 +171,14 @@ class Repository {
   Status rebase(const std::filesystem::path& worktree,
                 const std::string& upstream) const;
   Status abort_rebase(const std::filesystem::path& worktree) const;
+
+  // The unmerged paths after a conflicted rebase/merge.
+  Result<std::vector<std::string>> conflicted_files(
+      const std::filesystem::path& worktree) const;
+  // Stages every change in the worktree, including resolved conflicts.
+  Status stage_all(const std::filesystem::path& worktree) const;
+  // Continues an in-progress rebase without opening an editor.
+  Status continue_rebase(const std::filesystem::path& worktree) const;
 
  private:
   Repository(std::filesystem::path path, process::ProcessExecutor& executor);

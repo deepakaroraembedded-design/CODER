@@ -494,6 +494,79 @@ TEST_F(DriverTest, SystemValidationDelegatesToTheRunner) {
   EXPECT_EQ(validation.detail, "system defects found");
 }
 
+TEST_F(DriverTest, FixSnapshotIsRecoveredAfterACrashBeforeStateUpdate) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp",
+                 "int registry() { return 0; }\n");
+    } else if (request.phase == MilestonePhase::Fix) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "fix.cpp",
+                 "int fix() { return 0; }\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver first(plan_, config_for(kPassingProfile), *repository_,
+                        executor_, runner, store_.get());
+  ASSERT_TRUE(first.run(MilestonePhase::Code, "M3").completed);
+  ASSERT_TRUE(first.run(MilestonePhase::Fix, "M3").completed);
+
+  WorkspaceDriver second(plan_, config_for(kPassingProfile), *repository_,
+                         executor_, runner, store_.get());
+  const TurnResult retried = second.run(MilestonePhase::Fix, "M3");
+  EXPECT_TRUE(retried.completed) << retried.detail;
+}
+
+TEST_F(DriverTest, TestSnapshotIsRecoveredAfterACrashBeforeStateUpdate) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::AuthorTests) {
+      write_file(std::filesystem::path(request.worktree) / "tests" / "m3_test.cpp",
+                 "int main() { return 0; }\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "tests";
+    return outcome;
+  };
+  WorkspaceDriver first(plan_, config_for(kPassingProfile), *repository_,
+                        executor_, runner, store_.get());
+  ASSERT_TRUE(first.run(MilestonePhase::AuthorTests, "M3").completed);
+
+  WorkspaceDriver second(plan_, config_for(kPassingProfile), *repository_,
+                         executor_, runner, store_.get());
+  const TurnResult retried = second.run(MilestonePhase::AuthorTests, "M3");
+  EXPECT_TRUE(retried.completed) << retried.detail;
+}
+
+TEST_F(DriverTest, SnapshotCommitIsRecoveredAfterACrashBeforeStateUpdate) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp",
+                 "int registry() { return 0; }\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver first(plan_, config_for(kPassingProfile), *repository_,
+                        executor_, runner, store_.get());
+  ASSERT_TRUE(first.run(MilestonePhase::Code, "M3").completed);
+
+  // A restarted process sees the snapshot commit but the run store never
+  // recorded the state transition. The CF-Phase trailer proves the commit is
+  // this milestone's Code snapshot, so a no-change retry is accepted.
+  WorkspaceDriver second(plan_, config_for(kPassingProfile), *repository_,
+                         executor_, runner, store_.get());
+  const TurnResult retried = second.run(MilestonePhase::Code, "M3");
+  EXPECT_TRUE(retried.completed) << retried.detail;
+}
+
 TEST_F(DriverTest, IntegrateConflictIsReported) {
   FakeAgentRunner runner;
   WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_, executor_,
@@ -972,6 +1045,50 @@ TEST_F(DriverTest, RebasesIntegrationAndRegatesTheNewHead) {
   for (const auto& row : *rows) {
     EXPECT_EQ(row.milestone_id, "integration");
   }
+}
+
+TEST_F(DriverTest, CoderResolvesIntegrationRebaseConflicts) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp",
+                 "integration\n");
+    } else if (request.phase == MilestonePhase::Fix) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp",
+                 "resolved\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_,
+                         executor_, runner, store_.get());
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+  ASSERT_TRUE(driver.run(MilestonePhase::Integrate, "M3").completed);
+
+  // The base adds a different version of the same path, so the rebase stops
+  // with an add/add conflict that only the coder can resolve.
+  write_file(dir_ / "repo" / "src" / "m3.cpp", "base\n");
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.milestone_id = "M1";
+  trailers.op_id = "op_base_conflict";
+  ASSERT_TRUE(repository_
+                  ->commit_paths(dir_ / "repo", {"src/m3.cpp"},
+                                 "chore: conflicting base", trailers)
+                  .has_value());
+
+  const auto rebased = driver.rebase_integration_onto("main");
+  ASSERT_TRUE(rebased.has_value()) << rebased.error().message;
+  const auto head = repository_->head_sha(driver.integration_worktree());
+  ASSERT_TRUE(head.has_value());
+  const auto content = repository_->file_content(*head, "src/m3.cpp");
+  ASSERT_TRUE(content.has_value()) << content.error().message;
+  EXPECT_EQ(*content, "resolved\n");
+  const auto ancestor = repository_->is_ancestor("main", *head);
+  ASSERT_TRUE(ancestor.has_value());
+  EXPECT_TRUE(*ancestor);
 }
 
 TEST_F(DriverTest, StageThreeGatesReceiveTheProfileThresholds) {

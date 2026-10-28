@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build and test a CMake or Meson project with Clang coverage instrumentation,
-# then export an llvm-cov JSON report for the gate's llvm-cov-json parser.
+# Build and test a CMake, Meson or Make project with Clang coverage
+# instrumentation, then export an llvm-cov JSON report for the gate's
+# llvm-cov-json parser.
 #
 # Usage: cpp-coverage.sh <src_dir> <build_dir> <standard_var> <standard_number>
 set -euo pipefail
@@ -45,8 +46,25 @@ elif [[ -f "$src_dir/meson.build" ]]; then
   meson compile -C "$covbuild"
   LLVM_PROFILE_FILE="$covbuild/%p.profraw" \
     meson test -C "$covbuild" --print-errorlogs
+elif [[ -f "$src_dir/Makefile" || -f "$src_dir/makefile" ]]; then
+  covsrc="$covbuild/src"
+  mkdir -p "$covsrc"
+  tar -C "$src_dir" --exclude=.git --exclude=build --exclude=mutants \
+    -cf - . | tar -C "$covsrc" -xf -
+  std_cxx=
+  std_c=
+  if [[ -n "$standard_number" ]]; then
+    std_cxx="-std=c++${standard_number}"
+    std_c="-std=c${standard_number}"
+  fi
+  make -C "$covsrc" CC=clang CXX=clang++ \
+    CFLAGS="${std_c} -fprofile-instr-generate -fcoverage-mapping" \
+    CXXFLAGS="${std_cxx} -fprofile-instr-generate -fcoverage-mapping" \
+    LDFLAGS="-fprofile-instr-generate $extra_ldflags"
+  LLVM_PROFILE_FILE="$covbuild/%p.profraw" \
+    make -C "$covsrc" CC=clang CXX=clang++ test
 else
-  echo "coverage: no supported build system (CMakeLists.txt or meson.build)" >&2
+  echo "coverage: no supported build system (CMakeLists.txt, meson.build or Makefile)" >&2
   exit 2
 fi
 

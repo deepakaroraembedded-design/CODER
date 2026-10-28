@@ -23,12 +23,78 @@ rules:
     status: automated
     checks:
       - cf-swt-no-bool-param
+  - id: CG-TYPES
+    title: Type conversions are explicit
+    status: automated
+    checks:
+      - cf-swt-no-c-style-cast
+      - cf-swt-no-reinterpret-cast
+      - cf-swt-no-const-cast
+
+  - id: CG-CONTAINERS
+    title: Standard containers over raw arrays
+    status: automated
+    checks:
+      - cf-swt-no-raw-array
+
+  - id: CG-COMPOSITION
+    title: Prefer composition over inheritance
+    status: automated
+    checks:
+      - cf-swt-no-multiple-inheritance
+
+  - id: CG-ENCAPSULATION
+    title: Classes keep their data private
+    status: automated
+    checks:
+      - cf-swt-no-public-data-member
+      - cf-swt-no-public-static-data
+
+  - id: CG-TESTS
+    title: Tests are deterministic
+    status: automated
+    checks:
+      - cf-swt-no-sleep-in-test
+      - swt.python.no-sleep-in-test
+      - swt.java.no-sleep-in-test
+      - swt.go.no-sleep-in-test
+      - swt.typescript.no-sleep-in-test
+      - swt.javascript.no-sleep-in-test
+
+  - id: CG-SECURITY
+    title: No unsafe dynamic execution or unbounded C string functions
+    status: automated
+    checks:
+      - cf-swt-no-unsafe-c-function
+      - cf-swt-no-weak-hash
+      - swt.python.no-eval
+      - swt.python.no-verify-false
+      - swt.typescript.no-document-write
+      - swt.javascript.no-document-write
+      - swt.python.no-os-system
+      - swt.python.no-pickle-load
+      - swt.python.no-weak-hash
+      - swt.go.no-weak-hash
+      - swt.java.no-weak-hash
+      - swt.typescript.no-weak-hash
+      - swt.javascript.no-weak-hash
+      - swt.java.no-object-deserialization
+
+  - id: CG-NAMESPACE
+    title: Headers do not leak names with using-directives
+    status: automated
+    checks:
+      - cf-swt-no-using-namespace-in-header
+
+  - id: CG-CONTROL
+    title: Structured control flow
+    status: automated
+    checks:
+      - cf-swt-no-goto
+
   - id: CG-ERRORS
     title: Typed errors, stable codes and contextual wrapping
     status: reviewer-only
   - id: CG-NAMING
     title: Type, function, variable and constant naming
-    status: reviewer-only
-  - id: CG-TESTS
-    title: Deterministic tests and regression coverage
     status: reviewer-only

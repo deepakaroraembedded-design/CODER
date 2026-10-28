@@ -12,6 +12,29 @@ rules:
     message: Log structured errors with context instead of printStackTrace().
     pattern: $EXCEPTION.printStackTrace()
 
+  - id: swt.java.no-weak-hash
+    languages: [java]
+    severity: ERROR
+    message: Do not use MD5 or SHA-1 for security-sensitive hashing.
+    pattern-either:
+      - pattern: MessageDigest.getInstance("MD5")
+      - pattern: MessageDigest.getInstance("SHA-1")
+
+  - id: swt.java.no-object-deserialization
+    languages: [java]
+    severity: ERROR
+    message: Do not deserialize untrusted object streams; use a safe data format.
+    pattern: new ObjectInputStream(...)
+
+  - id: swt.java.no-sleep-in-test
+    languages: [java]
+    severity: ERROR
+    message: Do not sleep in tests; inject a clock or synchronize explicitly.
+    paths:
+      include:
+        - "**/src/test/**"
+    pattern: Thread.sleep(...)
+
   - id: swt.java.no-hardcoded-secret
     languages: [java]
     severity: ERROR

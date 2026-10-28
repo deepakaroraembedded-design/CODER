@@ -1,0 +1,7 @@
+# Hidden acceptance tests for the Python secret-redaction plan.
+compile:
+  - name: compile
+    argv: [python3, -m, py_compile, "{worktree}/src/redact.py"]
+tests:
+  - name: contract
+    argv: [python3, "{hidden}/redact_check.py", "{worktree}/src"]

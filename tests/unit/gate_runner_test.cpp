@@ -487,6 +487,22 @@ TEST(CoverageReportTest, ParsesGoCoverageJSONAndLcov) {
   EXPECT_EQ(unknown.error().code, cf::gates::error_codes::kCoverageReport);
 }
 
+TEST(MutationReportTest, ParsesMutmutJsonAndRejectsUnknownFormats) {
+  auto report = cf::gates::parse_mutation_report(
+      "mutmut-json", R"({"killed":3,"survived":1,"total":4})");
+  ASSERT_TRUE(report.has_value()) << report.error().message;
+  EXPECT_DOUBLE_EQ(report->score, 0.75);
+
+  auto empty = cf::gates::parse_mutation_report(
+      "mutmut-json", R"({"killed":0,"survived":0,"total":0})");
+  ASSERT_TRUE(empty.has_value()) << empty.error().message;
+  EXPECT_DOUBLE_EQ(empty->score, 1.0);
+
+  auto unknown = cf::gates::parse_mutation_report("sarif", "{}");
+  ASSERT_FALSE(unknown.has_value());
+  EXPECT_EQ(unknown.error().code, cf::gates::error_codes::kMutationReport);
+}
+
 TEST(GatePlanTest, RejectsUnknownCombinations) {
   auto profile = cf::gates::load_profile_string(kProfileYaml);
   ASSERT_TRUE(profile.has_value());

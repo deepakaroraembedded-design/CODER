@@ -230,6 +230,12 @@ Profile parse_profile(const YAML::Node& root) {
           profile.mutation.tool = as_string(tool, "common.mutation.tool");
         }
         profile.mutation.min_score = optional_double(node, "min_score", 0.0);
+        if (const YAML::Node format = node["format"]) {
+          profile.mutation.format = as_string(format, "common.mutation.format");
+        }
+        if (const YAML::Node report = node["report"]) {
+          profile.mutation.report = as_string(report, "common.mutation.report");
+        }
         profile.mutation.steps =
             parse_gate_spec(node, "common.mutation").steps;
       } else {

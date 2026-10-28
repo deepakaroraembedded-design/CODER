@@ -1,0 +1,33 @@
+# Golden plan: generic ordered set (T1, Go).
+plan_id: GOLD-T1-GO-SET
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Generic ordered set
+    requirements: [REQ-GO-SET-1]
+    writes: [go.mod, set/set.go]
+    uses: []
+    writes_interfaces: [set/set.go]
+    acceptance:
+      - "Go module cf_golden (go 1.22) with package set at set/"
+      - "type Set[T cmp.Ordered] with New[T cmp.Ordered]() *Set[T]"
+      - "Add(T), Remove(T), Contains(T) bool, Len() int"
+      - "Sorted() returns the elements in ascending order without duplicate values"
+      - "go build ./... and go vet ./... pass; standard library only"
+target:
+  language: go
+  standard: "1.22"
+  build_system: go
+  test_framework: gotest
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["third-party dependencies"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 15
+  max_wall_clock_hours: 4

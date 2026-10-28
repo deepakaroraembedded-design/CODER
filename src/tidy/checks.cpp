@@ -33,12 +33,25 @@ constexpr const char* kNoRawMalloc = "cf-swt-no-raw-malloc";
 constexpr const char* kNoDetachedThread = "cf-swt-no-detached-thread";
 constexpr const char* kNoHardcodedSecret = "cf-swt-no-hardcoded-secret";
 constexpr const char* kNoBoolParam = "cf-swt-no-bool-param";
+constexpr const char* kNoCStyleCast = "cf-swt-no-c-style-cast";
+constexpr const char* kNoUsingNamespaceInHeader = "cf-swt-no-using-namespace-in-header";
+constexpr const char* kNoGoto = "cf-swt-no-goto";
+constexpr const char* kNoReinterpretCast = "cf-swt-no-reinterpret-cast";
+constexpr const char* kNoConstCast = "cf-swt-no-const-cast";
+constexpr const char* kNoRawArray = "cf-swt-no-raw-array";
+constexpr const char* kNoUnsafeCFunction = "cf-swt-no-unsafe-c-function";
+constexpr const char* kNoMultipleInheritance = "cf-swt-no-multiple-inheritance";
+constexpr const char* kNoPublicDataMember = "cf-swt-no-public-data-member";
+constexpr const char* kNoSleepInTest = "cf-swt-no-sleep-in-test";
+constexpr const char* kNoPublicStaticData = "cf-swt-no-public-static-data";
+constexpr const char* kNoWeakHash = "cf-swt-no-weak-hash";
 
 class GuardrailCallback final
     : public clang::ast_matchers::MatchFinder::MatchCallback {
  public:
-  explicit GuardrailCallback(std::vector<TidyDiagnostic>& diagnostics)
-      : diagnostics_(diagnostics) {}
+  GuardrailCallback(std::vector<TidyDiagnostic>& diagnostics,
+                    const TidyOptions& options)
+      : diagnostics_(diagnostics), options_(options) {}
 
   void run(const clang::ast_matchers::MatchFinder::MatchResult& result) override {
     if (const auto* expression =
@@ -51,6 +64,173 @@ class GuardrailCallback final
             result.Nodes.getNodeAs<clang::CXXDeleteExpr>("delete")) {
       diagnose(result, expression->getBeginLoc(), kNoRawDelete,
                "raw 'delete' violates CG-4.2; use a smart pointer");
+      return;
+    }
+    if (const auto* directive =
+            result.Nodes.getNodeAs<clang::UsingDirectiveDecl>("using_namespace")) {
+      if (result.SourceManager == nullptr) {
+        return;
+      }
+      const clang::PresumedLoc presumed =
+          result.SourceManager->getPresumedLoc(directive->getLocation());
+      const std::string file = presumed.isInvalid() ? "" : presumed.getFilename();
+      const std::string extension = std::filesystem::path(file).extension().string();
+      if (extension == ".h" || extension == ".hpp" || extension == ".hh" ||
+          extension == ".hxx") {
+        diagnose(result, directive->getLocation(), kNoUsingNamespaceInHeader,
+                 "using namespace in a header leaks names into every includer");
+      }
+      return;
+    }
+    if (const auto* call =
+            result.Nodes.getNodeAs<clang::CallExpr>("sleep_in_test")) {
+      const clang::FunctionDecl* callee = call->getDirectCallee();
+      if (callee == nullptr || result.SourceManager == nullptr) {
+        return;
+      }
+      const std::string_view name = callee->getName();
+      if (name != "sleep" && name != "sleep_for" && name != "sleep_until" &&
+          name != "usleep" && name != "nanosleep") {
+        return;
+      }
+      const clang::SourceLocation location =
+          result.SourceManager->getExpansionLoc(call->getBeginLoc());
+      const clang::PresumedLoc presumed =
+          result.SourceManager->getPresumedLoc(location);
+      const std::string file = presumed.isInvalid() ? "" : presumed.getFilename();
+      std::string lowered = file;
+      std::transform(lowered.begin(), lowered.end(), lowered.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      const std::string base = std::filesystem::path(lowered).filename().string();
+      const bool is_test =
+          lowered.find("/tests/") != std::string::npos ||
+          lowered.find("/test/") != std::string::npos ||
+          base.rfind("test_", 0) == 0 || base.find("_test.") != std::string::npos ||
+          base == "test.cpp";
+      if (is_test) {
+        diagnose(result, call->getBeginLoc(), kNoSleepInTest,
+                 "sleep in a test violates the deterministic-test guideline");
+      }
+      return;
+    }
+    if (const auto* field =
+            result.Nodes.getNodeAs<clang::FieldDecl>("public_data_member")) {
+      if (result.Context == nullptr ||
+          !result.Context->getLangOpts().CPlusPlus ||
+          field->getAccess() != clang::AS_public) {
+        return;
+      }
+      const auto* parent = clang::dyn_cast<clang::CXXRecordDecl>(field->getParent());
+      if (parent == nullptr || !parent->isClass()) {
+        return;
+      }
+      diagnose(result, field->getLocation(), kNoPublicDataMember,
+               "public data member weakens encapsulation; use an accessor");
+      return;
+    }
+    if (const auto* record =
+            result.Nodes.getNodeAs<clang::CXXRecordDecl>("multiple_inheritance")) {
+      if (result.Context == nullptr ||
+          !result.Context->getLangOpts().CPlusPlus ||
+          record->getNumBases() <= 1) {
+        return;
+      }
+      diagnose(result, record->getLocation(), kNoMultipleInheritance,
+               "multiple inheritance violates the composition guideline; prefer composition");
+      return;
+    }
+    if (const auto* call =
+            result.Nodes.getNodeAs<clang::CallExpr>("unsafe_c_function")) {
+      const clang::FunctionDecl* callee = call->getDirectCallee();
+      if (callee == nullptr) {
+        return;
+      }
+      const std::string_view name = callee->getName();
+      if (name != "strcpy" && name != "strcat" && name != "sprintf" &&
+          name != "gets" && name != "scanf" && name != "vsprintf") {
+        return;
+      }
+      diagnose(result, call->getBeginLoc(), kNoUnsafeCFunction,
+               "unbounded C string function violates the security guideline; use a length-aware API");
+      return;
+    }
+    if (const auto* call = result.Nodes.getNodeAs<clang::CallExpr>("weak_hash")) {
+      const clang::FunctionDecl* callee = call->getDirectCallee();
+      if (callee == nullptr) {
+        return;
+      }
+      const std::string_view name = callee->getName();
+      if (name != "MD5" && name != "MD5_Init" && name != "SHA1" &&
+          name != "SHA1_Init") {
+        return;
+      }
+      diagnose(result, call->getBeginLoc(), kNoWeakHash,
+               "weak hash function violates the security guideline; use SHA-256 or better");
+      return;
+    }
+    if (const auto* declaration =
+            result.Nodes.getNodeAs<clang::VarDecl>("public_static_data")) {
+      if (result.Context == nullptr ||
+          !result.Context->getLangOpts().CPlusPlus ||
+          !declaration->isStaticDataMember() ||
+          declaration->getAccess() != clang::AS_public) {
+        return;
+      }
+      const auto* parent =
+          clang::dyn_cast<clang::CXXRecordDecl>(declaration->getDeclContext());
+      if (parent == nullptr || !parent->isClass()) {
+        return;
+      }
+      diagnose(result, declaration->getLocation(), kNoPublicStaticData,
+               "public static data weakens encapsulation; use an accessor");
+      return;
+    }
+    if (const auto* declaration =
+            result.Nodes.getNodeAs<clang::VarDecl>("raw_array")) {
+      if (result.Context == nullptr ||
+          !result.Context->getLangOpts().CPlusPlus) {
+        return;
+      }
+      diagnose(result, declaration->getLocation(), kNoRawArray,
+               "raw C array violates the container guideline; use std::array or std::vector");
+      return;
+    }
+    if (const auto* declaration =
+            result.Nodes.getNodeAs<clang::FieldDecl>("raw_array")) {
+      if (result.Context == nullptr ||
+          !result.Context->getLangOpts().CPlusPlus) {
+        return;
+      }
+      diagnose(result, declaration->getLocation(), kNoRawArray,
+               "raw C array violates the container guideline; use std::array or std::vector");
+      return;
+    }
+    if (const auto* expression =
+            result.Nodes.getNodeAs<clang::CXXReinterpretCastExpr>("reinterpret")) {
+      diagnose(result, expression->getBeginLoc(), kNoReinterpretCast,
+               "reinterpret_cast violates the type-safety guideline; use a typed conversion");
+      return;
+    }
+    if (const auto* expression =
+            result.Nodes.getNodeAs<clang::CXXConstCastExpr>("const_cast")) {
+      diagnose(result, expression->getBeginLoc(), kNoConstCast,
+               "const_cast violates the type-safety guideline; keep const correctness");
+      return;
+    }
+    if (const auto* statement =
+            result.Nodes.getNodeAs<clang::GotoStmt>("goto")) {
+      if (result.Context == nullptr ||
+          !result.Context->getLangOpts().CPlusPlus) {
+        return;
+      }
+      diagnose(result, statement->getGotoLoc(), kNoGoto,
+               "goto violates the control-flow guideline; use structured control flow");
+      return;
+    }
+    if (const auto* expression =
+            result.Nodes.getNodeAs<clang::CStyleCastExpr>("cast")) {
+      diagnose(result, expression->getBeginLoc(), kNoCStyleCast,
+               "C-style cast violates the type-safety guideline; use static_cast or a named conversion");
       return;
     }
     if (const auto* parameter =
@@ -126,6 +306,15 @@ class GuardrailCallback final
     if (presumed.isInvalid()) {
       return;
     }
+    if (!options_.only_checks.empty() &&
+        std::find(options_.only_checks.begin(), options_.only_checks.end(), check) ==
+            options_.only_checks.end()) {
+      return;
+    }
+    if (std::find(options_.disabled_checks.begin(), options_.disabled_checks.end(),
+                  check) != options_.disabled_checks.end()) {
+      return;
+    }
     diagnostics_.push_back(TidyDiagnostic{check, message, presumed.getFilename(),
                                           presumed.getLine(),
                                           presumed.getColumn()});
@@ -135,6 +324,7 @@ class GuardrailCallback final
 
  private:
   std::vector<TidyDiagnostic>& diagnostics_;
+  const TidyOptions& options_;
 };
 
 std::optional<std::string> allowed_namespaces_from_clang_tidy(
@@ -238,7 +428,7 @@ Result<std::vector<TidyDiagnostic>> run_company_checks(
 
   clang::ast_matchers::MatchFinder finder;
   std::vector<TidyDiagnostic> diagnostics;
-  GuardrailCallback callback(diagnostics);
+  GuardrailCallback callback(diagnostics, effective);
   using namespace clang::ast_matchers;
   auto new_matcher = cxxNewExpr(unless(isExpansionInSystemHeader()),
                                 unless(hasAnyPlacementArg(anything())));
@@ -251,6 +441,25 @@ Result<std::vector<TidyDiagnostic>> run_company_checks(
       unless(isExpansionInSystemHeader()),
       hasInitializer(ignoringImplicit(stringLiteral())));
   auto bool_param_matcher = parmVarDecl(unless(isExpansionInSystemHeader()));
+  auto cast_matcher = cStyleCastExpr(unless(isExpansionInSystemHeader()));
+  auto using_namespace_matcher =
+      usingDirectiveDecl(unless(isExpansionInSystemHeader()));
+  auto goto_matcher = gotoStmt(unless(isExpansionInSystemHeader()));
+  auto reinterpret_matcher =
+      cxxReinterpretCastExpr(unless(isExpansionInSystemHeader()));
+  auto const_cast_matcher =
+      cxxConstCastExpr(unless(isExpansionInSystemHeader()));
+  auto raw_array_matcher =
+      varDecl(unless(isExpansionInSystemHeader()), hasType(arrayType()));
+  auto raw_field_array_matcher =
+      fieldDecl(unless(isExpansionInSystemHeader()), hasType(arrayType()));
+  auto unsafe_c_matcher = callExpr(unless(isExpansionInSystemHeader()));
+  auto multiple_inheritance_matcher =
+      cxxRecordDecl(isDefinition(), unless(isExpansionInSystemHeader()));
+  auto public_data_matcher = fieldDecl(unless(isExpansionInSystemHeader()));
+  auto sleep_matcher = callExpr(unless(isExpansionInSystemHeader()));
+  auto public_static_matcher = varDecl(unless(isExpansionInSystemHeader()));
+  auto weak_hash_matcher = callExpr(unless(isExpansionInSystemHeader()));
   if (!effective.allowed_namespaces.empty()) {
     const auto allowed = hasAncestor(
         namespaceDecl(matchesName(effective.allowed_namespaces)));
@@ -273,6 +482,27 @@ Result<std::vector<TidyDiagnostic>> run_company_checks(
   finder.addMatcher(std::move(detach_matcher).bind("detach"), &callback);
   finder.addMatcher(std::move(secret_matcher).bind("secret"), &callback);
   finder.addMatcher(std::move(bool_param_matcher).bind("bool_param"), &callback);
+  finder.addMatcher(std::move(cast_matcher).bind("cast"), &callback);
+  finder.addMatcher(
+      std::move(using_namespace_matcher).bind("using_namespace"), &callback);
+  finder.addMatcher(std::move(goto_matcher).bind("goto"), &callback);
+  finder.addMatcher(std::move(reinterpret_matcher).bind("reinterpret"), &callback);
+  finder.addMatcher(std::move(const_cast_matcher).bind("const_cast"), &callback);
+  finder.addMatcher(std::move(raw_array_matcher).bind("raw_array"), &callback);
+  finder.addMatcher(std::move(raw_field_array_matcher).bind("raw_array"),
+                    &callback);
+  finder.addMatcher(std::move(unsafe_c_matcher).bind("unsafe_c_function"),
+                    &callback);
+  finder.addMatcher(std::move(multiple_inheritance_matcher)
+                        .bind("multiple_inheritance"),
+                    &callback);
+  finder.addMatcher(std::move(public_data_matcher).bind("public_data_member"),
+                    &callback);
+  finder.addMatcher(std::move(sleep_matcher).bind("sleep_in_test"), &callback);
+  finder.addMatcher(std::move(public_static_matcher)
+                        .bind("public_static_data"),
+                    &callback);
+  finder.addMatcher(std::move(weak_hash_matcher).bind("weak_hash"), &callback);
 
   auto factory = clang::tooling::newFrontendActionFactory(&finder);
   const int result = tool.run(factory.get());
@@ -323,6 +553,30 @@ std::vector<CheckInfo> implemented_checks() {
        "credential-like variables initialized with a string literal"},
       {"cf-swt-no-bool-param", "CG-INTERFACES",
        "boolean parameters; split the operation or use an enum"},
+      {"cf-swt-no-c-style-cast", "CG-TYPES",
+       "C-style casts; use static_cast or a named conversion"},
+      {"cf-swt-no-using-namespace-in-header", "CG-NAMESPACE",
+       "using namespace directives in headers"},
+      {"cf-swt-no-goto", "CG-CONTROL",
+       "goto statements in C++; use structured control flow"},
+      {"cf-swt-no-reinterpret-cast", "CG-TYPES",
+       "reinterpret_cast; use a typed conversion"},
+      {"cf-swt-no-const-cast", "CG-TYPES",
+       "const_cast; keep const correctness"},
+      {"cf-swt-no-raw-array", "CG-CONTAINERS",
+       "raw C arrays in C++; use std::array or std::vector"},
+      {"cf-swt-no-unsafe-c-function", "CG-SECURITY",
+       "unbounded C string functions; use length-aware APIs"},
+      {"cf-swt-no-multiple-inheritance", "CG-COMPOSITION",
+       "multiple inheritance; prefer composition"},
+      {"cf-swt-no-public-data-member", "CG-ENCAPSULATION",
+       "public data members in classes; use accessors"},
+      {"cf-swt-no-sleep-in-test", "CG-TESTS",
+       "sleeps in tests; inject a clock or use synchronization"},
+      {"cf-swt-no-public-static-data", "CG-ENCAPSULATION",
+       "public static data in classes; use an accessor"},
+      {"cf-swt-no-weak-hash", "CG-SECURITY",
+       "MD5/SHA-1 calls; use SHA-256 or better"},
   };
 }
 

@@ -1,0 +1,7 @@
+# Hidden acceptance tests for the T1 Java bitset.
+compile:
+  - name: compile
+    argv: [javac, -d, "{build}/classes", "{worktree}/src/main/java/cf_golden/BitSet.java", "{hidden}/BitSetTest.java"]
+tests:
+  - name: contract
+    argv: [java, -cp, "{build}/classes", BitSetTest]

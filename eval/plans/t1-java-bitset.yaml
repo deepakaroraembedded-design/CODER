@@ -1,0 +1,33 @@
+# Golden plan: fixed-size bitset (T1, Java).
+plan_id: GOLD-T1-JAVA-BITSET
+product: golden
+version: 1.0
+milestones:
+  - id: M1
+    title: Fixed-size bitset
+    requirements: [REQ-JAVA-BITS-1]
+    writes: [pom.xml, src/main/java/cf_golden/BitSet.java]
+    uses: []
+    writes_interfaces: [src/main/java/cf_golden/BitSet.java]
+    acceptance:
+      - "Maven project cf-golden with Java 17 and package cf_golden"
+      - "public final class BitSet with public BitSet(int bits)"
+      - "set(int), clear(int), get(int) boolean, count() int"
+      - "Out-of-range indexes throw IndexOutOfBoundsException; negative or zero sizes throw IllegalArgumentException"
+      - "mvn -q test succeeds and the project compiles with Java 17"
+target:
+  language: java
+  standard: "17"
+  build_system: maven
+  test_framework: junit5
+  platforms: [linux-x86_64]
+constraints:
+  forbidden: ["raw types", "external dependencies beyond JUnit"]
+models:
+  coder: deepseek
+  reviewer: kimi
+  qa: glm
+inference: fireworks
+budget:
+  max_usd_total: 15
+  max_wall_clock_hours: 4
