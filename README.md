@@ -38,6 +38,8 @@ is still missing.
 
 Test suite: **785 tests**, green on `debug`; CI also runs the `release`, ASan and TSan presets.
 
+End-to-end status: the real pipeline has been exercised through host, namespace and Docker agents. Namespace plans pass for Go (14/14), Java (8/8) and TypeScript (4/4); a real Docker TypeScript agent run passes 4/4. The full three-candidate 19-plan benchmark is complete (best: 17/19 Done), with the remaining variance currently attributed to model no-submission/submission timing rather than a deterministic plan failure.
+
 ---
 
 ## 2. Architecture
