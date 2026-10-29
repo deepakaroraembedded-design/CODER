@@ -291,6 +291,13 @@ std::vector<std::string> sandboxed_server_launcher(
   add_option(argv, "-e", "OPENCODE_CONFIG=/cf/" + config_path.filename().string());
   add_option(argv, "-e", "CF_MCP_CALLS_FILE=/cf/" + calls_file.filename().string());
   add_option(argv, "-e", "CF_ROLE=" + role);
+  if (!config.api_key_env.empty()) {
+    const char* api_key = std::getenv(config.api_key_env.c_str());
+    if (api_key != nullptr && *api_key != '\0') {
+      add_option(argv, "-e",
+                 config.api_key_env + "=" + std::string(api_key));
+    }
+  }
   for (const auto& entry : config.ns_env) {
     add_option(argv, "-e", entry);
   }
