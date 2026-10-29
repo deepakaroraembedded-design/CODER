@@ -56,3 +56,9 @@ rules:
     pattern-either:
       - pattern: os.Chmod(..., 0777)
       - pattern: os.Chmod(..., 0o777)
+
+  - id: swt.go.no-plain-http-server
+    languages: [go]
+    severity: WARNING
+    message: Use TLS for network listeners outside local tests.
+    pattern: http.ListenAndServe(...)

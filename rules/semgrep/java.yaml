@@ -50,3 +50,19 @@ rules:
     severity: ERROR
     message: Do not use java.util.Random for security-sensitive values; use SecureRandom.
     pattern: new java.util.Random(...)
+
+  - id: swt.java.no-shell-process-builder
+    languages: [java]
+    severity: ERROR
+    message: Do not invoke a shell through ProcessBuilder; pass the program and arguments explicitly.
+    pattern-either:
+      - pattern: new ProcessBuilder("sh", ...)
+      - pattern: new ProcessBuilder("bash", ...)
+
+  - id: swt.java.no-legacy-tls
+    languages: [java]
+    severity: ERROR
+    message: Do not request TLSv1/TLSv1.1; use TLSv1.2 or newer.
+    pattern-either:
+      - pattern: SSLContext.getInstance("TLSv1")
+      - pattern: SSLContext.getInstance("TLSv1.1")

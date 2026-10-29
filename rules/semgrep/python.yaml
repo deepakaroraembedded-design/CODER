@@ -82,3 +82,9 @@ rules:
     severity: ERROR
     message: Do not use tempfile.mktemp; it has a race. Use NamedTemporaryFile or mkstemp.
     pattern: tempfile.mktemp(...)
+
+  - id: swt.python.no-unverified-ssl-context
+    languages: [python]
+    severity: ERROR
+    message: Do not create an SSL context with certificate verification disabled.
+    pattern: ssl._create_unverified_context(...)

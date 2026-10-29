@@ -8,16 +8,11 @@
 # The entries below are the design's examples; fill in the real URLs and
 # checksums before the first production mirroring run.
 sets:
-  - id: cppreference
-    version: "2026-09"
-    source: https://<cppreference offline archive URL>
-    sha256: "<checksum>"
-    license: CC-BY-SA-3.0
   - id: boost
     version: "1.89.0"
-    source: https://<boost release archive URL>
+    source: https://archives.boost.io/release/1.89.0/source/boost_1_89_0.tar.bz2
     extract: ["doc/html", "libs/*/doc/html"]
-    sha256: "<checksum>"
+    sha256: "85a33fa22621b4f314f8e85e1a5e2a9363d22e4f4992925d4bb3bc631b5a0c7a"
     license: BSL-1.0
   - id: nlohmann-json
     version: "3.12.0"

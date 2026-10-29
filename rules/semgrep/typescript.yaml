@@ -65,3 +65,11 @@ rules:
     pattern-either:
       - pattern: child_process.exec(...)
       - pattern: exec(...)
+
+  - id: swt.typescript.no-vm-dynamic-code
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Do not execute dynamic code with vm.runInNewContext or vm.runInThisContext.
+    pattern-either:
+      - pattern: vm.runInNewContext(...)
+      - pattern: vm.runInThisContext(...)
