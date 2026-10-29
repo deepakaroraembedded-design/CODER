@@ -1042,9 +1042,10 @@ opencode version.
 - **RAG production index.** hnswlib is the default vector index (brute force
   stays behind the same `VectorIndex` interface and is selectable with
   `rag.index: brute-force`); optional FAISS HNSW and IVF-PQ indexes are enabled
-  with `FAISS_ROOT` and `rag.index: faiss`/`faiss-ivfpq`. IVF-PQ trains on a
-  bounded sample; production tuning for collections over 5M chunks is still
-  pending. PDF/DOCX ingestion uses the external converters
+  with `FAISS_ROOT` and `rag.index: faiss`/`faiss-ivfpq`. IVF-PQ now uses a
+  bounded, configurable training sample (65,536 by default), adaptive or
+  explicit nlist, nprobe and nbits; persistence and tuning for collections
+  over 5M chunks remain pending. PDF/DOCX ingestion uses the external converters
   (`pdftotext`/`pandoc`) and a metadata sidecar. The labeled retrieval set has
   205 queries (above the 200-per-collection target) and the adversarial
   conflict set is in place.

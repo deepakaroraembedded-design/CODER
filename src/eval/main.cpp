@@ -216,6 +216,8 @@ struct BenchOptions {
   std::string docs_dir;
   std::string sandbox_image;
   bool agent_sandbox_namespaces = false;
+  std::string agent_sandbox_image;
+  std::string agent_sandbox_binary = "opencode";
   std::string ns_agent_binary = "cf-ns-agent";
   std::vector<std::string> ns_mounts;
   std::vector<std::string> ns_path_prefixes;
@@ -305,6 +307,8 @@ int run_bench(const BenchOptions& options) {
     executor_options.docs_dir = options.docs_dir;
     executor_options.sandbox_image = options.sandbox_image;
     executor_options.agent_sandbox_namespaces = options.agent_sandbox_namespaces;
+    executor_options.agent_sandbox_image = options.agent_sandbox_image;
+    executor_options.agent_sandbox_binary = options.agent_sandbox_binary;
     executor_options.ns_agent_binary = options.ns_agent_binary;
     executor_options.ns_mounts = options.ns_mounts;
     executor_options.ns_path_prefixes = options.ns_path_prefixes;
@@ -417,6 +421,10 @@ int main(int argc, char** argv) {
   bench_command->add_option("--docs", bench.docs_dir, "Ingested company documents");
   bench_command->add_option("--sandbox-image", bench.sandbox_image,
                             "Run agent servers in this container image");
+  bench_command->add_option("--agent-sandbox-image", bench.agent_sandbox_image,
+                            "Run opencode servers in this container image");
+  bench_command->add_option("--agent-sandbox-binary", bench.agent_sandbox_binary,
+                            "opencode binary path inside the agent image");
   bench_command->add_flag("--agent-sandbox-namespaces",
                           bench.agent_sandbox_namespaces,
                           "Run agent servers in the daemon-free namespace sandbox");

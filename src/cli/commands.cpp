@@ -2447,6 +2447,8 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   config.profile_build_system = effective.target.build_system;
   config.profile_test_framework = effective.target.test_framework;
   config.sandbox_image = options.sandbox_image;
+  config.agent_sandbox_image = options.agent_sandbox_image;
+  config.agent_sandbox_binary = options.agent_sandbox_binary;
   config.agent_sandbox_namespaces = options.agent_sandbox_namespaces;
   config.ns_agent_binary = options.ns_agent_binary;
   config.ns_mounts = options.ns_mounts;

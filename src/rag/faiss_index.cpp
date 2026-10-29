@@ -94,6 +94,9 @@ class FaissVectorIndex final : public VectorIndex {
 
 class FaissIvfPqVectorIndex final : public VectorIndex {
  public:
+  explicit FaissIvfPqVectorIndex(FaissIvfPqOptions options)
+      : options_(options) {}
+
   Status add(std::string_view chunk_id, std::vector<float> vector) override {
     if (vector.empty()) {
       return fail(error_codes::kEmptyDocument, "empty embedding vector");
@@ -112,7 +115,7 @@ class FaissIvfPqVectorIndex final : public VectorIndex {
       index_->add(1, vector.data());
     } else {
       pending_.push_back(std::move(vector));
-      if (pending_.size() >= kTrainThreshold) {
+      if (pending_.size() >= options_.train_threshold) {
         train_and_flush();
       }
     }
@@ -156,14 +159,17 @@ class FaissIvfPqVectorIndex final : public VectorIndex {
       --m;
     }
     const bool small = pending_.size() < 10000;
-    const int nlist = small
-                          ? 1
-                          : std::max(1, std::min(64, static_cast<int>(pending_.size()) / 39));
-    const int nbits = small ? 1 : 8;
+    int nlist = small ? 1 : static_cast<int>(pending_.size()) / 39;
+    if (options_.nlist > 0) {
+      nlist = options_.nlist;
+    }
+    nlist = std::max(1, std::min(4096, nlist));
+    const int nbits = small ? 1 : std::max(1, std::min(8, options_.nbits));
     auto quantizer = std::make_unique<faiss::IndexFlatIP>(dimension_);
     index_ = std::make_unique<faiss::IndexIVFPQ>(
         quantizer.get(), dimension_, nlist, m, nbits, faiss::METRIC_INNER_PRODUCT);
     index_->own_fields = false;
+    index_->nprobe = std::max(1, std::min(nlist, options_.nprobe));
     quantizer_ = std::move(quantizer);
     std::vector<float> flat;
     flat.reserve(pending_.size() * dimension_);
@@ -175,7 +181,7 @@ class FaissIvfPqVectorIndex final : public VectorIndex {
     pending_.clear();
   }
 
-  static constexpr std::size_t kTrainThreshold = 10000;
+  FaissIvfPqOptions options_;
   mutable std::mutex mutex_;
   int dimension_ = 0;
   std::unique_ptr<faiss::IndexFlatIP> quantizer_;
@@ -190,8 +196,9 @@ std::unique_ptr<VectorIndex> make_faiss_vector_index() {
   return std::make_unique<FaissVectorIndex>();
 }
 
-std::unique_ptr<VectorIndex> make_faiss_ivfpq_vector_index() {
-  return std::make_unique<FaissIvfPqVectorIndex>();
+std::unique_ptr<VectorIndex> make_faiss_ivfpq_vector_index(
+    FaissIvfPqOptions options) {
+  return std::make_unique<FaissIvfPqVectorIndex>(options);
 }
 
 }  // namespace cf::rag

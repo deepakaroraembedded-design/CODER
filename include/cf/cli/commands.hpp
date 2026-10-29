@@ -200,6 +200,8 @@ struct ExecuteOptions {
   // cf.yaml (design section 15, models.roles).
   std::map<std::string, nlohmann::json, std::less<>> role_options;
   std::string sandbox_image;  // empty: gates run through the local executor
+  std::string agent_sandbox_image;  // empty: opencode runs on the host
+  std::string agent_sandbox_binary = "opencode";
   // Run opencode servers in the daemon-free namespace sandbox (design 6.8).
   bool agent_sandbox_namespaces = false;
   std::string ns_agent_binary = "cf-ns-agent";

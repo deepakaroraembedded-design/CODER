@@ -39,6 +39,8 @@ int main(int argc, char** argv) {
   std::string opencode_binary = "opencode";
   std::string mcp_binary = "cf-mcp";
   std::string sandbox_image;
+  std::string agent_sandbox_image;
+  std::string agent_sandbox_binary = "opencode";
   bool agent_sandbox_namespaces = false;
   std::string ns_agent_binary = "cf-ns-agent";
   std::vector<std::string> ns_mounts;
@@ -73,6 +75,10 @@ int main(int argc, char** argv) {
                   "PATH prefix inside the namespace (repeatable)");
   run->add_option("--ns-env", ns_env,
                   "Environment KEY=VALUE inside the namespace (repeatable)");
+  run->add_option("--agent-sandbox-image", agent_sandbox_image,
+                  "Run opencode servers in this container image");
+  run->add_option("--agent-sandbox-binary", agent_sandbox_binary,
+                  "opencode binary path inside the agent image");
   run->add_option("--sandbox-image", sandbox_image,
                   "Run gates in this Docker image (design section 6.8)");
   run->add_option("--docs", docs_dir, "Documentation directory for the RAG index");
@@ -292,6 +298,8 @@ int main(int argc, char** argv) {
     options.opencode_binary = opencode_binary;
     options.mcp_binary = mcp_binary;
     options.sandbox_image = sandbox_image;
+    options.agent_sandbox_image = agent_sandbox_image;
+    options.agent_sandbox_binary = agent_sandbox_binary;
     options.agent_sandbox_namespaces = agent_sandbox_namespaces;
     options.ns_agent_binary = ns_agent_binary;
     options.ns_mounts = ns_mounts;

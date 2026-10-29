@@ -468,6 +468,8 @@ Result<PlanOutcome> RunProcessExecutor::run(const PlanEntry& plan_entry, int rep
   config.profile_test_framework = plan->target.test_framework;
   config.sandbox_image = options_.sandbox_image;
   config.agent_sandbox_namespaces = options_.agent_sandbox_namespaces;
+  config.agent_sandbox_image = options_.agent_sandbox_image;
+  config.agent_sandbox_binary = options_.agent_sandbox_binary;
   config.ns_agent_binary = options_.ns_agent_binary;
   config.ns_mounts = options_.ns_mounts;
   config.ns_path_prefixes = options_.ns_path_prefixes;

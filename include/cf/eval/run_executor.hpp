@@ -37,6 +37,8 @@ struct RunExecutorOptions {
   std::string docs_dir;
   std::string sandbox_image;
   bool agent_sandbox_namespaces = false;
+  std::string agent_sandbox_image;
+  std::string agent_sandbox_binary = "opencode";
   std::string ns_agent_binary = "cf-ns-agent";
   std::vector<std::string> ns_mounts;
   std::vector<std::string> ns_path_prefixes;

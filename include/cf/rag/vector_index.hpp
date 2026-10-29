@@ -70,6 +70,19 @@ class HnswVectorIndex final : public VectorIndex {
 // Optional FAISS index. Built only when CF_HAS_FAISS is defined; returns a
 // null pointer otherwise so callers can fall back to hnswlib.
 std::unique_ptr<VectorIndex> make_faiss_vector_index();
-std::unique_ptr<VectorIndex> make_faiss_ivfpq_vector_index();
+
+// Tuning for the IVF-PQ index. A zero nlist selects a value from the training
+// sample size; nprobe is clamped to nlist. The sample is bounded by
+// train_threshold so ingestion of very large collections cannot grow the
+// pending buffer without bound.
+struct FaissIvfPqOptions {
+  std::size_t train_threshold = 65536;
+  int nlist = 0;
+  int nprobe = 16;
+  int nbits = 8;
+};
+
+std::unique_ptr<VectorIndex> make_faiss_ivfpq_vector_index(
+    FaissIvfPqOptions options = {});
 
 }  // namespace cf::rag
