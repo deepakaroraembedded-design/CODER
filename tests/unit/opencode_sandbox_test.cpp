@@ -101,6 +101,30 @@ TEST(OpencodeSandboxTest, LauncherCarriesTheDesignLayout) {
   EXPECT_EQ(argv.back(), "cf-agent-opencode:1.18.35");
 }
 
+TEST(OpencodeSandboxTest, LauncherCarriesRootWriteSetAndBuildPaths) {
+  OpencodeFactoryConfig config;
+  config.run_id = "R12";
+  config.run_dir = "/ws/runs/R12";
+  config.sandbox_image = "img";
+  config.ns_write_paths = {"pom.xml", "src"};
+  config.ns_write_files = {"pom.xml"};
+  config.docs_dir = "/ws/docs";
+  config.reference_docs_dir = "/ws/ref";
+  config.reference_versions_file = "/ws/ref/versions.json";
+  config.ns_env = {"MAVEN_OPTS=-Dmaven.repo.local=/opt/m2"};
+  const auto argv = cf::orch::sandboxed_server_launcher(
+      config, "coder", "/ws/wt/R12/M3/coder", 5000, "/ws/runs/R12/c.json",
+      "/ws/runs/R12/calls-coder.jsonl");
+  EXPECT_TRUE(contains(argv, "/ws/wt/R12/M3/coder/pom.xml:/work/pom.xml"));
+  EXPECT_TRUE(contains(argv, "/ws/wt/R12/M3/coder/src:/work/src"));
+  EXPECT_TRUE(contains(argv, "/ws/wt/R12/M3/coder/target:/work/target"));
+  EXPECT_TRUE(contains(argv, "/ws/wt/R12/M3/coder/dist:/work/dist"));
+  EXPECT_TRUE(contains(argv, "/ws/docs:/cf/docs:ro"));
+  EXPECT_TRUE(contains(argv, "/ws/ref:/cf/reference-docs:ro"));
+  EXPECT_TRUE(contains(argv, "/ws/ref/versions.json:/cf/reference-versions.json:ro"));
+  EXPECT_TRUE(contains(argv, "MAVEN_OPTS=-Dmaven.repo.local=/opt/m2"));
+}
+
 TEST(OpencodeSandboxTest, ReviewerGetsNoWritableMounts) {
   OpencodeFactoryConfig config;
   config.run_id = "R12";
@@ -217,7 +241,8 @@ const char* kScript = R"json({
                     "arguments": {"id": "D-1", "result": "VERIFIED"}}}
   ],
   "coder": [
-    {"files": {"src/m3.cpp": "int m3() { return 0; }\n"},
+    {"files": {"src/m3.cpp": "int m3() { return 0; }\n",
+                  "pom.xml": "<?xml version=\"1.0\"?><project/>\n"},
      "submission": {"tool": "submit_work",
                     "arguments": {"summary": "implemented", "defect_ids": []}}}
   ],
@@ -345,6 +370,7 @@ TEST(OpencodeSandboxTest, NamespaceSandboxedRunProcessReachesDone) {
   cf::plan::MilestoneSpec milestone;
   milestone.id = "M3";
   milestone.title = "Registry";
+  milestone.writes = {"src/m3.cpp", "pom.xml"};
   plan.milestones.push_back(milestone);
   plan.target.language = "cpp";
   plan.target.standard = "c++20";
@@ -417,6 +443,7 @@ TEST(OpencodeSandboxTest, NamespaceSandboxedRunProcessReachesDone) {
   const auto integration = config.workspace_root / "wt" / "R12" / "integration";
   EXPECT_TRUE(std::filesystem::exists(integration / "src" / "m3.cpp"));
   EXPECT_TRUE(std::filesystem::exists(integration / "tests" / "m3_test.cpp"));
+  EXPECT_TRUE(std::filesystem::exists(integration / "pom.xml"));
   auto calls = std::ifstream(run_dir / "calls-coder.jsonl");
   const std::string calls_text((std::istreambuf_iterator<char>(calls)),
                                std::istreambuf_iterator<char>());
@@ -484,6 +511,7 @@ TEST(OpencodeSandboxTest, SandboxedRunProcessReachesDone) {
   cf::plan::MilestoneSpec milestone;
   milestone.id = "M3";
   milestone.title = "Registry";
+  milestone.writes = {"src/m3.cpp", "pom.xml"};
   plan.milestones.push_back(milestone);
   plan.target.language = "cpp";
   plan.target.standard = "c++20";
@@ -556,6 +584,7 @@ TEST(OpencodeSandboxTest, SandboxedRunProcessReachesDone) {
   const auto integration = config.workspace_root / "wt" / "R12" / "integration";
   EXPECT_TRUE(std::filesystem::exists(integration / "src" / "m3.cpp"));
   EXPECT_TRUE(std::filesystem::exists(integration / "tests" / "m3_test.cpp"));
+  EXPECT_TRUE(std::filesystem::exists(integration / "pom.xml"));
   auto calls = std::ifstream(run_dir / "calls-coder.jsonl");
   const std::string calls_text((std::istreambuf_iterator<char>(calls)),
                                std::istreambuf_iterator<char>());

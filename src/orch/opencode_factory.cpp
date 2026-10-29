@@ -64,15 +64,52 @@ void add_option(std::vector<std::string>& argv, const std::string& name,
   argv.push_back(value);
 }
 
-// The directories a role may write (relative to its worktree).
-std::vector<std::string> writable_paths_for(const std::string& role) {
+// The directories/files a role may write (relative to its worktree). The
+// coder's list includes the plan's top-level write-set paths and the build
+// directories every toolchain needs; the snapshot still enforces the exact
+// per-milestone write set.
+std::vector<std::string> writable_paths_for(const OpencodeFactoryConfig& config,
+                                            const std::string& role) {
+  std::vector<std::string> paths;
   if (role == "coder") {
-    return {"src", "include"};
+    paths = {"src", "include"};
+    paths.insert(paths.end(), config.ns_write_paths.begin(),
+                 config.ns_write_paths.end());
+  } else if (role == "qa") {
+    paths = {"tests", "qa"};
   }
-  if (role == "qa") {
-    return {"tests", "qa"};
+  if (role == "coder" || role == "qa") {
+    for (const char* artifact :
+         {"target", "build", "dist", "node_modules", ".gradle", ".cache"}) {
+      paths.emplace_back(artifact);
+    }
   }
-  return {};  // the reviewer is read-only
+  std::vector<std::string> unique;
+  for (const auto& path : paths) {
+    if (std::find(unique.begin(), unique.end(), path) == unique.end()) {
+      unique.push_back(path);
+    }
+  }
+  return unique;  // the reviewer is read-only
+}
+
+bool is_write_file(const OpencodeFactoryConfig& config, const std::string& path) {
+  return std::find(config.ns_write_files.begin(), config.ns_write_files.end(),
+                   path) != config.ns_write_files.end();
+}
+
+void ensure_write_path(const std::filesystem::path& worktree,
+                       const std::string& path, bool file) {
+  const std::filesystem::path full = worktree / path;
+  std::error_code ec;
+  if (file) {
+    if (!std::filesystem::exists(full, ec)) {
+      std::filesystem::create_directories(full.parent_path(), ec);
+      std::ofstream out(full, std::ios::binary);
+    }
+  } else {
+    std::filesystem::create_directories(full, ec);
+  }
 }
 
 // Runs a docker command and returns trimmed stdout on success.
@@ -195,7 +232,7 @@ std::vector<std::string> sandboxed_server_launcher(
 
   // Mount layout (design section 6.8.1).
   add_option(argv, "-v", worktree + ":/work:ro");
-  const std::vector<std::string> writable = writable_paths_for(role);
+  const std::vector<std::string> writable = writable_paths_for(config, role);
   for (const auto& path : writable) {
     add_option(argv, "-v", worktree + "/" + path + ":/work/" + path);
   }
@@ -207,6 +244,16 @@ std::vector<std::string> sandboxed_server_launcher(
   for (const auto& [source, target] : config.extra_mounts) {
     add_option(argv, "-v", source + ":" + target);
   }
+  if (!config.docs_dir.empty()) {
+    add_option(argv, "-v", config.docs_dir + ":/cf/docs:ro");
+  }
+  if (!config.reference_docs_dir.empty()) {
+    add_option(argv, "-v", config.reference_docs_dir + ":/cf/reference-docs:ro");
+  }
+  if (!config.reference_versions_file.empty()) {
+    add_option(argv, "-v",
+               config.reference_versions_file + ":/cf/reference-versions.json:ro");
+  }
   if (!config.designs_dir.empty()) {
     // Approved design packages (design section 6.2 step 7), read-only.
     add_option(argv, "-v", config.designs_dir + ":/cf/designs:ro");
@@ -214,6 +261,9 @@ std::vector<std::string> sandboxed_server_launcher(
   if (!config.patterns_dir.empty()) {
     // Pattern catalog (design section 6.2), read-only.
     add_option(argv, "-v", config.patterns_dir + ":/cf/catalog:ro");
+  }
+  for (const auto& mount : config.ns_mounts) {
+    add_option(argv, "-v", mount);
   }
 
   add_option(argv, "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=64m");
@@ -224,6 +274,9 @@ std::vector<std::string> sandboxed_server_launcher(
   add_option(argv, "-e", "OPENCODE_CONFIG=/cf/" + config_path.filename().string());
   add_option(argv, "-e", "CF_MCP_CALLS_FILE=/cf/" + calls_file.filename().string());
   add_option(argv, "-e", "CF_ROLE=" + role);
+  for (const auto& entry : config.ns_env) {
+    add_option(argv, "-e", entry);
+  }
   if (!config.sandbox_proxy_url.empty()) {
     // All egress goes through the allow-listing proxy (design 6.8.2).
     if (!config.sandbox_internal_network) {
@@ -448,9 +501,9 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
 
   // The writable mount points must exist before the container starts,
   // otherwise Docker creates them root-owned and the agent cannot write.
-  for (const auto& path : writable_paths_for(role)) {
-    std::error_code ec;
-    std::filesystem::create_directories(std::filesystem::path(worktree) / path, ec);
+  for (const auto& path : writable_paths_for(config_, role)) {
+    ensure_write_path(std::filesystem::path(worktree), path,
+                      is_write_file(config_, path));
   }
 
   const std::filesystem::path config_path =
