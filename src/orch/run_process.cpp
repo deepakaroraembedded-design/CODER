@@ -377,8 +377,11 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     if (factory_config.mcp_binary_host.empty() &&
         !config_.mcp_command.empty()) {
       std::error_code mcp_ec;
-      factory_config.mcp_binary_host =
-          std::filesystem::absolute(config_.mcp_command, mcp_ec).string();
+      const auto candidate =
+          std::filesystem::absolute(config_.mcp_command, mcp_ec);
+      if (!mcp_ec && std::filesystem::is_regular_file(candidate, mcp_ec)) {
+        factory_config.mcp_binary_host = candidate.string();
+      }
     }
     factory_config.sandbox_allowed_hosts = config_.sandbox_allowed_hosts;
     production_factory =

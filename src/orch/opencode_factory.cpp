@@ -199,6 +199,23 @@ Result<std::string> wait_for_container_ip(const std::string& docker_binary,
               "container " + container + " has no IP on the sandbox network");
 }
 
+Result<bool> mcp_connected(agents::OpencodeClient& client,
+                           std::chrono::milliseconds timeout) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    auto status = client.list_mcp();
+    if (status.has_value() && status->is_object()) {
+      const auto cf = status->find("cf");
+      if (cf != status->end() && cf->is_object() &&
+          cf->value("status", "") == "connected") {
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  return false;
+}
+
 }  // namespace
 
 std::string sandboxed_container_name(const std::string& role, uint16_t port) {
@@ -638,6 +655,16 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
       return tl::make_unexpected(server.error());
     }
     state.server = std::move(*server);
+  }
+
+  // OpenCode starts its stdio MCP child asynchronously. Wait for the role's
+  // cf-mcp connection before the first prompt, otherwise a slow container can
+  // expose no submission tools on the first turn.
+  if (sandboxed && !config_.mcp_binary_host.empty()) {
+    if (!mcp_connected(*state.client, config_.start_timeout)) {
+      spdlog::warn("opencode[{}] did not connect cf-mcp before the start timeout",
+                   role);
+    }
   }
 
   // 3. Event stream: permissions to the broker, questions to the policy. The
