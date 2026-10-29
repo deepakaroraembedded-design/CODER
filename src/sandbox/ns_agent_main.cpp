@@ -465,7 +465,7 @@ int run_host(const Options& options) {
     std::cerr << "cf-ns-agent: opencode command needs --port\n";
     return 2;
   }
-  if (!make_dir(options.bridge_dir) || !make_dir(options.run_dir + "/bin")) {
+  if (!make_dir(options.run_dir + "/bin")) {
     std::cerr << "cf-ns-agent: cannot create the bridge directory\n";
     return 2;
   }
@@ -492,8 +492,16 @@ int run_host(const Options& options) {
     }
   }
 
+  const std::string bridge_dir =
+      "/tmp/cf-ns-bridge-" + std::to_string(::getpid());
+  std::error_code bridge_ec;
+  std::filesystem::remove_all(bridge_dir, bridge_ec);
+  if (!make_dir(bridge_dir)) {
+    std::cerr << "cf-ns-agent: cannot create the short bridge directory\n";
+    return 2;
+  }
   const int host_listener = tcp_listener(opencode);
-  const int egress_listener = unix_listener(options.bridge_dir + "/e.sock");
+  const int egress_listener = unix_listener(bridge_dir + "/e.sock");
   if (host_listener < 0 || egress_listener < 0) {
     std::cerr << "cf-ns-agent: cannot bind the host bridge\n";
     return 2;
@@ -518,6 +526,7 @@ int run_host(const Options& options) {
     }
   }
   spec.extra_writable_mounts.push_back({options.run_dir, "/cf"});
+  spec.extra_writable_mounts.push_back({bridge_dir, "/cf/bridge"});
   if (!options.mcp_source.empty()) {
     std::error_code ec;
     const auto source = std::filesystem::absolute(options.mcp_source, ec);
@@ -651,9 +660,9 @@ int run_host(const Options& options) {
   ::setpgid(supervisor, supervisor);
   ::signal(SIGTERM, terminate_supervisor);
   ::signal(SIGINT, terminate_supervisor);
-  std::thread inbound([host_listener, bridge = options.bridge_dir] {
-    accept_loop(host_listener, [bridge](int client) {
-      const int inner = connect_unix(bridge + "/o.sock", 60000);
+  std::thread inbound([host_listener, bridge_dir] {
+    accept_loop(host_listener, [bridge_dir](int client) {
+      const int inner = connect_unix(bridge_dir + "/o.sock", 60000);
       if (inner < 0) {
         ::close(client);
         return;
@@ -674,6 +683,7 @@ int run_host(const Options& options) {
   inbound.detach();
   egress.detach();
   const bool ok = wait_for_child(supervisor);
+  std::filesystem::remove_all(bridge_dir, bridge_ec);
   ::_exit(ok ? 0 : 1);
 }
 

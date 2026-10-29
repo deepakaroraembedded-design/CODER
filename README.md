@@ -36,7 +36,7 @@ is still missing.
 | Sandbox (§6.8) | Two executors behind `ProcessExecutor`. **Docker** for gate jobs **and opencode servers**: read-only rootfs and worktree, writable role mounts, noexec tmpfs, hardening flags, explicit container cleanup on stop/timeout plus run-labelled cleanup on recovery; **kernel-level egress blocking** via a Docker `--internal` network (containers have no route out; the orchestrator connects to the container IP directly) with the allow-listing CONNECT proxy as the only outbound path. **Daemon-free namespaces** for gate jobs (`sandbox_namespaces`) **and opencode servers** (`agent_sandbox_namespaces`): unprivileged user/mount/net/UTS/IPC/PID namespaces, private `/proc`, the same mount layout built with bind mounts and pivot_root, fresh netns with loopback, Landlock path confinement, seccomp deny-list, cgroup limits when delegated (fail-closed otherwise), and `cf-ns-agent` bridging the host API port and the allow-listing egress proxy over Unix sockets. The Docker and gate-namespace executors run the escape suite; the namespace agent bridge has end-to-end coverage |
 | Company guardrail checks (`cf-swt-*` / `swt.*`) | **Foundation**: 18 `cf-tidy` checks plus 32 Semgrep rules. `cf-tidy` runs `cf-swt-no-raw-new`, `cf-swt-no-raw-delete`, `cf-swt-no-raw-malloc`, `cf-swt-no-detached-thread` (CG-4.2), `cf-swt-no-hardcoded-secret`, `cf-swt-no-bool-param`, `cf-swt-no-c-style-cast`, `cf-swt-no-using-namespace-in-header`, `cf-swt-no-goto`, `cf-swt-no-reinterpret-cast`, `cf-swt-no-const-cast`, `cf-swt-no-raw-array`, `cf-swt-no-unsafe-c-function`, `cf-swt-no-multiple-inheritance`, `cf-swt-no-public-data-member`, `cf-swt-no-public-static-data`, `cf-swt-no-sleep-in-test` and `cf-swt-no-weak-hash` over the target's compilation database, with fixture tests for placement new, exempt namespaces, C allocation, macro use sites and clean sources. The C/C++ profile runs the standard clang-tidy check set plus `cf-tidy`. The Python, TypeScript/JavaScript, Java and Go profiles load starter `swt.*` Semgrep rules for shell/eval/HTML injection, unsafe YAML/TLS, stack traces, hardcoded secrets, unsafe eval/exec/os.system/pickle, disabled TLS verification, document.write, weak hashes, Java object deserialization and sleeps in tests. A starter rule-coverage catalog lives in `rules/guardrails.yaml`, and `cf-tidy --list-checks` lists the compiled checks. Remaining: the rest of the guideline rule set and optional plugin packaging for shared-LLVM distributions |
 
-Test suite: **782 tests**, green on `debug`; CI also runs the `release`, ASan and TSan presets.
+Test suite: **783 tests**, green on `debug`; CI also runs the `release`, ASan and TSan presets.
 
 ---
 
@@ -716,7 +716,7 @@ the skipped sets are recorded in the same JSON file.
 ## 8. Testing
 
 ```bash
-ctest --test-dir build/debug --output-on-failure     # 782 unit tests
+ctest --test-dir build/debug --output-on-failure     # 783 unit tests
 cmake --preset asan && cmake --build build/asan -j"$(nproc)" && ctest --test-dir build/asan
 cmake --preset tsan && cmake --build build/tsan -j"$(nproc)" && setarch "$(uname -m)" -R ctest --test-dir build/tsan
 ```
@@ -997,10 +997,11 @@ opencode version.
   have the evaluator apply it. The expanded-suite smoke runs now pass for
   Python (`t1-python-stats`, 6/6 at $0.3706), Java (`t1-java-stack`, 8/8 at
   $0.1138), Go (`t1-go-lru`, 14/14 at $0.1218) and TypeScript
-  (`t1-typescript-slug`, 4/4 at $0.2433). A namespace-sandboxed Go run
-  (`t1-go-lru`) completed with 14/14 hidden tests at $0.2357; Java and
-  TypeScript namespace runs still depend on the mounted Maven/npm toolchain
-  and the model's ability to finish the build loop. C++ T1's hidden tests pass (12/12
+  (`t1-typescript-slug`, 4/4 at $0.2433). Namespace-sandboxed runs now
+  complete for Go (`t1-go-lru`, 14/14 at $0.2357) and Java (`t1-java-stack`,
+  8/8 at $0.2236 with the GLM coder; the default coder remains flaky on
+  submission). TypeScript namespace runs build and install offline but still
+  depend on the model finishing the test loop. C++ T1's hidden tests pass (12/12
   semantics and 1/1 TSan), but a QA-run TSan build still needs the outer
   `setarch`, and the M2 coder also exposed occasional no-submission
   flakiness, so its run-completion number remains unstable. Remaining: grow
@@ -1067,7 +1068,7 @@ Coder_Framework_Design_Document.md
 docs/phase0a/               # harness go/no-go decision + API notes
 include/cf/<module>/        # public interface headers (one directory per module)
 src/<module>/               # implementations
-tests/unit/                 # GoogleTest unit tests (782)
+tests/unit/                 # GoogleTest unit tests (783)
 tests/harness_compat/       # Phase 0a compatibility spike (H1-H15)
 eval/                       # golden suite manifest/plans, hidden acceptance tests,
                             # benchmark configs and RAG evaluation sets (cf-eval)

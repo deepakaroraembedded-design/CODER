@@ -45,6 +45,7 @@ void record_call(const std::string& tool, const json& arguments) {
   std::ofstream out(path, std::ios::app);
   if (out) {
     out << entry.dump() << "\n";
+    out.flush();
   }
 }
 

@@ -157,6 +157,26 @@ TEST_F(OpencodeRunnerTest, ContinuationIsSentWhenNoSubmissionArrives) {
   EXPECT_NE(driver.prompts[0].find("Implement the registry"), std::string::npos);
 }
 
+TEST_F(OpencodeRunnerTest, PartialCallLineIsRetriedAfterCompletion) {
+  FakeSessionDriver driver;
+  int prompts = 0;
+  driver.on_prompt = [this, &prompts](const std::string&) {
+    ++prompts;
+    if (prompts == 1) {
+      std::ofstream out(calls_file_, std::ios::app);
+      out << R"({"tool":"submit_work","arguments":{"summary")";
+    } else if (prompts == 2) {
+      std::ofstream out(calls_file_, std::ios::app);
+      out << R"(: "completed"}})" << "\n";
+    }
+  };
+  OpencodeAgentRunner runner(driver, options_);
+  auto outcome = runner.run_turn(request(cf::orch::MilestonePhase::Code));
+  ASSERT_TRUE(outcome.has_value()) << outcome.error().message;
+  EXPECT_EQ(outcome->summary, "completed");
+  EXPECT_EQ(driver.prompts.size(), 2u);
+}
+
 TEST_F(OpencodeRunnerTest, GivesUpAfterTheContinuationLimit) {
   FakeSessionDriver driver;  // never submits
   OpencodeAgentRunner runner(driver, options_);

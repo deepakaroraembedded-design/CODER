@@ -22,7 +22,7 @@ build_systems:
     agent_commands: [pnpm, npx]
 
 test_frameworks:
-  vitest: { steps: [[npx, vitest, run]], languages: [typescript, javascript] }
+  vitest: { steps: [[npx, vitest, run, --globals]], languages: [typescript, javascript] }
   jest: { steps: [[npx, jest, --ci]], languages: [typescript, javascript] }
 
 exec_from_source: []

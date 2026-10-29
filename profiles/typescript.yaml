@@ -39,7 +39,7 @@ build_systems:
 
 test_frameworks:
   vitest:
-    steps: [[npx, vitest, run]]
+    steps: [[npx, vitest, run, --globals]]
     report: junit
     languages: [typescript, javascript]
   jest:

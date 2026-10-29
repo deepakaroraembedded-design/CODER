@@ -1,7 +1,10 @@
 #include "cf/orch/opencode_runner.hpp"
 
+#include <spdlog/spdlog.h>
+
 #include <algorithm>
 #include <fstream>
+#include <thread>
 #include <sstream>
 #include <utility>
 
@@ -160,10 +163,17 @@ Result<std::vector<Json>> OpencodeAgentRunner::read_new_calls() {
     calls_offset_ = 0;  // file was truncated
   }
   in.seekg(static_cast<std::streamoff>(calls_offset_), std::ios::beg);
-  std::string line;
-  std::streamoff consumed = static_cast<std::streamoff>(calls_offset_);
-  while (std::getline(in, line)) {
-    consumed += static_cast<std::streamoff>(line.size()) + 1;
+  const std::string content((std::istreambuf_iterator<char>(in)),
+                            std::istreambuf_iterator<char>());
+  const std::size_t base = calls_offset_;
+  std::size_t position = 0;
+  while (true) {
+    const std::size_t newline = content.find('\n', position);
+    if (newline == std::string::npos) {
+      break;  // keep a partial line for the next read
+    }
+    const std::string line = content.substr(position, newline - position);
+    position = newline + 1;
     if (line.empty()) {
       continue;
     }
@@ -172,7 +182,7 @@ Result<std::vector<Json>> OpencodeAgentRunner::read_new_calls() {
       calls.push_back(std::move(call));
     }
   }
-  calls_offset_ = static_cast<std::size_t>(consumed);
+  calls_offset_ = base + position;
   return calls;
 }
 
@@ -243,6 +253,7 @@ Result<AgentTurnOutcome> OpencodeAgentRunner::drive(const AgentTurnRequest& requ
   }
 
   const std::string prompt = build_prompt(request, system_validation);
+  std::string last_tool;
   for (uint32_t attempt = 0; attempt <= options_.max_continuations; ++attempt) {
     const std::string& text = attempt == 0 ? prompt : options_.continuation_message;
     auto sent = driver_.send_prompt(*session, text);
@@ -257,9 +268,35 @@ Result<AgentTurnOutcome> OpencodeAgentRunner::drive(const AgentTurnRequest& requ
                   "the turn did not finish within the watchdog timeout: " +
                       idle.error().message);
     }
+    // The MCP server is a separate process and the event stream can report
+    // idle between tool steps. Poll briefly for the final structured call
+    // before treating the turn as unfinished.
     auto calls = read_new_calls();
     if (!calls) {
       return tl::make_unexpected(calls.error());
+    }
+    const auto grace_deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    for (;;) {
+      bool submitted = false;
+      for (const auto& call : *calls) {
+        if (accepts_submission(request.phase, call.value("tool", ""))) {
+          submitted = true;
+          break;
+        }
+      }
+      if (submitted || std::chrono::steady_clock::now() >= grace_deadline) {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      auto more = read_new_calls();
+      if (!more) {
+        return tl::make_unexpected(more.error());
+      }
+      calls->insert(calls->end(), more->begin(), more->end());
+    }
+    for (const auto& call : *calls) {
+      last_tool = call.value("tool", "");
     }
     // A test dispute takes precedence over a work submission: the coder
     // cannot change a protected test itself, so QA decides before the next
@@ -288,6 +325,9 @@ Result<AgentTurnOutcome> OpencodeAgentRunner::drive(const AgentTurnRequest& requ
       return outcome;
     }
   }
+  spdlog::warn("{} ended without a submission after {} attempts (calls file {}, last tool '{}')",
+               request.role, options_.max_continuations + 1, options_.calls_file,
+               last_tool);
   return fail(error_codes::kNoSubmission,
               "the agent ended the turn without a structured submission after " +
                   std::to_string(options_.max_continuations + 1) + " attempts");
