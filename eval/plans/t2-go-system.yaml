@@ -18,7 +18,7 @@ milestones:
     title: Worker pool backed by the queue
     requirements: [REQ-GO-SYS-2]
     depends_on: [M1]
-    writes: [pool/pool.go]
+    writes: [pool/pool.go, tests]
     uses: [queue/queue.go]
     writes_interfaces: [pool/pool.go]
     acceptance:

@@ -12,7 +12,7 @@ milestones:
     acceptance:
       - "Python 3.12 package with src/stats.py"
       - "summarize(values: Iterable[float]) -> dict[str, float]"
-      - "Return mean, minimum, maximum and count; empty input returns count 0 and no mean/min/max keys"
+      - "Return mean, min, max and count keys; empty input returns count 0 and no mean/min/max keys"
       - "Reject non-numeric input with TypeError; standard library only"
 target:
   language: python

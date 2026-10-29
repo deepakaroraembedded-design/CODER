@@ -6,18 +6,18 @@ milestones:
   - id: M1
     title: Represent money and line items
     requirements: [REQ-TS-PIPE-1]
-    writes: [package.json, tsconfig.json, src/models.ts]
+    writes: [package.json, tsconfig.json, src/models.ts, src/index.ts]
     uses: []
     writes_interfaces: [src/models.ts]
     acceptance:
       - "Strict TypeScript project with a CommonJS build to dist/"
       - "Money has cents: number and add/multiply operations"
-      - "LineItem has sku, quantity and unitPrice; invalid money or quantity throws TypeError"
+      - "LineItem has sku, quantity and unitPrice; invalid money or non-positive quantity throws TypeError"
   - id: M2
     title: Apply line items to a ledger
     requirements: [REQ-TS-PIPE-2]
     depends_on: [M1]
-    writes: [src/ledger.ts]
+    writes: [package.json, src/ledger.ts, src/index.ts]
     uses: [src/models.ts]
     writes_interfaces: [src/ledger.ts]
     acceptance:
@@ -27,7 +27,7 @@ milestones:
     title: Process orders
     requirements: [REQ-TS-PIPE-3]
     depends_on: [M2]
-    writes: [src/processor.ts]
+    writes: [package.json, src/processor.ts, src/index.ts]
     uses: [src/ledger.ts]
     writes_interfaces: [src/processor.ts]
     acceptance:

@@ -12,6 +12,7 @@
 #include "cf/sandbox/namespaces.hpp"
 #include "cf/telemetry/logging.hpp"
 #include "cf/orch/waivers.hpp"
+#include "cf/orch/opencode_runner.hpp"
 
 namespace cf::orch {
 namespace {
@@ -649,6 +650,31 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
   AgentTurnRequest request = make_request(phase, milestone_id, role);
   request.worktree = worktree->string();
   auto outcome = agent_runner_.run_turn(request);
+  if (!outcome && phase == MilestonePhase::Fix &&
+      integrated_.count(std::string(milestone_id)) > 0 &&
+      outcome.error().code == error_codes::kNoSubmission) {
+    // A revalidating milestone is already integrated. If the agent inspected
+    // the new integration head and correctly concluded that no change is
+    // needed, an explicit submission is still expected, but a clean tree
+    // means there is no work to discard. Treat that as a valid no-op fix.
+    auto changes = repository_.worktree_changes(*worktree);
+    bool outside = true;
+    if (changes.has_value()) {
+      outside = false;
+      for (const auto& path : *changes) {
+        if (!is_build_artifact(path)) {
+          outside = true;
+          break;
+        }
+      }
+    }
+    if (!outside) {
+      AgentTurnOutcome noop;
+      noop.completed = true;
+      noop.summary = "revalidation found no change required";
+      outcome = noop;
+    }
+  }
   if (!outcome) {
     spdlog::warn("{} turn for {} failed: {}", role, milestone_id,
                  outcome.error().message);

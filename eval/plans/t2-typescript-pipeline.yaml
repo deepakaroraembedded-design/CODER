@@ -17,7 +17,7 @@ milestones:
     title: Aggregate records by key
     requirements: [REQ-TS-SYS-2]
     depends_on: [M1]
-    writes: [src/aggregate.ts]
+    writes: [package.json, src/aggregate.ts]
     uses: [src/parser.ts]
     writes_interfaces: [src/aggregate.ts]
     acceptance:

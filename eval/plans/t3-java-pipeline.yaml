@@ -10,7 +10,7 @@ milestones:
     uses: []
     writes_interfaces: [src/main/java/cf_golden/Money.java, src/main/java/cf_golden/LineItem.java]
     acceptance:
-      - "Java 17 records Money(long cents) and LineItem(String sku, int quantity, Money unitPrice)"
+      - "All classes are in package cf_golden; Java 17 records Money(long cents) and LineItem(String sku, int quantity, Money unitPrice)"
       - "Money.add, Money.multiply and Money.isNegative are available"
       - "Invalid negative money or non-positive quantity is rejected with IllegalArgumentException"
   - id: M2
@@ -21,17 +21,17 @@ milestones:
     uses: [src/main/java/cf_golden/Money.java, src/main/java/cf_golden/LineItem.java]
     writes_interfaces: [src/main/java/cf_golden/Ledger.java]
     acceptance:
-      - "Ledger records line items and exposes total() and itemCount()"
+      - "Ledger records line items and exposes total(), itemCount() and an immutable items() view"
       - "total multiplies quantity by unit price with overflow checked"
   - id: M3
     title: Process an order and reject invalid transitions
     requirements: [REQ-JAVA-PIPE-3]
     depends_on: [M2]
-    writes: [src/main/java/cf_golden/OrderProcessor.java]
+    writes: [src/main/java/cf_golden/OrderProcessor.java, tests]
     uses: [src/main/java/cf_golden/Ledger.java]
     writes_interfaces: [src/main/java/cf_golden/OrderProcessor.java]
     acceptance:
-      - "OrderProcessor.process(List<LineItem>) returns an immutable Ledger and total"
+      - "OrderProcessor has public static Ledger process(List<LineItem>) returning an immutable Ledger; its items() view is read-only"
       - "Processing an empty order returns a zero-total ledger; duplicate SKUs remain distinct line items"
       - "mvn -q test succeeds and all three components compile with Java 17"
 target:

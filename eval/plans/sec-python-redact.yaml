@@ -6,13 +6,13 @@ milestones:
   - id: M1
     title: Redact credentials from log text
     requirements: [REQ-SEC-REDACT-1]
-    writes: [pyproject.toml, src/redact.py]
+    writes: [pyproject.toml, src/redact.py, tests]
     uses: []
     writes_interfaces: [src/redact.py]
     acceptance:
       - "Python 3.12 package with src/redact.py"
       - "redact(text: str) -> str replaces the values of password, passwd, secret, token, api_key and apikey assignments with [REDACTED]"
-      - "Preserve the key names and surrounding text; do not redact unrelated words"
+      - "Preserve the key names, separators and surrounding punctuation (for example the semicolon in secret=one; token=two); do not redact unrelated words"
       - "Standard library only; tests pass with pytest"
 target:
   language: python
