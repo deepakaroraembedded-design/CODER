@@ -80,6 +80,9 @@ struct FaissIvfPqOptions {
   int nlist = 0;
   int nprobe = 16;
   int nbits = 8;
+  // Optional FAISS index path. When set, the trained index and label map are
+  // written atomically and reloaded on construction.
+  std::string path;
 };
 
 std::unique_ptr<VectorIndex> make_faiss_ivfpq_vector_index(

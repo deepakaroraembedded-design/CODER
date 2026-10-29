@@ -44,3 +44,9 @@ rules:
       - metavariable-regex:
           metavariable: $NAME
           regex: (?i)(password|passwd|secret|token|api_key|apikey|private_key)
+
+  - id: swt.java.no-insecure-random
+    languages: [java]
+    severity: ERROR
+    message: Do not use java.util.Random for security-sensitive values; use SecureRandom.
+    pattern: new java.util.Random(...)

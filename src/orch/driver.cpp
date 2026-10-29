@@ -738,6 +738,12 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
             if (is_build_artifact(path)) {
               continue;
             }
+            // A coder may create ad-hoc tests to verify its work. They are
+            // scratch outputs: the snapshot still commits only the declared
+            // write set, and QA-owned tests remain untouched.
+            if (role == "coder" && is_test_path(path)) {
+              continue;
+            }
             if (!within_write_set(spec->writes, path)) {
               outside.push_back(path);
             }

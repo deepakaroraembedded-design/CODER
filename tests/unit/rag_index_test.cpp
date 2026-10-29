@@ -2,7 +2,9 @@
 // (design section 6.3).
 #include <gtest/gtest.h>
 
+#include <filesystem>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 #include "cf/rag/bm25.hpp"
@@ -263,6 +265,33 @@ TEST(RagVectorIndexTest, FaissRanksByCosineSimilarity) {
 #endif
 
 #ifdef CF_HAS_FAISS
+TEST(RagVectorIndexTest, FaissIvfPqPersistsAndReloads) {
+  const auto path = std::filesystem::temp_directory_path() /
+                    ("cf-ivfpq-" + std::to_string(::getpid()) + ".index");
+  cf::rag::FaissIvfPqOptions options;
+  options.train_threshold = 64;
+  options.nlist = 4;
+  options.nprobe = 2;
+  options.nbits = 1;
+  options.path = path.string();
+  {
+    auto index = cf::rag::make_faiss_ivfpq_vector_index(options);
+    for (int i = 0; i < 64; ++i) {
+      std::vector<float> value(8, 0.0f);
+      value[static_cast<std::size_t>(i % 8)] = 1.0f;
+      ASSERT_TRUE(index->add("p" + std::to_string(i), value).has_value());
+    }
+    ASSERT_FALSE(index->search({1, 0, 0, 0, 0, 0, 0, 0}, 1).empty());
+  }
+  auto reloaded = cf::rag::make_faiss_ivfpq_vector_index(options);
+  const auto results = reloaded->search({1, 0, 0, 0, 0, 0, 0, 0}, 1);
+  ASSERT_FALSE(results.empty());
+  EXPECT_EQ(results[0].first, "p0");
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+  std::filesystem::remove(path.string() + ".labels", ec);
+}
+
 TEST(RagVectorIndexTest, FaissIvfPqTrainsAndSearches) {
   auto index = cf::rag::make_faiss_ivfpq_vector_index();
   ASSERT_NE(index, nullptr);

@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdint>
 #include <memory>
+#include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -15,6 +17,7 @@
 #include <faiss/IndexFlat.h>
 #include <faiss/IndexHNSW.h>
 #include <faiss/IndexIVFPQ.h>
+#include <faiss/index_io.h>
 
 namespace cf::rag {
 namespace {
@@ -95,7 +98,11 @@ class FaissVectorIndex final : public VectorIndex {
 class FaissIvfPqVectorIndex final : public VectorIndex {
  public:
   explicit FaissIvfPqVectorIndex(FaissIvfPqOptions options)
-      : options_(options) {}
+      : options_(std::move(options)) {
+    if (!options_.path.empty()) {
+      load();
+    }
+  }
 
   Status add(std::string_view chunk_id, std::vector<float> vector) override {
     if (vector.empty()) {
@@ -150,6 +157,44 @@ class FaissIvfPqVectorIndex final : public VectorIndex {
   }
 
  private:
+  void save() const {
+    if (options_.path.empty() || index_ == nullptr) {
+      return;
+    }
+    const std::string temporary = options_.path + ".tmp";
+    faiss::write_index(index_.get(), temporary.c_str());
+    std::ofstream labels(temporary + ".labels", std::ios::binary);
+    for (const auto& label : labels_) {
+      labels << label << "\n";
+    }
+    labels.close();
+    std::error_code ec;
+    std::filesystem::rename(temporary, options_.path, ec);
+    std::filesystem::rename(temporary + ".labels",
+                            options_.path + ".labels", ec);
+  }
+
+  void load() {
+    std::error_code ec;
+    if (!std::filesystem::exists(options_.path, ec)) {
+      return;
+    }
+    std::unique_ptr<faiss::Index> loaded(
+        faiss::read_index(options_.path.c_str()));
+    auto* ivfpq = dynamic_cast<faiss::IndexIVFPQ*>(loaded.get());
+    if (ivfpq == nullptr) {
+      return;
+    }
+    loaded.release();
+    index_.reset(ivfpq);
+    dimension_ = index_->d;
+    std::ifstream labels(options_.path + ".labels", std::ios::binary);
+    std::string label;
+    while (std::getline(labels, label)) {
+      labels_.push_back(label);
+    }
+  }
+
   void train_and_flush() {
     if (pending_.empty() || dimension_ == 0) {
       return;
@@ -179,6 +224,7 @@ class FaissIvfPqVectorIndex final : public VectorIndex {
     index_->train(static_cast<faiss::Index::idx_t>(pending_.size()), flat.data());
     index_->add(static_cast<faiss::Index::idx_t>(pending_.size()), flat.data());
     pending_.clear();
+    save();
   }
 
   FaissIvfPqOptions options_;
