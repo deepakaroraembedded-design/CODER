@@ -41,6 +41,9 @@ int main(int argc, char** argv) {
   std::string sandbox_image;
   bool agent_sandbox_namespaces = false;
   std::string ns_agent_binary = "cf-ns-agent";
+  std::vector<std::string> ns_mounts;
+  std::vector<std::string> ns_path_prefixes;
+  std::vector<std::string> ns_env;
   std::string docs_dir;
   bool skip_refinement = false;
   std::vector<std::string> model_overrides;
@@ -64,6 +67,12 @@ int main(int argc, char** argv) {
   run->add_option("--agent-sandbox-namespaces", agent_sandbox_namespaces,
                   "Run opencode servers in the daemon-free namespace sandbox");
   run->add_option("--ns-agent", ns_agent_binary, "cf-ns-agent binary");
+  run->add_option("--ns-mount", ns_mounts,
+                  "Read-only namespace mount HOST:TARGET[:ro] (repeatable)");
+  run->add_option("--ns-path", ns_path_prefixes,
+                  "PATH prefix inside the namespace (repeatable)");
+  run->add_option("--ns-env", ns_env,
+                  "Environment KEY=VALUE inside the namespace (repeatable)");
   run->add_option("--sandbox-image", sandbox_image,
                   "Run gates in this Docker image (design section 6.8)");
   run->add_option("--docs", docs_dir, "Documentation directory for the RAG index");
@@ -285,6 +294,9 @@ int main(int argc, char** argv) {
     options.sandbox_image = sandbox_image;
     options.agent_sandbox_namespaces = agent_sandbox_namespaces;
     options.ns_agent_binary = ns_agent_binary;
+    options.ns_mounts = ns_mounts;
+    options.ns_path_prefixes = ns_path_prefixes;
+    options.ns_env = ns_env;
     options.docs_dir = docs_dir;
     options.skip_refinement = skip_refinement;
     options.patterns_dir = patterns_dir;

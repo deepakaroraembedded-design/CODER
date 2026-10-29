@@ -469,6 +469,9 @@ Result<PlanOutcome> RunProcessExecutor::run(const PlanEntry& plan_entry, int rep
   config.sandbox_image = options_.sandbox_image;
   config.agent_sandbox_namespaces = options_.agent_sandbox_namespaces;
   config.ns_agent_binary = options_.ns_agent_binary;
+  config.ns_mounts = options_.ns_mounts;
+  config.ns_path_prefixes = options_.ns_path_prefixes;
+  config.ns_env = options_.ns_env;
   config.step_timeout = options_.step_timeout;
   config.orchestrator.escalation_dir = (run_dir / "escalations").string();
   if (plan->budget.max_usd_total.has_value()) {

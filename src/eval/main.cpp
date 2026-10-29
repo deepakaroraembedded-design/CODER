@@ -217,6 +217,9 @@ struct BenchOptions {
   std::string sandbox_image;
   bool agent_sandbox_namespaces = false;
   std::string ns_agent_binary = "cf-ns-agent";
+  std::vector<std::string> ns_mounts;
+  std::vector<std::string> ns_path_prefixes;
+  std::vector<std::string> ns_env;
   std::vector<std::string> candidates;  // empty: every candidate
   std::vector<std::string> plans;       // empty: the benchmark's plan list
   bool dry_run = false;
@@ -303,6 +306,9 @@ int run_bench(const BenchOptions& options) {
     executor_options.sandbox_image = options.sandbox_image;
     executor_options.agent_sandbox_namespaces = options.agent_sandbox_namespaces;
     executor_options.ns_agent_binary = options.ns_agent_binary;
+    executor_options.ns_mounts = options.ns_mounts;
+    executor_options.ns_path_prefixes = options.ns_path_prefixes;
+    executor_options.ns_env = options.ns_env;
     executor_options.provider_base_url = config->provider_base_url;
     executor_options.api_key_env = config->api_key_env;
     executor_options.role_models = candidate.role_models;
@@ -416,6 +422,12 @@ int main(int argc, char** argv) {
                           "Run agent servers in the daemon-free namespace sandbox");
   bench_command->add_option("--ns-agent", bench.ns_agent_binary,
                             "cf-ns-agent binary");
+  bench_command->add_option("--ns-mount", bench.ns_mounts,
+                            "Read-only namespace mount HOST:TARGET[:ro] (repeatable)");
+  bench_command->add_option("--ns-path", bench.ns_path_prefixes,
+                            "PATH prefix inside the namespace (repeatable)");
+  bench_command->add_option("--ns-env", bench.ns_env,
+                            "Environment KEY=VALUE inside the namespace (repeatable)");
   bench_command->add_option("--candidate", bench.candidates,
                             "Only run this candidate (repeatable)");
   bench_command->add_option("--plan", bench.plans,

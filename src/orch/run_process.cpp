@@ -345,6 +345,30 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     factory_config.codeintel_db = codeintel_db;
     factory_config.sandbox_namespaces = config_.agent_sandbox_namespaces;
     factory_config.ns_agent_binary = config_.ns_agent_binary;
+    factory_config.ns_mounts = config_.ns_mounts;
+    factory_config.ns_path_prefixes = config_.ns_path_prefixes;
+    factory_config.ns_env = config_.ns_env;
+    factory_config.ns_write_paths = config_.ns_write_paths;
+    factory_config.ns_write_files = config_.ns_write_files;
+    if (factory_config.ns_write_paths.empty()) {
+      for (const auto& milestone : plan_.milestones) {
+        for (const auto& write : milestone.writes) {
+          const auto slash = write.find('/');
+          const std::string top = write.substr(0, slash);
+          if (top.empty()) {
+            continue;
+          }
+          if (std::find(factory_config.ns_write_paths.begin(),
+                        factory_config.ns_write_paths.end(), top) ==
+              factory_config.ns_write_paths.end()) {
+            factory_config.ns_write_paths.push_back(top);
+            if (slash == std::string::npos && top.find('.') != std::string::npos) {
+              factory_config.ns_write_files.push_back(top);
+            }
+          }
+        }
+      }
+    }
     factory_config.sandbox_image = config_.agent_sandbox_image;
     factory_config.sandbox_network = config_.agent_sandbox_network;
     factory_config.sandbox_binary = config_.agent_sandbox_binary;

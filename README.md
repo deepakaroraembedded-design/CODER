@@ -247,7 +247,8 @@ cf run --plan plans/product-x.yaml --profiles profiles --workspace cf-work --run
        [--design-model accounts/fireworks/models/<planner>] \
        [--model coder=accounts/fireworks/models/<model>] \
        [--sandbox-image cf-toolchain-c-cpp:2026.10] [--docs cf-work/docs] \
-       [--agent-sandbox-namespaces --ns-agent build/debug/cf-ns-agent]
+       [--agent-sandbox-namespaces --ns-agent build/debug/cf-ns-agent] \
+       [--ns-mount HOST:TARGET[:ro]] [--ns-path PREFIX] [--ns-env KEY=VALUE]
 
 # review the design package, then approve it (AwaitingDesignApproval -> Executing)
 cf approve --run R12 --workspace cf-work --stage design
@@ -797,7 +798,8 @@ declare `disable_aslr: true`, which the evaluator applies to that step.
 `cf-eval bench --agent-sandbox-namespaces --ns-agent <path> --opencode <real-ELF>`
 runs the same plan with agent servers in the namespace sandbox instead of
 Docker. Pass the real opencode ELF (not a wrapper that references hidden host
-paths) and make the target toolchain visible under the sandbox's `/usr`.
+paths) and make the target toolchain visible under the sandbox's `/usr` or
+mount it with `--ns-mount` and `--ns-path` (and `--ns-env` for settings).
 
 **RAG evaluation sets** (design §6.3) live in `eval/rag/`: a collection, a
 cutoff `k`, a docs directory and queries with known relevant chunks
@@ -878,8 +880,10 @@ opencode version.
   namespace TSan/seccomp the same policy as gate jobs. It uses the host's
   `/usr` toolchain: binaries outside `/usr` (for example a Maven or Go
   installation under `/home`) must be on a mounted path or installed in the
-  host system; pass the real opencode ELF, not a wrapper that references
-  hidden host paths.
+  host system, or mounted with `--ns-mount HOST:TARGET[:ro]` and put on the
+  namespace `PATH` with `--ns-path`; `--ns-env KEY=VALUE` adds toolchain
+  settings such as `MAVEN_OPTS` or `GOMODCACHE`. Pass the real opencode ELF,
+  not a wrapper that references hidden host paths.
 - **Company guardrail checks (`cf-swt-*`).** The first checks,
   `cf-swt-no-raw-new`, `cf-swt-no-raw-delete`, `cf-swt-no-raw-malloc` and
   `cf-swt-no-detached-thread` (CG-4.2), `cf-swt-no-hardcoded-secret` and
@@ -993,7 +997,10 @@ opencode version.
   have the evaluator apply it. The expanded-suite smoke runs now pass for
   Python (`t1-python-stats`, 6/6 at $0.3706), Java (`t1-java-stack`, 8/8 at
   $0.1138), Go (`t1-go-lru`, 14/14 at $0.1218) and TypeScript
-  (`t1-typescript-slug`, 4/4 at $0.2433). C++ T1's hidden tests pass (12/12
+  (`t1-typescript-slug`, 4/4 at $0.2433). A namespace-sandboxed Go run
+  (`t1-go-lru`) completed with 14/14 hidden tests at $0.2357; Java and
+  TypeScript namespace runs still depend on the mounted Maven/npm toolchain
+  and the model's ability to finish the build loop. C++ T1's hidden tests pass (12/12
   semantics and 1/1 TSan), but a QA-run TSan build still needs the outer
   `setarch`, and the M2 coder also exposed occasional no-submission
   flakiness, so its run-completion number remains unstable. Remaining: grow

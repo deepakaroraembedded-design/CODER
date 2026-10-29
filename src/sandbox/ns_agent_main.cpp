@@ -59,6 +59,11 @@ struct Options {
   std::string reference_versions_source;
   std::string designs_source;
   std::string patterns_source;
+  std::vector<std::string> mounts;
+  std::vector<std::string> path_prefixes;
+  std::vector<std::string> environment;
+  std::vector<std::string> write_paths;
+  std::vector<std::string> write_files;
   std::string proxy_url;
   std::string inner_proxy;
   uint16_t host_port = 0;
@@ -152,6 +157,26 @@ bool parse_options(int argc, char** argv, Options* options) {
         if (!take("--designs-source", &options->designs_source)) return false;
       } else if (std::strcmp(argv[index], "--patterns-source") == 0) {
         if (!take("--patterns-source", &options->patterns_source)) return false;
+      } else if (std::strcmp(argv[index], "--mount") == 0) {
+        std::string mount;
+        if (!take("--mount", &mount)) return false;
+        options->mounts.push_back(std::move(mount));
+      } else if (std::strcmp(argv[index], "--path") == 0) {
+        std::string path;
+        if (!take("--path", &path)) return false;
+        options->path_prefixes.push_back(std::move(path));
+      } else if (std::strcmp(argv[index], "--env") == 0) {
+        std::string entry;
+        if (!take("--env", &entry)) return false;
+        options->environment.push_back(std::move(entry));
+      } else if (std::strcmp(argv[index], "--write") == 0) {
+        std::string entry;
+        if (!take("--write", &entry)) return false;
+        options->write_paths.push_back(std::move(entry));
+      } else if (std::strcmp(argv[index], "--write-file") == 0) {
+        std::string entry;
+        if (!take("--write-file", &entry)) return false;
+        options->write_files.push_back(std::move(entry));
       } else if (std::strcmp(argv[index], "--host-port") == 0) {
         std::string value;
         if (!take("--host-port", &value) || !parse_port(value, &options->host_port)) {
@@ -453,6 +478,20 @@ int run_host(const Options& options) {
     return 2;
   }
 
+  for (const auto& file : options.write_files) {
+    const std::filesystem::path path =
+        std::filesystem::path(options.worktree) / file;
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) {
+      std::filesystem::create_directories(path.parent_path(), ec);
+      std::ofstream out(path, std::ios::binary);
+      if (!out) {
+        std::cerr << "cf-ns-agent: cannot create write-set file " << path << "\n";
+        return 2;
+      }
+    }
+  }
+
   const int host_listener = tcp_listener(opencode);
   const int egress_listener = unix_listener(options.bridge_dir + "/e.sock");
   if (host_listener < 0 || egress_listener < 0) {
@@ -462,10 +501,21 @@ int run_host(const Options& options) {
 
   NamespaceSandboxSpec spec;
   spec.worktree = options.worktree;
-  if (options.role == "coder") {
+  if (!options.write_paths.empty()) {
+    spec.writable_paths = options.write_paths;
+  } else if (options.role == "coder") {
     spec.writable_paths = {"src", "include"};
   } else if (options.role == "qa") {
     spec.writable_paths = {"tests", "qa"};
+  }
+  if (options.role == "coder" || options.role == "qa") {
+    for (const char* artifact :
+         {"target", "build", "dist", "node_modules", ".gradle", ".cache"}) {
+      if (std::find(spec.writable_paths.begin(), spec.writable_paths.end(),
+                    artifact) == spec.writable_paths.end()) {
+        spec.writable_paths.emplace_back(artifact);
+      }
+    }
   }
   spec.extra_writable_mounts.push_back({options.run_dir, "/cf"});
   if (!options.mcp_source.empty()) {
@@ -501,6 +551,34 @@ int run_host(const Options& options) {
   mount_source(options.reference_versions_source, "/cf/reference-versions.json");
   mount_source(options.designs_source, "/cf/designs");
   mount_source(options.patterns_source, "/cf/catalog");
+  for (const auto& mount : options.mounts) {
+    const auto first = mount.find(':');
+    if (first == std::string::npos || first == 0 || first + 1 >= mount.size()) {
+      std::cerr << "cf-ns-agent: invalid --mount (expected HOST:TARGET[:ro])\n";
+      return 2;
+    }
+    const auto second = mount.find(':', first + 1);
+    const std::string source = mount.substr(0, first);
+    const std::string target =
+        mount.substr(first + 1, second == std::string::npos
+                                    ? std::string::npos
+                                    : second - first - 1);
+    if (target.empty() || target.front() != '/') {
+      std::cerr << "cf-ns-agent: --mount target must be absolute\n";
+      return 2;
+    }
+    if (second != std::string::npos && mount.substr(second + 1) != "ro") {
+      std::cerr << "cf-ns-agent: only read-only --mount is supported\n";
+      return 2;
+    }
+    std::error_code ec;
+    const auto absolute = std::filesystem::absolute(source, ec);
+    if (ec) {
+      std::cerr << "cf-ns-agent: cannot resolve mount source " << source << "\n";
+      return 2;
+    }
+    spec.extra_readonly_mounts.push_back({absolute.string(), target});
+  }
   spec.container_workdir = "/work";
 
   ProcessRequest request;
@@ -514,6 +592,30 @@ int run_host(const Options& options) {
   request.argv.insert(request.argv.end(), options.command.begin(),
                       options.command.end());
   request.working_directory = "/work";
+  if (!options.path_prefixes.empty()) {
+    std::string path;
+    for (const auto& prefix : options.path_prefixes) {
+      if (!path.empty()) {
+        path += ':';
+      }
+      path += prefix;
+    }
+    const char* existing = std::getenv("PATH");
+    if (existing != nullptr && *existing != '\0') {
+      path += ':';
+      path += existing;
+    }
+    request.environment.push_back({"PATH", path});
+  }
+  for (const auto& entry : options.environment) {
+    const auto equals = entry.find('=');
+    if (equals == std::string::npos || equals == 0) {
+      std::cerr << "cf-ns-agent: invalid --env (expected KEY=VALUE)\n";
+      return 2;
+    }
+    request.environment.push_back(
+        {entry.substr(0, equals), entry.substr(equals + 1)});
+  }
   request.timeout = std::chrono::hours(24);
 
   const pid_t supervisor = ::fork();

@@ -2449,6 +2449,9 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   config.sandbox_image = options.sandbox_image;
   config.agent_sandbox_namespaces = options.agent_sandbox_namespaces;
   config.ns_agent_binary = options.ns_agent_binary;
+  config.ns_mounts = options.ns_mounts;
+  config.ns_path_prefixes = options.ns_path_prefixes;
+  config.ns_env = options.ns_env;
   // Code intelligence (design section 6.5): the available back ends; the
   // run indexes when one matches the plan's target language.
   codeintel::BackendRegistry codeintel_backends;

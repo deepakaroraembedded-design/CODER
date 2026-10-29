@@ -196,7 +196,15 @@ int setup_root(const NamespaceSandboxSpec& spec, const std::string& root) {
     // (docker's bind mounts do the same); empty directories are invisible to
     // git, so this does not affect the recorded diff.
     for (const auto& path : spec.writable_paths) {
-      if (make_dirs(spec.worktree + "/" + path, 0755) != 0) {
+      struct stat st {};
+      if (::stat((spec.worktree + "/" + path).c_str(), &st) == 0 &&
+          !S_ISDIR(st.st_mode)) {
+        const auto slash = path.find_last_of('/');
+        if (slash != std::string::npos &&
+            make_dirs(spec.worktree + "/" + path.substr(0, slash), 0755) != 0) {
+          return -1;
+        }
+      } else if (make_dirs(spec.worktree + "/" + path, 0755) != 0) {
         return -1;
       }
     }
@@ -206,7 +214,13 @@ int setup_root(const NamespaceSandboxSpec& spec, const std::string& root) {
     for (const auto& path : spec.writable_paths) {
       const std::string source = spec.worktree + "/" + path;
       const std::string target = root + "/work/" + path;
-      if (make_dir(target, 0755) != 0) {
+      struct stat st {};
+      if (::stat(source.c_str(), &st) == 0 && !S_ISDIR(st.st_mode)) {
+        struct stat target_stat {};
+        if (::stat(target.c_str(), &target_stat) != 0) {
+          return -1;
+        }
+      } else if (make_dir(target, 0755) != 0) {
         return -1;
       }
       if (bind_mount(source, target, false) != 0) {
@@ -215,7 +229,7 @@ int setup_root(const NamespaceSandboxSpec& spec, const std::string& root) {
     }
   }
   for (const auto& [source, target] : spec.extra_writable_mounts) {
-    if (make_dir(root + target, 0755) != 0) {
+    if (make_dirs(root + target, 0755) != 0) {
       return -1;
     }
     if (bind_mount(source, root + target, false) != 0) {
@@ -228,7 +242,7 @@ int setup_root(const NamespaceSandboxSpec& spec, const std::string& root) {
       return -1;
     }
     if (S_ISDIR(source_stat.st_mode)) {
-      if (make_dir(root + target, 0755) != 0) {
+      if (make_dirs(root + target, 0755) != 0) {
         return -1;
       }
     } else {
@@ -368,7 +382,18 @@ int apply_landlock(const NamespaceSandboxSpec& spec) {
     rules.push_back(Rule{path, handled});
   }
   for (const auto& path : spec.writable_paths) {
-    rules.push_back(Rule{spec.container_workdir + "/" + path, handled});
+    struct stat target_stat {};
+    __u64 access = handled;
+    const std::string target = spec.container_workdir + "/" + path;
+    if (::stat(target.c_str(), &target_stat) == 0 &&
+        !S_ISDIR(target_stat.st_mode)) {
+      access = (kLandlockRead & ~LANDLOCK_ACCESS_FS_READ_DIR) |
+               LANDLOCK_ACCESS_FS_WRITE_FILE;
+#ifdef LANDLOCK_ACCESS_FS_TRUNCATE
+      access |= LANDLOCK_ACCESS_FS_TRUNCATE;
+#endif
+    }
+    rules.push_back(Rule{target, access});
   }
   for (const auto& [source, target] : spec.extra_readonly_mounts) {
     (void)source;

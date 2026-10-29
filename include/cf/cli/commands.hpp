@@ -203,6 +203,9 @@ struct ExecuteOptions {
   // Run opencode servers in the daemon-free namespace sandbox (design 6.8).
   bool agent_sandbox_namespaces = false;
   std::string ns_agent_binary = "cf-ns-agent";
+  std::vector<std::string> ns_mounts;
+  std::vector<std::string> ns_path_prefixes;
+  std::vector<std::string> ns_env;
   std::string docs_dir;
   // Design refinement (design section 6.2). Unless --skip-refinement is set,
   // the first execution refines the plan, writes the design package and stops

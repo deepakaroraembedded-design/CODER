@@ -89,6 +89,15 @@ struct OpencodeFactoryConfig {
   // the daemon-free namespace executor and cf-ns-agent replace Docker.
   bool sandbox_namespaces = false;
   std::string ns_agent_binary = "cf-ns-agent";
+  // Additional read-only host mounts for the namespace sandbox, in
+  // HOST:CONTAINER[:ro] form (e.g. a toolchain or dependency cache).
+  std::vector<std::string> ns_mounts;
+  // PATH prefixes inside the namespace (e.g. /opt/maven/bin).
+  std::vector<std::string> ns_path_prefixes;
+  std::vector<std::string> ns_env;
+  // Top-level write-set paths for the coder (directories or root files).
+  std::vector<std::string> ns_write_paths;
+  std::vector<std::string> ns_write_files;
   std::string sandbox_image;
   std::string sandbox_binary = "opencode";  // program inside the container
   // Empty: the default bridge network. The server must be reachable through

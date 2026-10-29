@@ -67,6 +67,11 @@ struct RunProcessConfig {
   // host. The container needs a network for the model endpoint.
   bool agent_sandbox_namespaces = false;
   std::string ns_agent_binary = "cf-ns-agent";
+  std::vector<std::string> ns_mounts;
+  std::vector<std::string> ns_path_prefixes;
+  std::vector<std::string> ns_env;
+  std::vector<std::string> ns_write_paths;
+  std::vector<std::string> ns_write_files;
   std::string agent_sandbox_image;
   std::string agent_sandbox_network;
   std::string agent_sandbox_binary = "opencode";

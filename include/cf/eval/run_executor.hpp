@@ -38,6 +38,9 @@ struct RunExecutorOptions {
   std::string sandbox_image;
   bool agent_sandbox_namespaces = false;
   std::string ns_agent_binary = "cf-ns-agent";
+  std::vector<std::string> ns_mounts;
+  std::vector<std::string> ns_path_prefixes;
+  std::vector<std::string> ns_env;
   std::string provider_base_url = "https://api.fireworks.ai/inference/v1";
   std::string api_key_env = "FIREWORKS_API_KEY";
   std::string base_branch = "main";

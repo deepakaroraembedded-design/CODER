@@ -256,6 +256,28 @@ std::vector<std::string> namespace_server_launcher(
     argv.push_back("--mcp-source");
     argv.push_back(mcp_source);
   }
+  for (const auto& mount : config.ns_mounts) {
+    argv.push_back("--mount");
+    argv.push_back(mount);
+  }
+  for (const auto& path : config.ns_path_prefixes) {
+    argv.push_back("--path");
+    argv.push_back(path);
+  }
+  for (const auto& entry : config.ns_env) {
+    argv.push_back("--env");
+    argv.push_back(entry);
+  }
+  if (role == "coder") {
+    for (const auto& path : config.ns_write_paths) {
+      argv.push_back("--write");
+      argv.push_back(path);
+    }
+    for (const auto& path : config.ns_write_files) {
+      argv.push_back("--write-file");
+      argv.push_back(path);
+    }
+  }
   argv.push_back("--log");
   argv.push_back("/cf/opencode-" + role + ".log");
   return argv;
