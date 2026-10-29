@@ -998,10 +998,10 @@ opencode version.
   Python (`t1-python-stats`, 6/6 at $0.3706), Java (`t1-java-stack`, 8/8 at
   $0.1138), Go (`t1-go-lru`, 14/14 at $0.1218) and TypeScript
   (`t1-typescript-slug`, 4/4 at $0.2433). Namespace-sandboxed runs now
-  complete for Go (`t1-go-lru`, 14/14 at $0.2357) and Java (`t1-java-stack`,
+  complete for Go (`t1-go-lru`, 14/14 at $0.2357), Java (`t1-java-stack`,
   8/8 at $0.2236 with the GLM coder; the default coder remains flaky on
-  submission). TypeScript namespace runs build and install offline but still
-  depend on the model finishing the test loop. C++ T1's hidden tests pass (12/12
+  submission) and TypeScript (`t1-typescript-slug`, 4/4 at $0.2641, with an
+  offline npm cache and a small seed that pins the build/test tooling). C++ T1's hidden tests pass (12/12
   semantics and 1/1 TSan), but a QA-run TSan build still needs the outer
   `setarch`, and the M2 coder also exposed occasional no-submission
   flakiness, so its run-completion number remains unstable. Remaining: grow
