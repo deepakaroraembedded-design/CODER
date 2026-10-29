@@ -374,6 +374,12 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     factory_config.sandbox_binary = config_.agent_sandbox_binary;
     factory_config.docker_binary = config_.docker_binary;
     factory_config.mcp_binary_host = config_.sandbox_mcp_binary_host;
+    if (factory_config.mcp_binary_host.empty() &&
+        !config_.mcp_command.empty()) {
+      std::error_code mcp_ec;
+      factory_config.mcp_binary_host =
+          std::filesystem::absolute(config_.mcp_command, mcp_ec).string();
+    }
     factory_config.sandbox_allowed_hosts = config_.sandbox_allowed_hosts;
     production_factory =
         std::make_unique<OpencodeRoleFactory>(std::move(factory_config));

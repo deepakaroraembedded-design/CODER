@@ -57,3 +57,11 @@ rules:
       - metavariable-regex:
           metavariable: $NAME
           regex: (?i)(password|passwd|secret|token|api_key|apikey|private_key)
+
+  - id: swt.typescript.no-child-process-exec
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: Do not run shell commands through child_process.exec; use execFile with an argument list.
+    pattern-either:
+      - pattern: child_process.exec(...)
+      - pattern: exec(...)

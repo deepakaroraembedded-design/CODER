@@ -40,3 +40,19 @@ rules:
       - metavariable-regex:
           metavariable: $NAME
           regex: (?i)(password|passwd|secret|token|api_key|apikey|private_key)
+
+  - id: swt.go.no-shell-exec
+    languages: [go]
+    severity: ERROR
+    message: Do not invoke a shell through exec.Command; pass the program and arguments explicitly.
+    pattern-either:
+      - pattern: exec.Command("sh", ...)
+      - pattern: exec.Command("bash", ...)
+
+  - id: swt.go.no-world-writable-files
+    languages: [go]
+    severity: ERROR
+    message: Do not create world-writable files; use restrictive permissions.
+    pattern-either:
+      - pattern: os.Chmod(..., 0777)
+      - pattern: os.Chmod(..., 0o777)

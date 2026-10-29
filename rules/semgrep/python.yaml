@@ -76,3 +76,9 @@ rules:
       - metavariable-regex:
           metavariable: $NAME
           regex: (?i)(password|passwd|secret|token|api_key|apikey|private_key)
+
+  - id: swt.python.no-tempfile-mktemp
+    languages: [python]
+    severity: ERROR
+    message: Do not use tempfile.mktemp; it has a race. Use NamedTemporaryFile or mkstemp.
+    pattern: tempfile.mktemp(...)
