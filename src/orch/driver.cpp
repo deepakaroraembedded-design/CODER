@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <fstream>
+#include <set>
 #include <system_error>
 #include <utility>
 
 #include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
+#include "cf/common/path.hpp"
 #include "cf/sandbox/docker.hpp"
 #include "cf/sandbox/namespaces.hpp"
 #include "cf/telemetry/logging.hpp"
@@ -127,6 +129,60 @@ bool is_build_artifact(std::string_view path) {
     begin = slash + 1;
   }
   return path.size() >= 4 && path.substr(path.size() - 4) == ".pyc";
+}
+
+// The gate sandbox needs the same language-agnostic writable set as the
+// agent: the plan's write-set roots plus the toolchains' build directories
+// (B-22). An empty milestone means the integration branch, so use every
+// milestone's writes.
+std::vector<std::string> gate_writable_paths(const plan::Plan& plan,
+                                             std::string_view milestone_id,
+                                             const std::filesystem::path& worktree) {
+  std::vector<std::string> paths;
+  const auto add = [&paths](const std::string& path) {
+    if (!cf::common::is_safe_relative_path(path)) {
+      return;
+    }
+    if (std::find(paths.begin(), paths.end(), path) == paths.end()) {
+      paths.push_back(path);
+    }
+  };
+  const auto add_write = [&add, &worktree](const std::string& write) {
+    const std::size_t slash = write.find('/');
+    const std::string top = write.substr(0, slash);
+    if (top.empty()) {
+      return;
+    }
+    if (slash == std::string::npos && top.find('.') != std::string::npos) {
+      // A declared root file (go.mod, package.json, ...) must exist before
+      // Docker or the namespace executor can bind-mount it as a file.
+      const std::filesystem::path full = worktree / top;
+      std::error_code ec;
+      if (!std::filesystem::exists(full, ec)) {
+        std::filesystem::create_directories(full.parent_path(), ec);
+        std::ofstream out(full, std::ios::binary);
+      }
+    }
+    add(top);
+  };
+  const auto add_milestone = [&add_write](const plan::MilestoneSpec& milestone) {
+    for (const auto& write : milestone.writes) {
+      add_write(write);
+    }
+  };
+  if (milestone_id.empty()) {
+    for (const auto& milestone : plan.milestones) {
+      add_milestone(milestone);
+    }
+  } else if (const plan::MilestoneSpec* milestone =
+                 plan.find_milestone(milestone_id)) {
+    add_milestone(*milestone);
+  }
+  for (const char* artifact :
+       {"target", "build", "dist", "node_modules", ".gradle", ".cache"}) {
+    add(artifact);
+  }
+  return paths;
 }
 
 // True when a changed path is inside the milestone's declared write set
@@ -1040,11 +1096,13 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
   std::unique_ptr<cf::sandbox::NamespaceExecutor> namespace_sandbox;
   if (config_.sandbox_namespaces) {
     // Daemon-free sandbox: the same mount layout as Docker (/work read-only
-    // with writable src/include, executable /build), built from namespaces.
+    // with the plan's writable roots, executable /build), built from namespaces.
     sandbox::NamespaceSandboxSpec spec;
     spec.worktree = worktree->string();
-    spec.writable_paths = {"src", "include"};
+    spec.writable_paths = gate_writable_paths(plan_, milestone_id, *worktree);
+    spec.cpus = config_.gate_cpus;
     spec.memory_mb = config_.gate_memory_mb;
+    spec.pids_limit = config_.gate_pids_limit;
     if (!config_.rules_dir.empty()) {
       spec.extra_readonly_mounts.push_back({config_.rules_dir, "/cf-rules"});
     }
@@ -1057,14 +1115,15 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     options.working_directory = "/work";
   } else if (!config_.sandbox_image.empty()) {
     // Gates run in the sandbox: placeholders point at the container's mount
-    // layout (/work read-only with writable src/include, executable /build).
+    // layout (/work read-only with the plan's writable roots, executable /build).
     sandbox::SandboxSpec spec;
     spec.image = config_.sandbox_image;
     spec.run_id = config_.run_id;
     spec.worktree = worktree->string();
-    spec.writable_paths = {"src", "include"};
+    spec.writable_paths = gate_writable_paths(plan_, milestone_id, *worktree);
     spec.cpus = config_.gate_cpus;
     spec.memory_mb = config_.gate_memory_mb;
+    spec.pids_limit = config_.gate_pids_limit;
     if (!config_.rules_dir.empty()) {
       spec.extra_mounts.push_back(
           sandbox::SandboxMount{config_.rules_dir, "/cf-rules", false});
@@ -1115,7 +1174,9 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
       row.milestone_id = std::string(milestone_id);
       row.commit_sha = *head;
       row.gate = result.gate;
-      row.passed = (result.passed || result.waived) && !result.skipped;
+      // A skipped gate did not run; recording it as failed makes `cf status`
+      // and the fix brief chase a check that never executed (B-55).
+      row.passed = result.passed || result.waived || result.skipped;
       row.report_ref = report_path.string();
       row.at = store::unix_now();
       (void)store_->record_gate_result(row);
@@ -1191,7 +1252,7 @@ Status WorkspaceDriver::rebase_integration_onto(std::string_view upstream) {
                   "coder left conflict markers in " + file);
     }
   }
-  auto staged = repository_.stage_all(*worktree);
+  auto staged = repository_.stage_paths(*worktree, *conflicts);
   if (!staged) {
     (void)repository_.abort_rebase(*worktree);
     return tl::make_unexpected(staged.error());
@@ -1283,8 +1344,10 @@ Result<GateOutcome> WorkspaceDriver::run_integration_gates(
   if (config_.sandbox_namespaces) {
     sandbox::NamespaceSandboxSpec spec;
     spec.worktree = worktree->string();
-    spec.writable_paths = {"src", "include"};
+    spec.writable_paths = gate_writable_paths(plan_, {}, *worktree);
+    spec.cpus = config_.gate_cpus;
     spec.memory_mb = config_.gate_memory_mb;
+    spec.pids_limit = config_.gate_pids_limit;
     if (!config_.rules_dir.empty()) {
       spec.extra_readonly_mounts.push_back({config_.rules_dir, "/cf-rules"});
     }
@@ -1300,9 +1363,10 @@ Result<GateOutcome> WorkspaceDriver::run_integration_gates(
     spec.image = config_.sandbox_image;
     spec.run_id = config_.run_id;
     spec.worktree = worktree->string();
-    spec.writable_paths = {"src", "include"};
+    spec.writable_paths = gate_writable_paths(plan_, {}, *worktree);
     spec.cpus = config_.gate_cpus;
     spec.memory_mb = config_.gate_memory_mb;
+    spec.pids_limit = config_.gate_pids_limit;
     if (!config_.rules_dir.empty()) {
       spec.extra_mounts.push_back(
           sandbox::SandboxMount{config_.rules_dir, "/cf-rules", false});
@@ -1348,7 +1412,9 @@ Result<GateOutcome> WorkspaceDriver::run_integration_gates(
       row.milestone_id = "integration";
       row.commit_sha = *head;
       row.gate = result.gate;
-      row.passed = (result.passed || result.waived) && !result.skipped;
+      // A skipped gate did not run; recording it as failed makes `cf status`
+      // and the fix brief chase a check that never executed (B-55).
+      row.passed = result.passed || result.waived || result.skipped;
       row.report_ref = report_path.string();
       row.at = store::unix_now();
       (void)store_->record_gate_result(row);

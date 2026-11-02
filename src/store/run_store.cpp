@@ -188,6 +188,17 @@ template <typename F>
 auto sql_guard(std::string_view context, F&& fn) -> decltype(fn()) {
   try {
     return fn();
+  } catch (const SQLite::Exception& e) {
+    std::string message = e.what();
+    if (message.empty() || message == "not an error") {
+      // SQLiteCpp can throw with SQLITE_OK when another connection ends the
+      // transaction underneath this one; the default text tells an operator
+      // nothing (B-60).
+      message = "SQLite reported success on an error path (code " +
+                std::to_string(e.getErrorCode()) +
+                "); a concurrent transaction may have interleaved";
+    }
+    return fail(error_codes::kQueryFailed, std::string(context) + ": " + message);
   } catch (const std::exception& e) {
     return fail(error_codes::kQueryFailed, std::string(context) + ": " + e.what());
   }

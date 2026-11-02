@@ -744,6 +744,7 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
     state.stream->set_disconnect_callback([role](const std::string& reason) {
       spdlog::warn("opencode[{}] event stream disconnected: {}", role, reason);
     });
+    state.stream->start();
   }
 
   OpencodeServerProcess* server = state.server.get();

@@ -1,8 +1,10 @@
 #include "cf/sandbox/namespaces.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -494,12 +496,12 @@ std::string current_cgroup_dir() {
 // missing (create() then reports failure so callers can fail closed).
 class CgroupLimits {
  public:
-  bool create(std::size_t memory_mb, std::size_t pids) {
+  bool create(double cpus, std::size_t memory_mb, std::size_t pids) {
     const std::string parent = current_cgroup_dir();
     if (parent.empty()) {
       return false;
     }
-    write_file(parent + "/cgroup.subtree_control", "+memory +pids");
+    write_file(parent + "/cgroup.subtree_control", "+cpu +memory +pids");
     static std::atomic<unsigned> cgroup_counter{0};
     dir_ = parent + "/cf-sbx-" + std::to_string(::getpid()) + "-" +
            std::to_string(cgroup_counter.fetch_add(1));
@@ -508,6 +510,12 @@ class CgroupLimits {
       return false;
     }
     bool ok = true;
+    if (cpus > 0.0) {
+      const auto quota =
+          std::max<std::uint64_t>(1, static_cast<std::uint64_t>(cpus * 100000.0));
+      ok = write_file(dir_ + "/cpu.max",
+                      std::to_string(quota) + " 100000") && ok;
+    }
     if (memory_mb > 0) {
       ok = write_file(dir_ + "/memory.max", std::to_string(memory_mb * 1024 * 1024)) && ok;
     }
@@ -553,14 +561,39 @@ bool cgroup_delegated() {
   return true;
 }
 
-NamespaceExecutor::NamespaceExecutor(NamespaceSandboxSpec spec) : spec_(std::move(spec)) {}
+NamespaceExecutor::NamespaceExecutor(NamespaceSandboxSpec spec) : spec_(std::move(spec)) {
+  for (auto& child : children_) {
+    child.store(0);
+  }
+}
+
+bool NamespaceExecutor::register_child(pid_t pid) {
+  for (auto& child : children_) {
+    pid_t expected = 0;
+    if (child.compare_exchange_strong(expected, pid)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void NamespaceExecutor::unregister_child(pid_t pid) {
+  for (auto& child : children_) {
+    pid_t expected = pid;
+    if (child.compare_exchange_strong(expected, 0)) {
+      return;
+    }
+  }
+}
 
 void NamespaceExecutor::stop() {
   stopping_.store(true);
-  const pid_t pid = child_pid_.load();
-  if (pid > 0) {
-    ::kill(-pid, SIGKILL);
-    ::kill(pid, SIGKILL);
+  for (const auto& child : children_) {
+    const pid_t pid = child.load();
+    if (pid > 0) {
+      ::kill(-pid, SIGKILL);
+      ::kill(pid, SIGKILL);
+    }
   }
 }
 
@@ -570,10 +603,17 @@ process::ProcessResult NamespaceExecutor::run(const process::ProcessRequest& req
     result.error = "empty argv";
     return result;
   }
+  if (stopping_.load()) {
+    process::ProcessResult result;
+    result.error = "namespace sandbox is stopping";
+    return result;
+  }
 
   CgroupLimits cgroup;
-  const bool cgroup_requested = spec_.memory_mb > 0 || spec_.pids_limit > 0;
-  if (cgroup_requested && !cgroup.create(spec_.memory_mb, spec_.pids_limit)) {
+  const bool cgroup_requested =
+      spec_.cpus > 0.0 || spec_.memory_mb > 0 || spec_.pids_limit > 0;
+  if (cgroup_requested &&
+      !cgroup.create(spec_.cpus, spec_.memory_mb, spec_.pids_limit)) {
     process::ProcessResult result;
     result.error = "cgroup limits requested but no delegated cgroup is available";
     return result;
@@ -596,10 +636,17 @@ process::ProcessResult NamespaceExecutor::run(const process::ProcessRequest& req
   }
   ::fcntl(exec_pipe.write_fd(), F_SETFD, FD_CLOEXEC);
 
-  static std::atomic<unsigned> root_counter{0};
-  const std::string sandbox_root =
-      "/tmp/cf-ns-" + std::to_string(::getpid()) + "-" +
-      std::to_string(root_counter.fetch_add(1));
+  std::string root_template = "/tmp/cf-ns-" + std::to_string(::getpid()) + "-XXXXXX";
+  std::vector<char> root_buffer(root_template.begin(), root_template.end());
+  root_buffer.push_back('\0');
+  char* created_root = ::mkdtemp(root_buffer.data());
+  if (created_root == nullptr) {
+    cgroup.remove();
+    process::ProcessResult result;
+    result.error = std::string("mkdtemp: ") + std::strerror(errno);
+    return result;
+  }
+  const std::string sandbox_root = created_root;
 
   const pid_t pid = ::fork();
   if (pid < 0) {
@@ -608,8 +655,6 @@ process::ProcessResult NamespaceExecutor::run(const process::ProcessRequest& req
     result.error = std::string("fork: ") + std::strerror(errno);
     return result;
   }
-  child_pid_.store(pid);
-
   if (pid == 0) {
     // Intermediate: enters the namespaces, then forks the command as PID 1
     // of the new pid namespace and mirrors its exit status.
@@ -716,6 +761,22 @@ process::ProcessResult NamespaceExecutor::run(const process::ProcessRequest& req
   exec_pipe.close_write();
   ::close(sync_fds[1]);
 
+  if (!register_child(pid) || stopping_.load()) {
+    ::kill(-pid, SIGKILL);
+    ::kill(pid, SIGKILL);
+    auto result = process::supervise_child(pid, out_pipe.release_read(),
+                                           err_pipe.release_read(),
+                                           exec_pipe.release_read(), request);
+    unregister_child(pid);
+    cgroup.remove();
+    remove_root(sandbox_root);
+    result.launched = false;
+    result.error = stopping_.load()
+                       ? "namespace sandbox is stopping"
+                       : "too many concurrent namespace sandboxes";
+    return result;
+  }
+
   // Map the parent's uid/gid to root inside the child's user namespace. The
   // parent writes the maps (unprivileged single-id mappings are allowed once
   // setgroups is denied); the child waits for the signal before mounting.
@@ -737,6 +798,7 @@ process::ProcessResult NamespaceExecutor::run(const process::ProcessRequest& req
     ::kill(pid, SIGKILL);
     auto result = process::supervise_child(pid, out_pipe.release_read(), err_pipe.release_read(),
                                            exec_pipe.release_read(), request);
+    unregister_child(pid);
     cgroup.remove();
     remove_root(sandbox_root);
     result.launched = false;
@@ -747,7 +809,7 @@ process::ProcessResult NamespaceExecutor::run(const process::ProcessRequest& req
   auto result = process::supervise_child(pid, out_pipe.release_read(), err_pipe.release_read(),
                                          exec_pipe.release_read(), request);
 
-  child_pid_.store(-1);
+  unregister_child(pid);
   cgroup.remove();
   remove_root(sandbox_root);
   return result;

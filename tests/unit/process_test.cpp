@@ -58,6 +58,21 @@ TEST(ProcessTest, TimeoutKillsTheProcess) {
   EXPECT_LT(result.duration_ms, 5000);
 }
 
+TEST(ProcessTest, ChildExitDoesNotWaitForALeakedPipe) {
+  LocalProcessExecutor executor;
+  ProcessRequest request;
+  request.argv = {"sh", "-c", "sleep 5 & echo done"};
+  request.timeout = std::chrono::seconds(5);
+  const auto started = std::chrono::steady_clock::now();
+  const auto result = executor.run(request);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  EXPECT_TRUE(result.launched) << result.error;
+  EXPECT_FALSE(result.timed_out);
+  EXPECT_EQ(result.exit_code, 0);
+  EXPECT_NE(result.stdout_text.find("done"), std::string::npos);
+  EXPECT_LT(elapsed, std::chrono::seconds(3));
+}
+
 TEST(ProcessTest, StderrIsCapturedSeparately) {
   LocalProcessExecutor executor;
   ProcessRequest request;

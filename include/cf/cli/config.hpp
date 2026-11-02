@@ -167,6 +167,7 @@ struct FrameworkConfig {
   struct Sandbox {
     std::optional<double> cpu;
     std::optional<double> memory_gb;
+    std::optional<std::uint32_t> pids_limit;
     std::optional<std::uint32_t> job_timeout_min;
     // Gate jobs are always network-isolated; only "deny" is accepted
     // (design sections 6.8, 15).

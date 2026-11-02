@@ -635,6 +635,26 @@ Status Repository::stage_all(const std::filesystem::path& worktree) const {
   return {};
 }
 
+Status Repository::stage_paths(const std::filesystem::path& worktree,
+                               const std::vector<std::string>& paths) const {
+  if (paths.empty()) {
+    return {};
+  }
+  for (const auto& path : paths) {
+    if (!is_safe_relative_path(path)) {
+      return fail(error_codes::kInvalidPath,
+                  "path must be relative and inside the worktree: '" + path + "'");
+    }
+  }
+  std::vector<std::string> args = {"add", "--"};
+  args.insert(args.end(), paths.begin(), paths.end());
+  auto staged = run(args, worktree);
+  if (!staged) {
+    return tl::make_unexpected(staged.error());
+  }
+  return {};
+}
+
 Status Repository::continue_rebase(const std::filesystem::path& worktree) const {
   auto continued = run({"-c", "core.editor=true", "rebase", "--continue"}, worktree);
   if (!continued) {

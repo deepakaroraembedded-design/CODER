@@ -200,6 +200,7 @@ class FakeStream final : public cf::agents::EventStream {
  public:
   void set_callback(Callback) override {}
   void set_disconnect_callback(DisconnectCallback) override {}
+  void start() override {}
   void stop() override {}
   bool running() const override { return true; }
   bool wait_running(std::chrono::milliseconds) override { return true; }
@@ -290,12 +291,13 @@ TEST(OpencodeSessionDriverTest, WaitsForTheIdleEventNotTheStatusEndpoint) {
   ASSERT_TRUE(server.has_value()) << server.error().message;
 
   auto stream = client.open_event_stream();
-  ASSERT_TRUE(stream->wait_running(std::chrono::milliseconds(2000)));
-
   SessionIdleTracker tracker;
   stream->set_callback([&tracker](const OpencodeEvent& event) {
     (void)tracker.record(event);
   });
+  stream->start();
+  ASSERT_TRUE(stream->wait_running(std::chrono::milliseconds(2000)));
+
   OpencodeSessionDriver driver(client, &tracker, stream.get());
 
   auto session = driver.create_session();

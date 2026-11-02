@@ -52,6 +52,7 @@ struct DriverConfig {
   // limit.
   double gate_cpus = 0.0;
   std::uint64_t gate_memory_mb = 0;
+  std::uint64_t gate_pids_limit = 0;
   // When set, gates run inside a Docker sandbox using this image (design
   // section 6.8); empty runs them through the local executor.
   std::string sandbox_image;

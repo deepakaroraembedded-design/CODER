@@ -38,6 +38,33 @@ std::string optional_string(const YAML::Node& map, const char* key) {
   return node.as<std::string>();
 }
 
+bool safe_identifier(const std::string& text) {
+  if (text.empty() || text == "." || text == "..") {
+    return false;
+  }
+  for (const char character : text) {
+    const bool safe = (character >= 'a' && character <= 'z') ||
+                      (character >= 'A' && character <= 'Z') ||
+                      (character >= '0' && character <= '9') ||
+                      character == '.' || character == '_' || character == '-';
+    if (!safe) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool safe_repo(const std::string& repo) {
+  if (repo.empty() || repo.front() == '-' ||
+      repo.rfind("ext::", 0) == 0) {
+    return false;
+  }
+  if (repo.find("://") != std::string::npos) {
+    return repo.rfind("https://", 0) == 0 || repo.rfind("ssh://", 0) == 0;
+  }
+  return true;  // git@host:path or a local path
+}
+
 std::vector<std::string> string_list(const YAML::Node& node,
                                      const std::string& context) {
   std::vector<std::string> out;
@@ -93,10 +120,17 @@ Result<Manifest> load_manifest_string(std::string_view text) {
       }
       ReferenceSet set;
       set.id = require_string(node, "id", context);
+      if (!safe_identifier(set.id)) {
+        throw ManifestError(context + ".id must use only letters, digits, '.', '_' or '-'");
+      }
       if (!ids.insert(set.id).second) {
         throw ManifestError("duplicate set id '" + set.id + "'");
       }
       set.version = require_string(node, "version", context);
+      if (!safe_identifier(set.version)) {
+        throw ManifestError(context +
+                            ".version must use only letters, digits, '.', '_' or '-'");
+      }
       set.source = optional_string(node, "source");
       set.sha256 = optional_string(node, "sha256");
       set.license = optional_string(node, "license");
@@ -107,8 +141,14 @@ Result<Manifest> load_manifest_string(std::string_view text) {
       if (set.source.empty() && set.generate.empty()) {
         throw ManifestError(context + " needs a 'source' or a 'generate' entry");
       }
+      if (!set.source.empty() && set.source.rfind("http://", 0) == 0) {
+        throw ManifestError(context + ".source must use https:// or a local path");
+      }
       if (!set.source.empty() && is_remote(set.source) && set.sha256.empty()) {
         throw ManifestError(context + " has a remote source and no 'sha256'");
+      }
+      if (!set.repo.empty() && !safe_repo(set.repo)) {
+        throw ManifestError(context + ".repo must use https://, ssh://, git@ or a local path");
       }
       manifest.sets.push_back(std::move(set));
     }

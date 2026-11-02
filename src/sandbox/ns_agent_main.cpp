@@ -13,11 +13,13 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -104,6 +106,27 @@ bool parse_proxy(std::string value, std::string* host, uint16_t* port) {
   }
   *host = value.substr(0, colon);
   return parse_port(value.substr(colon + 1), port);
+}
+
+bool safe_mount_target(std::string_view target) {
+  if (target.empty() || target.front() != '/') {
+    return false;
+  }
+  std::size_t begin = 0;
+  while (begin < target.size()) {
+    const std::size_t slash = target.find('/', begin);
+    const std::string_view component =
+        target.substr(begin, slash == std::string_view::npos ? std::string_view::npos
+                                                             : slash - begin);
+    if (component == "..") {
+      return false;
+    }
+    if (slash == std::string_view::npos) {
+      break;
+    }
+    begin = slash + 1;
+  }
+  return true;
 }
 
 bool parse_options(int argc, char** argv, Options* options) {
@@ -225,6 +248,9 @@ void relay(int first, int second) {
       }
       const int target = i == 0 ? second : first;
       const ssize_t received = ::recv(fds[i].fd, buffer, sizeof(buffer), 0);
+      if (received < 0 && errno == EINTR) {
+        continue;
+      }
       if (received <= 0) {
         ::shutdown(target, SHUT_WR);
         fds[i].fd = -1;
@@ -368,17 +394,27 @@ int connect_tcp(const std::string& host, uint16_t port) {
 }
 
 void accept_loop(int listener, const std::function<void(int)>& handler) {
+  static constexpr int kMaxConnections = 64;
+  static std::atomic<int> active{0};
   for (;;) {
     const int client = ::accept(listener, nullptr, nullptr);
     if (client < 0) {
       if (errno == EINTR) continue;
       return;
     }
+    if (active.load() >= kMaxConnections) {
+      ::close(client);
+      continue;
+    }
     const int flags = ::fcntl(client, F_GETFD, 0);
     if (flags >= 0) {
       ::fcntl(client, F_SETFD, flags | FD_CLOEXEC);
     }
-    std::thread(handler, client).detach();
+    ++active;
+    std::thread([handler, client] {
+      handler(client);
+      --active;
+    }).detach();
   }
 }
 
@@ -434,7 +470,6 @@ bool install_binary(const std::filesystem::path& source,
 }
 
 std::atomic<pid_t> g_supervisor{0};
-std::atomic<NamespaceExecutor*> g_executor{nullptr};
 
 void terminate_supervisor(int) {
   const pid_t supervisor = g_supervisor.load();
@@ -444,13 +479,9 @@ void terminate_supervisor(int) {
   ::_exit(0);
 }
 
-void stop_executor(int) {
-  NamespaceExecutor* executor = g_executor.load();
-  if (executor != nullptr) {
-    executor->stop();
-  }
-  ::_exit(0);
-}
+// The executor's child sets PR_SET_PDEATHSIG, so exiting here tears the
+// sandbox down from the kernel; keep the handler to async-signal-safe calls.
+void stop_executor(int) { ::_exit(0); }
 
 int run_host(const Options& options) {
   std::string proxy_host;
@@ -492,14 +523,15 @@ int run_host(const Options& options) {
     }
   }
 
-  const std::string bridge_dir =
-      "/tmp/cf-ns-bridge-" + std::to_string(::getpid());
-  std::error_code bridge_ec;
-  std::filesystem::remove_all(bridge_dir, bridge_ec);
-  if (!make_dir(bridge_dir)) {
+  std::string bridge_template = "/tmp/cf-ns-bridge-XXXXXX";
+  std::vector<char> bridge_buffer(bridge_template.begin(), bridge_template.end());
+  bridge_buffer.push_back('\0');
+  char* created_bridge = ::mkdtemp(bridge_buffer.data());
+  if (created_bridge == nullptr) {
     std::cerr << "cf-ns-agent: cannot create the short bridge directory\n";
     return 2;
   }
+  const std::string bridge_dir = created_bridge;
   const int host_listener = tcp_listener(opencode);
   const int egress_listener = unix_listener(bridge_dir + "/e.sock");
   if (host_listener < 0 || egress_listener < 0) {
@@ -572,8 +604,8 @@ int run_host(const Options& options) {
         mount.substr(first + 1, second == std::string::npos
                                     ? std::string::npos
                                     : second - first - 1);
-    if (target.empty() || target.front() != '/') {
-      std::cerr << "cf-ns-agent: --mount target must be absolute\n";
+    if (!safe_mount_target(target)) {
+      std::cerr << "cf-ns-agent: --mount target must be absolute without '..'\n";
       return 2;
     }
     if (second != std::string::npos && mount.substr(second + 1) != "ro") {
@@ -638,7 +670,6 @@ int run_host(const Options& options) {
     ::close(egress_listener);
     ::prctl(PR_SET_PDEATHSIG, SIGTERM);
     NamespaceExecutor executor(std::move(spec));
-    g_executor.store(&executor);
     ::signal(SIGTERM, stop_executor);
     const auto result = executor.run(request);
     if (!result.stdout_text.empty()) {
@@ -683,7 +714,8 @@ int run_host(const Options& options) {
   inbound.detach();
   egress.detach();
   const bool ok = wait_for_child(supervisor);
-  std::filesystem::remove_all(bridge_dir, bridge_ec);
+  std::error_code cleanup_ec;
+  std::filesystem::remove_all(bridge_dir, cleanup_ec);
   ::_exit(ok ? 0 : 1);
 }
 

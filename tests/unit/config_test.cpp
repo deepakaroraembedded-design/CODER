@@ -109,6 +109,7 @@ review:
 sandbox:
   cpu: 8
   memory_gb: 16
+  pids_limit: 512
   job_timeout_min: 30
   network: deny
 )yaml";
@@ -328,6 +329,7 @@ TEST_F(ConfigTest, RejectsNonPositiveBudgetAndSandboxValues) {
         "budget: {max_wall_clock_hours: 0}\n",
         "sandbox: {cpu: 0}\n",
         "sandbox: {memory_gb: -2}\n",
+        "sandbox: {pids_limit: 0}\n",
         "sandbox: {job_timeout_min: 0}\n"}) {
     auto config = cf::cli::load_config(write_config(snippet));
     EXPECT_FALSE(config.has_value()) << snippet;
@@ -424,6 +426,7 @@ TEST_F(ConfigTest, ApplyConfigResolvesProvidersAndRoles) {
             (std::vector<std::string>{"blocker", "major", "minor"}));
   EXPECT_DOUBLE_EQ(*options.sandbox_cpus, 8.0);
   EXPECT_DOUBLE_EQ(*options.sandbox_memory_gb, 16.0);
+  EXPECT_EQ(*options.sandbox_pids_limit, 512u);
   EXPECT_EQ(*options.gate_timeout_min, 30u);
   EXPECT_EQ(*options.profile_id, "c-cpp");
   EXPECT_DOUBLE_EQ(*options.coverage_line, 0.9);

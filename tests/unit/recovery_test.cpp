@@ -244,7 +244,12 @@ TEST_F(RecoveryTest, WaitsOutTheInFlightGracePeriodThenReconciles) {
   options.holder = "new-orch";
   options.in_flight_grace = std::chrono::seconds(600);
   std::chrono::seconds waited{0};
-  options.sleep_for = [&](std::chrono::seconds duration) { waited += duration; };
+  cf::store::UnixTime fake_now = now_;
+  options.clock = [&fake_now] { return fake_now; };
+  options.sleep_for = [&](std::chrono::seconds duration) {
+    waited += duration;
+    fake_now += duration.count();
+  };
   auto report = recovery.resume("R12", dispatcher, options, now_);
   ASSERT_TRUE(report.has_value()) << report.error().message;
   EXPECT_EQ(waited, std::chrono::seconds(600));

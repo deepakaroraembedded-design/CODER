@@ -103,6 +103,7 @@ struct RunProcessConfig {
   std::uint32_t waiver_business_days = 2;
   double gate_cpus = 0.0;      // 0: no limit
   std::uint64_t gate_memory_mb = 0;  // 0: no limit
+  std::uint64_t gate_pids_limit = 0;  // 0: no limit
 
   // orchestration
   OrchestratorConfig orchestrator;

@@ -301,7 +301,7 @@ class SseEventStream final : public EventStream {
     disconnect_callback_ = std::move(callback);
   }
 
-  void start() { thread_ = std::thread([this] { run(); }); }
+  void start() override { thread_ = std::thread([this] { run(); }); }
 
   void stop() override {
     stop_.store(true);
@@ -771,9 +771,7 @@ Result<void> OpencodeClient::reject_question(std::string_view session_id,
 }
 
 std::unique_ptr<EventStream> OpencodeClient::open_event_stream(std::string_view path) const {
-  auto stream = std::make_unique<SseEventStream>(impl_->options, std::string(path));
-  stream->start();
-  return stream;
+  return std::make_unique<SseEventStream>(impl_->options, std::string(path));
 }
 
 }  // namespace cf::agents

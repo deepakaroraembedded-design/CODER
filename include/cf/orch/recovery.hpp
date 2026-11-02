@@ -33,6 +33,9 @@ struct RecoveryOptions {
   // How recovery waits out the remainder of the grace period. Empty sleeps
   // on the calling thread; tests inject a fake that advances instantly.
   std::function<void(std::chrono::seconds)> sleep_for;
+  // Clock used while waiting and for the reconciliation timestamps. Empty
+  // uses store::unix_now(); tests inject a clock advanced by sleep_for.
+  std::function<store::UnixTime()> clock;
   // Kills sandboxes and other runners left by the previous orchestrator
   // (design section 6.12.4 step 2). Empty: nothing to clean. Returns how many
   // containers were removed; a failure stops recovery (fail closed).

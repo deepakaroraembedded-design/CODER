@@ -13,7 +13,7 @@ languages:
     guardrails:
       steps:
         - [clang-tidy, "--checks=-*,bugprone-*,cert-*,cppcoreguidelines-*,performance-*,modernize-*", "--warnings-as-errors=*", -p, "{build_dir}", "{changed_files...}"]
-        - [cf-tidy, -p, "{build_dir}", "{changed_files...}"]
+        - [cf-tidy, -p, "{build_dir}", "--std={standard}", "{changed_files...}"]
     format:
       steps:
         - [clang-format, --dry-run, -Werror, "{changed_files...}"]
@@ -22,7 +22,7 @@ languages:
     guardrails:
       steps:
         - [clang-tidy, "--checks=-*,bugprone-*,cert-*", "--warnings-as-errors=*", -p, "{build_dir}", "{changed_files...}"]
-        - [cf-tidy, -p, "{build_dir}", "{changed_files...}"]
+        - [cf-tidy, -p, "{build_dir}", "--std={standard}", "{changed_files...}"]
     format:
       steps:
         - [clang-format, --dry-run, -Werror, "{changed_files...}"]

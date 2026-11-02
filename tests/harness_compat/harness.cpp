@@ -365,6 +365,7 @@ void ScenarioContext::open_stream() {
     event.properties = Json{{"reason", reason}};
     events_.push(event);
   });
+  stream_->start();
 }
 
 Status ScenarioContext::restart_server() {

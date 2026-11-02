@@ -89,6 +89,9 @@ ProcessResult supervise_child(pid_t pid, int stdout_fd, int stderr_fd,
   const auto deadline = start + request.timeout;
   bool stdout_open = stdout_fd >= 0;
   bool stderr_open = stderr_fd >= 0;
+  bool child_done = false;
+  int status = 0;
+  bool reaped = false;
   char buffer[8192];
 
   while (stdout_open || stderr_open) {
@@ -106,11 +109,15 @@ ProcessResult supervise_child(pid_t pid, int stdout_fd, int stderr_fd,
       fds[count].revents = 0;
       ++count;
     }
-    const int wait_ms = remaining_ms(deadline);
-    if (wait_ms <= 0) {
+    const int remaining = remaining_ms(deadline);
+    if (remaining <= 0 && !child_done) {
       result.timed_out = true;
       break;
     }
+    // Wake periodically to notice that the child exited while a background
+    // process still holds the write end of a pipe. Waiting for EOF alone
+    // would stall until the timeout (B-18).
+    const int wait_ms = child_done ? 0 : std::min(remaining, 50);
     const int ready = ::poll(fds, static_cast<nfds_t>(count), wait_ms);
     if (ready < 0) {
       if (errno == EINTR) {
@@ -120,8 +127,20 @@ ProcessResult supervise_child(pid_t pid, int stdout_fd, int stderr_fd,
       break;
     }
     if (ready == 0) {
-      result.timed_out = true;
-      break;
+      if (child_done) {
+        break;  // drained everything already available; do not wait for EOF
+      }
+      const pid_t waited = ::waitpid(pid, &status, WNOHANG);
+      if (waited == pid) {
+        reaped = true;
+        child_done = true;
+        continue;
+      }
+      if (remaining_ms(deadline) <= 0) {
+        result.timed_out = true;
+        break;
+      }
+      continue;
     }
     for (int i = 0; i < count; ++i) {
       if (fds[i].revents == 0) {
@@ -164,9 +183,7 @@ ProcessResult supervise_child(pid_t pid, int stdout_fd, int stderr_fd,
     ::kill(pid, SIGKILL);
   }
 
-  int status = 0;
-  bool reaped = false;
-  while (true) {
+  while (!reaped) {
     const pid_t waited = ::waitpid(pid, &status, WNOHANG);
     if (waited == pid) {
       reaped = true;

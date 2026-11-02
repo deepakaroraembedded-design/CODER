@@ -497,12 +497,32 @@ int main(int argc, char** argv) {
     return cf::cli::rulesets_command(options, std::cout, std::cerr);
   }
   if (*replay) {
+    cf::cli::FrameworkConfig file_config;
+    std::string config_file = config_path;
+    if (config_file.empty() && std::filesystem::exists("cf.yaml")) {
+      config_file = "cf.yaml";
+    }
+    if (!config_file.empty()) {
+      auto loaded = cf::cli::load_config(config_file);
+      if (!loaded) {
+        std::cerr << loaded.error().code << ": " << loaded.error().message << "\n";
+        return 2;
+      }
+      file_config = std::move(*loaded);
+    }
+    cf::cli::ExecuteOptions config_options;
+    auto applied = cf::cli::apply_config(config_options, file_config);
+    if (!applied) {
+      std::cerr << applied.error().code << ": " << applied.error().message << "\n";
+      return 2;
+    }
     cf::cli::ReplayOptions replay_options;
     replay_options.workspace = workspace;
     replay_options.run_id = run_id;
     replay_options.call_id = replay_call;
     replay_options.model = replay_model;
     replay_options.base_url = replay_base_url;
+    replay_options.provider_base_url = config_options.provider_base_url;
     replay_options.api_key_env = replay_api_key_env;
     return cf::cli::replay_command(replay_options, std::cout, std::cerr);
   }

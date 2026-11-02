@@ -37,7 +37,7 @@ int print_coverage(const std::string& path) {
 
 void print_usage() {
   std::cout << "usage: cf-tidy -p <build_dir> [--allowed-namespaces=<regex>] "
-               "<changed files...>\n";
+               "[--std=<standard>] <changed files...>\n";
 }
 
 }  // namespace
@@ -75,6 +75,11 @@ int main(int argc, char** argv) {
     const std::string namespaces_prefix = "--allowed-namespaces=";
     if (argument.rfind(namespaces_prefix, 0) == 0) {
       options.allowed_namespaces = argument.substr(namespaces_prefix.size());
+      continue;
+    }
+    const std::string standard_prefix = "--std=";
+    if (argument.rfind(standard_prefix, 0) == 0) {
+      options.standard = argument.substr(standard_prefix.size());
       continue;
     }
     const std::string disable_prefix = "--disable-check=";

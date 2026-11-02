@@ -1938,6 +1938,21 @@ int replay_command(const ReplayOptions& options, std::ostream& out,
     err << options.api_key_env << " is not set\n";
     return 2;
   }
+  const auto normalized = [](std::string value) {
+    while (!value.empty() && value.back() == '/') {
+      value.pop_back();
+    }
+    return value;
+  };
+  const std::string base_url =
+      options.base_url.empty() ? call->base_url : options.base_url;
+  if (options.base_url.empty() && !options.provider_base_url.empty() &&
+      normalized(base_url) != normalized(options.provider_base_url)) {
+    err << "LLM_ARCHIVE_INVALID: archived base URL '" << base_url
+        << "' does not match the configured provider '"
+        << options.provider_base_url << "'\n";
+    return 1;
+  }
   std::unique_ptr<llm::CprTransport> default_transport;
   llm::HttpTransport* transport = options.transport;
   if (transport == nullptr) {
@@ -1945,8 +1960,7 @@ int replay_command(const ReplayOptions& options, std::ostream& out,
     transport = default_transport.get();
   }
   llm::HttpRequest http;
-  http.url = (options.base_url.empty() ? call->base_url : options.base_url) +
-             call->path;
+  http.url = base_url + call->path;
   http.headers = {{"Authorization", "Bearer " + std::string(key)},
                   {"Content-Type", "application/json"},
                   {"Accept", "application/json"}};
@@ -2513,6 +2527,9 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   if (options.sandbox_memory_gb.has_value()) {
     config.gate_memory_mb =
         static_cast<std::uint64_t>(*options.sandbox_memory_gb * 1024.0);
+  }
+  if (options.sandbox_pids_limit.has_value()) {
+    config.gate_pids_limit = *options.sandbox_pids_limit;
   }
   if (options.gate_timeout_min.has_value()) {
     config.step_timeout = std::chrono::minutes(*options.gate_timeout_min);

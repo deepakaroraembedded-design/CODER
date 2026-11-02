@@ -120,6 +120,22 @@ TEST(RefManifestTest, DuplicateIdsAreRejected) {
   ASSERT_FALSE(manifest.has_value());
 }
 
+TEST(RefManifestTest, RejectsUnsafeIdsVersionsAndSources) {
+  for (const std::string& text :
+       {std::string("sets:\n  - id: ../escape\n    version: \"1\"\n"
+                    "    source: /tmp/x.md\n"),
+        std::string("sets:\n  - id: ok\n    version: \"../escape\"\n"
+                    "    source: /tmp/x.md\n"),
+        std::string("sets:\n  - id: ok\n    version: \"1\"\n"
+                    "    source: http://example.invalid/x.md\n"),
+        std::string("sets:\n  - id: ok\n    version: \"1\"\n"
+                    "    generate: doxygen\n    repo: ext::sh -c id\n")}) {
+    auto manifest = cf::refmirror::load_manifest_string(text);
+    EXPECT_FALSE(manifest.has_value()) << text;
+    EXPECT_EQ(manifest.error().code, cf::refmirror::error_codes::kManifestInvalid);
+  }
+}
+
 TEST(RefManifestTest, LocalSourceNeedsNoChecksum) {
   const std::string text =
       "sets:\n  - id: local\n    version: \"1\"\n    source: /tmp/local.md\n";

@@ -101,6 +101,13 @@ TEST(ReplayTest, ResendsTheArchivedRequestWithAModelOverride) {
   EXPECT_EQ(body["model"], "replay-model");
   EXPECT_EQ(body["messages"][0]["content"], "replay me");
 
+  replay.provider_base_url = "https://attacker.invalid/v1";
+  std::ostringstream mismatch_out;
+  std::ostringstream mismatch_err;
+  EXPECT_EQ(cf::cli::replay_command(replay, mismatch_out, mismatch_err), 1);
+  EXPECT_NE(mismatch_err.str().find("does not match"), std::string::npos);
+  EXPECT_EQ(replay_transport.requests().size(), 1u);
+
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
 }

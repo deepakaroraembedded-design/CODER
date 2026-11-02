@@ -421,6 +421,7 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   driver_config.full_review_threshold = config_.full_review_threshold;
   driver_config.gate_cpus = config_.gate_cpus;
   driver_config.gate_memory_mb = config_.gate_memory_mb;
+  driver_config.gate_pids_limit = config_.gate_pids_limit;
   driver_config.codeintel = codeintel_sync.get();
   WorkspaceDriver driver(plan_, driver_config, repository_, executor_, agent_runner,
                          &store_);

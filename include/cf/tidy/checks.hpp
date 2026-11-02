@@ -22,6 +22,9 @@ struct TidyOptions {
   std::vector<std::string> disabled_checks;
   // When non-empty, only these checks run.
   std::vector<std::string> only_checks;
+  // Language standard used by the no-compile-database fallback (e.g. c++20).
+  // Empty keeps the legacy C++17 fallback.
+  std::string standard;
 };
 
 struct TidyDiagnostic {

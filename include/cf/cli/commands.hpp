@@ -112,6 +112,9 @@ struct ReplayOptions {
   std::string model;                  // empty: the archived model
   std::string api_key_env = "FIREWORKS_API_KEY";
   std::string base_url;               // empty: the archived base URL
+  // The run's configured provider endpoint; when set, an archived URL that
+  // does not match it is refused so the live key is never sent elsewhere.
+  std::string provider_base_url;
   cf::llm::HttpTransport* transport = nullptr;  // tests inject one
 };
 int replay_command(const ReplayOptions& options, std::ostream& out,
@@ -283,6 +286,7 @@ struct ExecuteOptions {
   std::optional<std::vector<std::string>> review_blocking_severities;
   std::optional<double> sandbox_cpus;
   std::optional<double> sandbox_memory_gb;
+  std::optional<std::uint32_t> sandbox_pids_limit;
   std::optional<std::uint32_t> gate_timeout_min;
   // Pinned toolchain profile id (gates.profile); empty or "auto" resolves
   // from the plan's target block.

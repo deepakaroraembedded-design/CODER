@@ -152,6 +152,7 @@ Result<std::vector<GeneratedDocument>> generate_doxygen(
     clone_argv.push_back("--branch");
     clone_argv.push_back(set.ref);
   }
+  clone_argv.push_back("--");
   clone_argv.push_back(set.repo);
   clone_argv.push_back(clone.string());
   if (!run_command(executor, clone_argv, temporary.path, options.timeout)) {

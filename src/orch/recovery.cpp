@@ -89,11 +89,18 @@ Result<RecoveryReport> Recovery::resume(std::string_view run_id, Dispatcher& dis
         std::max(wait_until,
                  operation.updated_at + options.in_flight_grace.count());
   }
+  const auto clock = options.clock
+                         ? options.clock
+                         : [] { return store::unix_now(); };
   store::UnixTime effective_now = now;
   if (wait_until > now) {
     spdlog::info("recovery: waiting {}s for in-flight operations", wait_until - now);
   }
   while (effective_now < wait_until) {
+    effective_now = std::max(effective_now, clock());
+    if (effective_now >= wait_until) {
+      break;
+    }
     const auto remaining = wait_until - effective_now;
     const auto chunk = std::min<std::int64_t>(remaining, kLeaseRenewInterval.count());
     if (options.sleep_for) {
@@ -101,7 +108,10 @@ Result<RecoveryReport> Recovery::resume(std::string_view run_id, Dispatcher& dis
     } else {
       std::this_thread::sleep_for(std::chrono::seconds(chunk));
     }
-    effective_now += chunk;
+    // Read the clock again instead of assuming the sleep lasted its full
+    // duration: sleep can return early, and the lease/reconcile timestamps
+    // must reflect real time (design section 6.12.6 rule 3).
+    effective_now = std::max(effective_now, clock());
     auto renewed =
         store_.renew_lease(run_id, options.holder, lease->epoch, effective_now);
     if (!renewed) {

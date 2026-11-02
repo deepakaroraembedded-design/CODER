@@ -177,6 +177,10 @@ class Repository {
       const std::filesystem::path& worktree) const;
   // Stages every change in the worktree, including resolved conflicts.
   Status stage_all(const std::filesystem::path& worktree) const;
+  // Stages only the named paths (used to finish a conflict resolution without
+  // sweeping untracked build output into the commit).
+  Status stage_paths(const std::filesystem::path& worktree,
+                     const std::vector<std::string>& paths) const;
   // Continues an in-progress rebase without opening an editor.
   Status continue_rebase(const std::filesystem::path& worktree) const;
 

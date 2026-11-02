@@ -378,7 +378,7 @@ std::optional<std::string> allowed_namespaces_from_clang_tidy(
 }
 
 std::unique_ptr<clang::tooling::CompilationDatabase> load_database(
-    const fs::path& build_dir) {
+    const fs::path& build_dir, const std::string& standard) {
   std::string error;
   auto database = clang::tooling::CompilationDatabase::autoDetectFromDirectory(
       build_dir.string(), error);
@@ -386,10 +386,12 @@ std::unique_ptr<clang::tooling::CompilationDatabase> load_database(
     return database;
   }
   // A profile can point at a build directory that has not been configured yet
-  // when run_checks is used from a turn. Keep the check useful with a
-  // conservative C++17 syntax-only fallback; the gate's build step normally
-  // supplies the real compile_commands.json.
-  std::vector<std::string> flags = {"-std=c++17", "-fsyntax-only"};
+  // when run_checks is used from a turn. Keep the check useful with the
+  // profile's language standard; the gate's build step normally supplies the
+  // real compile_commands.json.
+  std::vector<std::string> flags;
+  flags.push_back(standard.empty() ? "-std=c++17" : "-std=" + standard);
+  flags.push_back("-fsyntax-only");
   return std::make_unique<clang::tooling::FixedCompilationDatabase>(
       ".", std::move(flags));
 }
@@ -417,7 +419,7 @@ Result<std::vector<TidyDiagnostic>> run_company_checks(
       effective.allowed_namespaces = std::move(*configured);
     }
   }
-  auto database = load_database(root);
+  auto database = load_database(root, options.standard);
   clang::tooling::ClangTool tool(*database, paths);
   tool.appendArgumentsAdjuster(clang::tooling::getClangSyntaxOnlyAdjuster());
 #ifdef CF_CLANG_RESOURCE_DIR
@@ -430,52 +432,54 @@ Result<std::vector<TidyDiagnostic>> run_company_checks(
   std::vector<TidyDiagnostic> diagnostics;
   GuardrailCallback callback(diagnostics, effective);
   using namespace clang::ast_matchers;
+  // "$^" cannot match any identifier, so an empty allow-list exempts nothing.
+  const std::string allowed_regex =
+      effective.allowed_namespaces.empty() ? "$^" : effective.allowed_namespaces;
+  const auto allowed =
+      hasAncestor(namespaceDecl(matchesName(allowed_regex)));
   auto new_matcher = cxxNewExpr(unless(isExpansionInSystemHeader()),
-                                unless(hasAnyPlacementArg(anything())));
-  auto delete_matcher = cxxDeleteExpr(unless(isExpansionInSystemHeader()));
-  auto alloc_matcher = callExpr(unless(isExpansionInSystemHeader()));
+                                unless(hasAnyPlacementArg(anything())),
+                                unless(allowed));
+  auto delete_matcher =
+      cxxDeleteExpr(unless(isExpansionInSystemHeader()), unless(allowed));
+  auto alloc_matcher =
+      callExpr(unless(isExpansionInSystemHeader()), unless(allowed));
   auto detach_matcher = cxxMemberCallExpr(
-      unless(isExpansionInSystemHeader()),
+      unless(isExpansionInSystemHeader()), unless(allowed),
       callee(cxxMethodDecl(hasName("detach"))));
   auto secret_matcher = varDecl(
-      unless(isExpansionInSystemHeader()),
+      unless(isExpansionInSystemHeader()), unless(allowed),
       hasInitializer(ignoringImplicit(stringLiteral())));
-  auto bool_param_matcher = parmVarDecl(unless(isExpansionInSystemHeader()));
-  auto cast_matcher = cStyleCastExpr(unless(isExpansionInSystemHeader()));
+  auto bool_param_matcher =
+      parmVarDecl(unless(isExpansionInSystemHeader()), unless(allowed));
+  auto cast_matcher =
+      cStyleCastExpr(unless(isExpansionInSystemHeader()), unless(allowed));
   auto using_namespace_matcher =
-      usingDirectiveDecl(unless(isExpansionInSystemHeader()));
-  auto goto_matcher = gotoStmt(unless(isExpansionInSystemHeader()));
+      usingDirectiveDecl(unless(isExpansionInSystemHeader()), unless(allowed));
+  auto goto_matcher = gotoStmt(unless(isExpansionInSystemHeader()), unless(allowed));
   auto reinterpret_matcher =
-      cxxReinterpretCastExpr(unless(isExpansionInSystemHeader()));
+      cxxReinterpretCastExpr(unless(isExpansionInSystemHeader()), unless(allowed));
   auto const_cast_matcher =
-      cxxConstCastExpr(unless(isExpansionInSystemHeader()));
+      cxxConstCastExpr(unless(isExpansionInSystemHeader()), unless(allowed));
   auto raw_array_matcher =
-      varDecl(unless(isExpansionInSystemHeader()), hasType(arrayType()));
+      varDecl(unless(isExpansionInSystemHeader()), unless(allowed),
+              hasType(arrayType()));
   auto raw_field_array_matcher =
-      fieldDecl(unless(isExpansionInSystemHeader()), hasType(arrayType()));
-  auto unsafe_c_matcher = callExpr(unless(isExpansionInSystemHeader()));
+      fieldDecl(unless(isExpansionInSystemHeader()), unless(allowed),
+                hasType(arrayType()));
+  auto unsafe_c_matcher =
+      callExpr(unless(isExpansionInSystemHeader()), unless(allowed));
   auto multiple_inheritance_matcher =
-      cxxRecordDecl(isDefinition(), unless(isExpansionInSystemHeader()));
-  auto public_data_matcher = fieldDecl(unless(isExpansionInSystemHeader()));
-  auto sleep_matcher = callExpr(unless(isExpansionInSystemHeader()));
-  auto public_static_matcher = varDecl(unless(isExpansionInSystemHeader()));
-  auto weak_hash_matcher = callExpr(unless(isExpansionInSystemHeader()));
-  if (!effective.allowed_namespaces.empty()) {
-    const auto allowed = hasAncestor(
-        namespaceDecl(matchesName(effective.allowed_namespaces)));
-    new_matcher = cxxNewExpr(unless(isExpansionInSystemHeader()),
-                             unless(hasAnyPlacementArg(anything())),
-                             unless(allowed));
-    delete_matcher =
-        cxxDeleteExpr(unless(isExpansionInSystemHeader()), unless(allowed));
-    alloc_matcher =
-        callExpr(unless(isExpansionInSystemHeader()), unless(allowed));
-    detach_matcher = cxxMemberCallExpr(
-        unless(isExpansionInSystemHeader()), unless(allowed),
-        callee(cxxMethodDecl(hasName("detach"))));
-    secret_matcher = varDecl(
-        unless(isExpansionInSystemHeader()), hasInitializer(ignoringImplicit(stringLiteral())));
-  }
+      cxxRecordDecl(isDefinition(), unless(isExpansionInSystemHeader()),
+                    unless(allowed));
+  auto public_data_matcher =
+      fieldDecl(unless(isExpansionInSystemHeader()), unless(allowed));
+  auto sleep_matcher =
+      callExpr(unless(isExpansionInSystemHeader()), unless(allowed));
+  auto public_static_matcher =
+      varDecl(unless(isExpansionInSystemHeader()), unless(allowed));
+  auto weak_hash_matcher =
+      callExpr(unless(isExpansionInSystemHeader()), unless(allowed));
   finder.addMatcher(std::move(new_matcher).bind("new"), &callback);
   finder.addMatcher(std::move(delete_matcher).bind("delete"), &callback);
   finder.addMatcher(std::move(alloc_matcher).bind("alloc"), &callback);

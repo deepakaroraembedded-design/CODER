@@ -99,6 +99,9 @@ class EventStream {
   virtual ~EventStream() = default;
   virtual void set_callback(Callback callback) = 0;
   virtual void set_disconnect_callback(DisconnectCallback callback) = 0;
+  // Starts the reader. Call only after the callbacks are installed so no
+  // event is archived and then dropped (B-49).
+  virtual void start() = 0;
   virtual void stop() = 0;
   virtual bool running() const = 0;
   // Blocks until the stream is running or has exited. Returns false when the

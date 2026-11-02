@@ -817,8 +817,8 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
   if (const YAML::Node sandbox = root["sandbox"]) {
     for (const auto& entry : sandbox) {
       const std::string key = entry.first.as<std::string>();
-      if (key == "cpu" || key == "memory_gb" || key == "job_timeout_min" ||
-          key == "network") {
+      if (key == "cpu" || key == "memory_gb" || key == "pids_limit" ||
+          key == "job_timeout_min" || key == "network") {
         continue;
       }
       return unsupported("sandbox." + key);
@@ -830,6 +830,12 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
     }
     if (auto status = read_optional(sandbox["memory_gb"], "sandbox.memory_gb",
                                     config.sandbox.memory_gb);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (auto status = read_optional(sandbox["pids_limit"],
+                                    "sandbox.pids_limit",
+                                    config.sandbox.pids_limit);
         !status) {
       return tl::make_unexpected(status.error());
     }
@@ -858,6 +864,10 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
     if (config.sandbox.memory_gb.has_value() &&
         !positive(*config.sandbox.memory_gb)) {
       return invalid("sandbox.memory_gb", "must be a positive number");
+    }
+    if (config.sandbox.pids_limit.has_value() &&
+        *config.sandbox.pids_limit == 0) {
+      return invalid("sandbox.pids_limit", "must be greater than zero");
     }
     if (config.sandbox.job_timeout_min.has_value() &&
         *config.sandbox.job_timeout_min == 0) {
@@ -1089,6 +1099,9 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   }
   if (config.sandbox.memory_gb.has_value()) {
     options.sandbox_memory_gb = *config.sandbox.memory_gb;
+  }
+  if (config.sandbox.pids_limit.has_value()) {
+    options.sandbox_pids_limit = *config.sandbox.pids_limit;
   }
   if (config.sandbox.job_timeout_min.has_value()) {
     options.gate_timeout_min = *config.sandbox.job_timeout_min;

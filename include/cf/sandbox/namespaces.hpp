@@ -11,6 +11,7 @@
 // limits come from a delegated cgroup when one is available.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <string>
@@ -34,6 +35,7 @@ struct NamespaceSandboxSpec {
   std::size_t build_mb = 1024;
   // Best-effort cgroup v2 limits; when set, the run fails if no delegated
   // cgroup is available instead of silently running unbounded.
+  double cpus = 0.0;
   std::size_t memory_mb = 0;
   std::size_t pids_limit = 0;
 };
@@ -54,8 +56,14 @@ class NamespaceExecutor final : public process::ProcessExecutor {
   const NamespaceSandboxSpec& spec() const { return spec_; }
 
  private:
+  // One executor is shared by every gate in a stage, which run concurrently;
+  // each invocation owns a slot so stop() can signal all live sandboxes.
+  static constexpr std::size_t kMaxChildren = 64;
+  bool register_child(pid_t pid);
+  void unregister_child(pid_t pid);
+
   NamespaceSandboxSpec spec_;
-  std::atomic<pid_t> child_pid_{-1};
+  std::array<std::atomic<pid_t>, kMaxChildren> children_{};
   std::atomic<bool> stopping_{false};
 };
 
