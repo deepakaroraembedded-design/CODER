@@ -272,6 +272,18 @@ TEST(PlanTest, ParsesWriteAndUseSets) {
             (std::vector<std::string>{"IBar"}));
 }
 
+TEST(PlanTest, RejectsWritePathsThatEscapeTheWorktree) {
+  auto parent = cf::plan::parse_plan_string(minimal_plan(
+      "  - id: M1\n    title: A\n    writes: [../secrets/key.pem]\n"));
+  ASSERT_FALSE(parent.has_value());
+  EXPECT_EQ(parent.error().code, cf::plan::error_codes::kSchemaInvalid);
+
+  auto absolute = cf::plan::parse_plan_string(minimal_plan(
+      "  - id: M1\n    title: A\n    writes: [/etc/passwd]\n"));
+  ASSERT_FALSE(absolute.has_value());
+  EXPECT_EQ(absolute.error().code, cf::plan::error_codes::kSchemaInvalid);
+}
+
 TEST(PlanTest, FindMilestone) {
   auto plan = cf::plan::parse_plan_string(kExamplePlan);
   ASSERT_TRUE(plan.has_value());

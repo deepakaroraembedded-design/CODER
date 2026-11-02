@@ -236,7 +236,7 @@ Result<SuiteScore> score_suite(const SuiteManifest& manifest, const OutcomeSet& 
     completion.met = completion.observed >= completion.target;
   } else {
     completion.applicable = false;
-    completion.met = true;
+    completion.met = false;
   }
   score.targets.push_back(completion);
 
@@ -248,7 +248,7 @@ Result<SuiteScore> score_suite(const SuiteManifest& manifest, const OutcomeSet& 
     security.met = security.observed >= security.target;
   } else {
     security.applicable = false;
-    security.met = true;
+    security.met = false;
   }
   score.targets.push_back(security);
 
@@ -260,7 +260,7 @@ Result<SuiteScore> score_suite(const SuiteManifest& manifest, const OutcomeSet& 
     recovery.met = recovery.observed >= recovery.target;
   } else {
     recovery.applicable = false;
-    recovery.met = true;
+    recovery.met = false;
   }
   score.targets.push_back(recovery);
 

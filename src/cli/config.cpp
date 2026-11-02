@@ -1,6 +1,7 @@
 #include "cf/cli/config.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <set>
 #include <string_view>
 #include <utility>
@@ -666,6 +667,30 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
         !status) {
       return tl::make_unexpected(status.error());
     }
+    const auto positive = [](double value) {
+      return std::isfinite(value) && value > 0.0;
+    };
+    if (config.budget.max_usd_total.has_value() &&
+        !positive(*config.budget.max_usd_total)) {
+      return invalid("budget.max_usd_total", "must be a positive number");
+    }
+    if (config.budget.max_tokens_total.has_value() &&
+        *config.budget.max_tokens_total == 0) {
+      return invalid("budget.max_tokens_total", "must be greater than zero");
+    }
+    if (config.budget.max_iterations_per_milestone.has_value() &&
+        *config.budget.max_iterations_per_milestone == 0) {
+      return invalid("budget.max_iterations_per_milestone",
+                     "must be greater than zero");
+    }
+    if (config.budget.max_attempts_per_defect.has_value() &&
+        *config.budget.max_attempts_per_defect == 0) {
+      return invalid("budget.max_attempts_per_defect", "must be greater than zero");
+    }
+    if (config.budget.max_wall_clock_hours.has_value() &&
+        !positive(*config.budget.max_wall_clock_hours)) {
+      return invalid("budget.max_wall_clock_hours", "must be a positive number");
+    }
   }
 
   if (const YAML::Node gates = root["gates"]) {
@@ -824,6 +849,20 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
       return invalid("sandbox.network",
                      "gate jobs are network-isolated; only 'deny' is accepted");
     }
+    const auto positive = [](double value) {
+      return std::isfinite(value) && value > 0.0;
+    };
+    if (config.sandbox.cpu.has_value() && !positive(*config.sandbox.cpu)) {
+      return invalid("sandbox.cpu", "must be a positive number");
+    }
+    if (config.sandbox.memory_gb.has_value() &&
+        !positive(*config.sandbox.memory_gb)) {
+      return invalid("sandbox.memory_gb", "must be a positive number");
+    }
+    if (config.sandbox.job_timeout_min.has_value() &&
+        *config.sandbox.job_timeout_min == 0) {
+      return invalid("sandbox.job_timeout_min", "must be greater than zero");
+    }
   }
 
   return config;
@@ -909,9 +948,9 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
     options.api_key_env = provider->second.api_key_env;
   }
 
-  // Embeddings (design sections 6.3, 15): use the default provider's entry,
-  // a provider starting with its name (local-vllm -> local-vllm-embed), or
-  // the only entry.
+  // Embeddings (design sections 6.3, 15): use the default provider's entry or
+  // a provider starting with its name (local-vllm -> local-vllm-embed); a run
+  // never mixes providers.
   if (!config.models.embeddings.empty()) {
     auto embedding = config.models.embeddings.end();
     const auto exact =
@@ -926,10 +965,6 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
           embedding = it;
           break;
         }
-      }
-      if (embedding == config.models.embeddings.end() &&
-          config.models.embeddings.size() == 1) {
-        embedding = config.models.embeddings.begin();
       }
     }
     if (embedding == config.models.embeddings.end()) {

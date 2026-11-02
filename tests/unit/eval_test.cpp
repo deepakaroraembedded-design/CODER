@@ -256,6 +256,24 @@ TEST(EvalScoreTest, ComputesMetricsAndTargets) {
   EXPECT_EQ(score->held_out.runs, 0u);
 }
 
+TEST(EvalScoreTest, AbsentCategoriesAreNotReportedAsMet) {
+  auto manifest = cf::eval::parse_suite_manifest(
+      "suite: s\nrepeats: 1\nplans:\n  - id: f1\n    category: functional\n"
+      "    language: cpp\n    tier: T1\n    plan: p.yaml\n");
+  ASSERT_TRUE(manifest.has_value()) << manifest.error().message;
+  OutcomeSet set;
+  set.suite_id = "s";
+  set.outcomes.push_back(outcome("f1", 0, 1, 1, 1, 1, 1.0, 0, true, true));
+  auto score = cf::eval::score_suite(*manifest, set);
+  ASSERT_TRUE(score.has_value()) << score.error().message;
+  ASSERT_EQ(score->targets.size(), 3u);
+  EXPECT_TRUE(score->targets[0].applicable);
+  EXPECT_FALSE(score->targets[1].applicable);
+  EXPECT_FALSE(score->targets[1].met);
+  EXPECT_FALSE(score->targets[2].applicable);
+  EXPECT_FALSE(score->targets[2].met);
+}
+
 TEST(EvalScoreTest, SplitsHeldOutPlans) {
   auto manifest = cf::eval::parse_suite_manifest(
       "suite: s\nplans:\n  - id: a\n    language: cpp\n    tier: T1\n    plan: a.yaml\n"

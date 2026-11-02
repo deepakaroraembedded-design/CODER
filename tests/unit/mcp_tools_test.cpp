@@ -272,6 +272,20 @@ TEST_F(McpToolsTest, InvalidArgumentsAreRejected) {
       Json{{"query", "secrets"}, {"surprise", true}});
   EXPECT_TRUE(unexpected.is_error);
   EXPECT_EQ(unexpected.structured["code"], "TOOL_INVALID_ARGUMENTS");
+
+  for (const int top_k : {0, -1, 1001}) {
+    const ToolResult bounded = registry_.call(
+        ToolRole::Coder, "search_guidelines",
+        Json{{"query", "secrets"}, {"top_k", top_k}});
+    EXPECT_TRUE(bounded.is_error) << top_k;
+    EXPECT_EQ(bounded.structured["code"], "TOOL_INVALID_ARGUMENTS") << top_k;
+  }
+
+  const ToolResult oversized_budget = registry_.call(
+      ToolRole::Coder, "get_context",
+      Json{{"task_id", "symbol"}, {"token_budget", 1000001}});
+  EXPECT_TRUE(oversized_budget.is_error);
+  EXPECT_EQ(oversized_budget.structured["code"], "TOOL_INVALID_ARGUMENTS");
 }
 
 TEST_F(McpToolsTest, SearchGuidelinesReturnsHits) {
@@ -773,6 +787,17 @@ TEST(McpValidationTest, ValidatorChecksSchemaRules) {
   EXPECT_FALSE((cf::mcp::validate_arguments(
                     schema, Json{{"name", "x"}, {"tags", Json::array({"a"})}})
                     .has_value()));
+
+  const Json bounded = Json{
+      {"type", "object"},
+      {"properties",
+       Json{{"count", Json{{"type", "integer"}, {"minimum", 1}, {"maximum", 10}}}}},
+      {"required", Json::array({"count"})}};
+  for (const int count : {1, 10, 0, 11}) {
+    const auto error = cf::mcp::validate_arguments(bounded, Json{{"count", count}});
+    EXPECT_EQ(error.has_value(), count == 0 || count == 11)
+        << count << ": " << error.value_or("ok") << " schema=" << bounded.dump();
+  }
 }
 
 }  // namespace

@@ -56,7 +56,7 @@ CommandAnalysis analyze_command(std::string_view command) {
       analysis.substitution = true;
       continue;
     }
-    if (c == ';' || c == '&' || c == '|') {
+    if (c == ';' || c == '&' || c == '|' || c == '\n' || c == '\r') {
       analysis.chaining = true;
       continue;
     }
@@ -181,6 +181,37 @@ bool matches_entry(const std::string& command, const std::string& entry) {
          command[entry.size()] == ' ';
 }
 
+// Deny entries are either program names ("curl") or command prefixes
+// ("git push"); compare them against the parsed tokens so an absolute path
+// such as /usr/bin/curl cannot slip past the list.
+bool matches_deny(const std::vector<std::string>& tokens, const std::string& command,
+                  const std::string& entry) {
+  if (matches_entry(command, entry)) {
+    return true;
+  }
+  if (tokens.empty()) {
+    return false;
+  }
+  const std::vector<std::string> entry_tokens = split_command(entry);
+  if (entry_tokens.empty()) {
+    return false;
+  }
+  const std::string program = base_name(tokens.front());
+  const std::string entry_program = base_name(entry_tokens.front());
+  if (entry_tokens.size() == 1) {
+    return program == entry_program;
+  }
+  if (program != entry_program || tokens.size() < entry_tokens.size()) {
+    return false;
+  }
+  for (std::size_t i = 1; i < entry_tokens.size(); ++i) {
+    if (tokens[i] != entry_tokens[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool inside(const std::filesystem::path& root, const std::filesystem::path& path) {
   const std::string root_text = root.string();
   const std::string path_text = path.string();
@@ -222,16 +253,24 @@ PermissionDecision PermissionPolicy::decide_bash(
     return reject("default-deny", "empty command");
   }
 
-  // Rule 1: the deny list wins over everything else.
-  for (const auto& entry : config_.deny_commands) {
-    if (matches_entry(command, entry)) {
-      return reject("deny-list", "command is denied by policy: " + entry);
-    }
-  }
-
   const std::vector<std::string> tokens = split_command(command);
   if (tokens.empty()) {
     return reject("default-deny", "empty command");
+  }
+
+  for (const char c : command) {
+    const auto byte = static_cast<unsigned char>(c);
+    if (byte < 0x20 && c != '\t' && c != '\n' && c != '\r') {
+      return reject("command-control-character",
+                    "control characters are not permitted in a command");
+    }
+  }
+
+  // Rule 1: the deny list wins over everything else.
+  for (const auto& entry : config_.deny_commands) {
+    if (matches_deny(tokens, command, entry)) {
+      return reject("deny-list", "command is denied by policy: " + entry);
+    }
   }
 
   // An explicitly listed full command is allowed as-is (this is the only way

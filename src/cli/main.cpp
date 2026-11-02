@@ -1,9 +1,11 @@
 // cf: the Coder Framework command line (design section 9.2).
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <CLI/CLI.hpp>
@@ -11,6 +13,26 @@
 #include "cf/cli/commands.hpp"
 #include "cf/cli/config.hpp"
 #include "cf/telemetry/logging.hpp"
+
+namespace {
+
+// A run id is a path component and a git branch component (design sections
+// 6.12, 10.4): keep it to a conservative, traversal-free alphabet.
+bool is_valid_run_id(std::string_view id) {
+  if (id.empty() || id.size() > 128 || id == "." || id == "..") {
+    return false;
+  }
+  for (const char character : id) {
+    const bool safe = std::isalnum(static_cast<unsigned char>(character)) != 0 ||
+                      character == '-' || character == '_' || character == '.';
+    if (!safe) {
+      return false;
+    }
+  }
+  return id.front() != '.' && id.front() != '-';
+}
+
+}  // namespace
 
 int main(int argc, char** argv) {
   cf::telemetry::configure_json_logging();
@@ -245,6 +267,12 @@ int main(int argc, char** argv) {
                      "Environment variable holding the provider key");
 
   CLI11_PARSE(app, argc, argv);
+
+  if (!run_id.empty() && !is_valid_run_id(run_id)) {
+    std::cerr << "invalid run id '" << run_id
+              << "'; use letters, digits, '.', '-' or '_' (not leading '.' or '-')\n";
+    return 2;
+  }
 
   if (*check) {
     return cf::cli::check_command(plan_path, profiles_dir, std::cout, std::cerr);

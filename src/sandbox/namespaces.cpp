@@ -26,6 +26,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "cf/common/path.hpp"
+
 namespace cf::sandbox {
 namespace {
 
@@ -196,6 +198,9 @@ int setup_root(const NamespaceSandboxSpec& spec, const std::string& root) {
     // (docker's bind mounts do the same); empty directories are invisible to
     // git, so this does not affect the recorded diff.
     for (const auto& path : spec.writable_paths) {
+      if (!cf::common::is_safe_relative_path(path)) {
+        return -1;
+      }
       struct stat st {};
       if (::stat((spec.worktree + "/" + path).c_str(), &st) == 0 &&
           !S_ISDIR(st.st_mode)) {
@@ -495,7 +500,9 @@ class CgroupLimits {
       return false;
     }
     write_file(parent + "/cgroup.subtree_control", "+memory +pids");
-    dir_ = parent + "/cf-sbx-" + std::to_string(::getpid());
+    static std::atomic<unsigned> cgroup_counter{0};
+    dir_ = parent + "/cf-sbx-" + std::to_string(::getpid()) + "-" +
+           std::to_string(cgroup_counter.fetch_add(1));
     if (::mkdir(dir_.c_str(), 0755) != 0) {
       dir_.clear();
       return false;

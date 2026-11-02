@@ -59,6 +59,6 @@ rules:
 
   - id: swt.go.no-plain-http-server
     languages: [go]
-    severity: WARNING
+    severity: ERROR
     message: Use TLS for network listeners outside local tests.
     pattern: http.ListenAndServe(...)

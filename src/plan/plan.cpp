@@ -10,6 +10,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "cf/common/duration.hpp"
+#include "cf/common/path.hpp"
 
 namespace cf::plan {
 namespace {
@@ -185,6 +186,12 @@ void validate_milestones(const std::vector<MilestoneSpec>& milestones) {
       if (ids.find(dependency) == ids.end()) {
         dependency_error("milestone '" + milestone.id +
                          "' depends on unknown milestone '" + dependency + "'");
+      }
+    }
+    for (const auto& write : milestone.writes) {
+      if (!cf::common::is_safe_relative_path(write)) {
+        schema_error("milestone '" + milestone.id + "' write entry '" + write +
+                     "' must be a relative path without '..'");
       }
     }
   }

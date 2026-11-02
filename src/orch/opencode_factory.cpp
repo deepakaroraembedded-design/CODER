@@ -9,6 +9,7 @@
 #include <spdlog/spdlog.h>
 #include <unistd.h>
 
+#include "cf/common/path.hpp"
 #include "cf/common/process.hpp"
 #include "cf/orch/role_config.hpp"
 
@@ -86,6 +87,10 @@ std::vector<std::string> writable_paths_for(const OpencodeFactoryConfig& config,
   }
   std::vector<std::string> unique;
   for (const auto& path : paths) {
+    if (!cf::common::is_safe_relative_path(path)) {
+      spdlog::warn("ignoring unsafe writable path '{}' for role {}", path, role);
+      continue;
+    }
     if (std::find(unique.begin(), unique.end(), path) == unique.end()) {
       unique.push_back(path);
     }
@@ -680,10 +685,8 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   state.stream = state.client->open_event_stream();
   agents::PermissionPolicyConfig policy;
   policy.worktree = sandboxed ? "/work" : worktree;
-  if (role == "coder") {
-    policy.writable_paths = {"src", "include"};
-  } else if (role == "qa") {
-    policy.writable_paths = {"tests", "qa"};
+  if (role == "coder" || role == "qa") {
+    policy.writable_paths = writable_paths_for(config_, role);
   }
   policy.allowed_commands = role == "qa" ? config_.qa_commands : config_.coder_commands;
   if (role == "reviewer") {

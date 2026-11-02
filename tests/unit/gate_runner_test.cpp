@@ -8,6 +8,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -485,6 +486,19 @@ TEST(CoverageReportTest, ParsesGoCoverageJSONAndLcov) {
   auto unknown = cf::gates::parse_coverage_report("sarif", "{}");
   ASSERT_FALSE(unknown.has_value());
   EXPECT_EQ(unknown.error().code, cf::gates::error_codes::kCoverageReport);
+
+  for (const auto& [format, content] :
+       std::vector<std::pair<std::string, std::string>>{
+           {"go-cover", "mode: set\n"},
+           {"coverage-json", R"({"totals":{}})"},
+           {"lcov", "TN:\nSF:a.cpp\nend_of_record\n"},
+           {"llvm-cov-json", R"({"data":[{"totals":{"lines":{"count":0,"covered":0}}}]})"},
+           {"jacoco-xml", "<report></report>"}}) {
+    auto empty = cf::gates::parse_coverage_report(format, content);
+    ASSERT_FALSE(empty.has_value()) << format;
+    EXPECT_EQ(empty.error().code, cf::gates::error_codes::kCoverageReport)
+        << format;
+  }
 }
 
 TEST(MutationReportTest, ParsesMutmutJsonAndRejectsUnknownFormats) {
@@ -495,8 +509,8 @@ TEST(MutationReportTest, ParsesMutmutJsonAndRejectsUnknownFormats) {
 
   auto empty = cf::gates::parse_mutation_report(
       "mutmut-json", R"({"killed":0,"survived":0,"total":0})");
-  ASSERT_TRUE(empty.has_value()) << empty.error().message;
-  EXPECT_DOUBLE_EQ(empty->score, 1.0);
+  ASSERT_FALSE(empty.has_value());
+  EXPECT_EQ(empty.error().code, cf::gates::error_codes::kMutationReport);
 
   auto unknown = cf::gates::parse_mutation_report("sarif", "{}");
   ASSERT_FALSE(unknown.has_value());

@@ -74,6 +74,23 @@ TEST_F(PermissionTest, DenyListWinsOverEverything) {
   EXPECT_EQ(policy.decide(bash_request("sudo cmake --version")).rule_id, "deny-list");
 }
 
+TEST_F(PermissionTest, NewlinesCannotChainCommands) {
+  PermissionPolicy policy(config_);
+  EXPECT_EQ(policy.decide(bash_request("make\nrm -rf /")).rule_id,
+            "command-chaining");
+  EXPECT_EQ(policy.decide(bash_request("cmake --build /build\rrm -rf /")).rule_id,
+            "command-chaining");
+}
+
+TEST_F(PermissionTest, DenyListMatchesAbsoluteProgramPaths) {
+  config_.allowed_commands.push_back("curl");
+  PermissionPolicy policy(config_);
+  EXPECT_EQ(policy.decide(bash_request("/usr/bin/curl http://example.invalid")).rule_id,
+            "deny-list");
+  EXPECT_EQ(policy.decide(bash_request("/usr/bin/git push origin main")).rule_id,
+            "deny-list");
+}
+
 TEST_F(PermissionTest, ProfileCommandsAreAllowedOnce) {
   PermissionPolicy policy(config_);
   const auto decision = policy.decide(bash_request("cmake --build /build -j8"));

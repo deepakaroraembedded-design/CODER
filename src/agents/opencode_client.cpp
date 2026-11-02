@@ -469,10 +469,27 @@ void SseParser::reset() {
   data_.clear();
   event_name_.clear();
   event_id_.clear();
+  discarding_line_ = false;
+  dropping_event_ = false;
 }
 
 void SseParser::feed(std::string_view chunk) {
+  static constexpr std::size_t kMaxLineBytes = 8u * 1024u * 1024u;
   buffer_.append(chunk.data(), chunk.size());
+  if (discarding_line_) {
+    const std::size_t newline = buffer_.find('\n');
+    if (newline == std::string::npos) {
+      buffer_.clear();
+      return;
+    }
+    buffer_.erase(0, newline + 1);
+    discarding_line_ = false;
+  }
+  if (buffer_.size() > kMaxLineBytes && buffer_.find('\n') == std::string::npos) {
+    buffer_.clear();
+    discarding_line_ = true;
+    return;
+  }
   std::size_t pos = 0;
   while ((pos = buffer_.find('\n')) != std::string::npos) {
     std::string line = buffer_.substr(0, pos);
@@ -480,13 +497,23 @@ void SseParser::feed(std::string_view chunk) {
     if (!line.empty() && line.back() == '\r') {
       line.pop_back();
     }
+    if (line.size() > kMaxLineBytes) {
+      dropping_event_ = true;
+      data_.clear();
+      event_name_.clear();
+      continue;
+    }
     process_line(line);
   }
 }
 
 void SseParser::process_line(const std::string& line) {
+  static constexpr std::size_t kMaxEventBytes = 8u * 1024u * 1024u;
   if (line.empty()) {
     dispatch();
+    return;
+  }
+  if (dropping_event_) {
     return;
   }
   if (line[0] == ':') {
@@ -502,6 +529,13 @@ void SseParser::process_line(const std::string& line) {
     }
   }
   if (field == "data") {
+    const std::size_t extra = value.size() + (data_.empty() ? 0u : 1u);
+    if (data_.size() + extra > kMaxEventBytes) {
+      dropping_event_ = true;
+      data_.clear();
+      event_name_.clear();
+      return;
+    }
     if (!data_.empty()) {
       data_ += '\n';
     }
@@ -514,6 +548,13 @@ void SseParser::process_line(const std::string& line) {
 }
 
 void SseParser::dispatch() {
+  if (dropping_event_) {
+    dropping_event_ = false;
+    data_.clear();
+    event_name_.clear();
+    event_id_.clear();
+    return;
+  }
   if (data_.empty() && event_name_.empty()) {
     return;
   }

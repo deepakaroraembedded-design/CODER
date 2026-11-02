@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <mutex>
 #include <random>
+#include <set>
 #include <thread>
 #include <utility>
 
@@ -208,8 +209,7 @@ struct FireworksClient::Impl {
       : options(std::move(opts)),
         transport(std::move(transport_in)),
         on_call(std::move(callback)),
-        sleep(std::move(sleeper)),
-        rng(std::random_device{}()) {
+        sleep(std::move(sleeper)) {
     if (options.max_attempts < 1) {
       options.max_attempts = 1;
     }
@@ -255,12 +255,19 @@ struct FireworksClient::Impl {
     const int shift = std::min(attempt - 1, 30);
     const int64_t window = std::min(cap, base << shift);
     std::uniform_int_distribution<int64_t> dist(0, window);
+    // Each calling thread owns its generator; the client is explicitly
+    // concurrent and a shared engine would be a data race (design section 6.6).
+    thread_local std::mt19937_64 rng{std::random_device{}()};
     return std::chrono::milliseconds(dist(rng));
   }
 
   double compute_usd(const std::string& model, const Usage& usage) const {
     const auto price = options.prices.find(model);
     if (price == options.prices.end()) {
+      std::lock_guard<std::mutex> lock(warning_mutex);
+      if (warned_models.insert(model).second) {
+        spdlog::warn("no price configured for model '{}'; cost is recorded as 0", model);
+      }
       return 0.0;
     }
     return (static_cast<double>(usage.prompt_tokens) / 1e6) *
@@ -411,10 +418,11 @@ struct FireworksClient::Impl {
   std::unique_ptr<HttpTransport> transport;
   UsageCallback on_call;
   SleepFunction sleep;
-  std::mt19937_64 rng;
   std::mutex mutex;
   std::condition_variable cv;
   int in_flight = 0;
+  mutable std::mutex warning_mutex;
+  mutable std::set<std::string> warned_models;
 };
 
 FireworksClient::FireworksClient(ClientOptions options,

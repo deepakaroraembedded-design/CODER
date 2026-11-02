@@ -118,6 +118,22 @@ Json chat_success_body() {
                     {"prompt_tokens_details", Json{{"cached_tokens", 50}}}}}};
 }
 
+class RetryOnceTransport final : public HttpTransport {
+ public:
+  cf::Result<HttpResponse> post(const HttpRequest&) override {
+    static thread_local int calls = 0;
+    ++calls;
+    HttpResponse response;
+    if (calls == 1) {
+      response.status = 429;
+    } else {
+      response.status = 200;
+      response.body = chat_success_body().dump();
+    }
+    return response;
+  }
+};
+
 Json embed_success_body() {
   return Json{
       {"data", Json::array({Json{{"embedding", Json::array({0.5, 1.5})}, {"index", 0}},
@@ -398,6 +414,29 @@ TEST_F(LlmClientTest, ConcurrencyLimitIsEnforced) {
   }
   EXPECT_EQ(failures.load(), 0);
   EXPECT_LE(transport->max_in_flight(), 2);
+}
+
+TEST_F(LlmClientTest, BackoffIsSafeAcrossConcurrentRetries) {
+  ClientOptions options = base_options();
+  options.max_concurrency = 8;
+  options.max_attempts = 2;
+  options.initial_backoff = std::chrono::milliseconds(1);
+  options.max_backoff = std::chrono::milliseconds(2);
+  FireworksClient client(options, std::make_unique<RetryOnceTransport>());
+
+  std::atomic<int> failures{0};
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 8; ++i) {
+    threads.emplace_back([&client, &failures] {
+      if (!client.chat(chat_request()).has_value()) {
+        ++failures;
+      }
+    });
+  }
+  for (auto& thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(failures.load(), 0);
 }
 
 }  // namespace

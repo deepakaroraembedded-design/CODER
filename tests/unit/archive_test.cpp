@@ -4,7 +4,10 @@
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <vector>
 
 #include <unistd.h>
 
@@ -53,6 +56,26 @@ TEST_F(ArchiveTest, RoundTripsAndRejectsTheWrongKey) {
 
   cf::common::archive::Key wrong(32, 0x42);
   EXPECT_FALSE(cf::common::archive::read_encrypted(file, wrong).has_value());
+}
+
+TEST_F(ArchiveTest, AuthenticatesTheHeaderAndRejectsTampering) {
+  auto key = cf::common::archive::key_from_env(kKeyEnv);
+  ASSERT_TRUE(key.has_value());
+  const fs::path file = dir_ / "call.cfar";
+  ASSERT_TRUE(cf::common::archive::write_encrypted(file, *key, "payload"));
+
+  std::ifstream in(file, std::ios::binary);
+  std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(in)),
+                                   std::istreambuf_iterator<char>());
+  ASSERT_GT(bytes.size(), 12u);
+  EXPECT_EQ(bytes[4], 2);
+  bytes[8] = 0xff;  // plaintext-size field is covered by the v2 AAD
+  {
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out.write(reinterpret_cast<const char*>(bytes.data()),
+              static_cast<std::streamsize>(bytes.size()));
+  }
+  EXPECT_FALSE(cf::common::archive::read_encrypted(file, *key).has_value());
 }
 
 TEST_F(ArchiveTest, GeneratesPrefixedRandomIds) {

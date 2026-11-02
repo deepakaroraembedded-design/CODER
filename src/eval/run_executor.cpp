@@ -554,8 +554,12 @@ Result<PlanOutcome> RunProcessExecutor::run(const PlanEntry& plan_entry, int rep
   }
   auto usd = (*store)->total_usd(run_id);
   outcome.cost_usd = usd.has_value() ? *usd : 0.0;
-  outcome.cost_usd +=
+  auto agent_usd =
       sum_agent_usage_usd(run_dir, options_.role_models, options_.prices);
+  if (!agent_usd.has_value()) {
+    return tl::make_unexpected(agent_usd.error());
+  }
+  outcome.cost_usd += *agent_usd;
 
   // Escalation bundles, with their reasons.
   const std::filesystem::path escalations = run_dir / "escalations";
@@ -615,7 +619,7 @@ Result<PlanOutcome> RunProcessExecutor::run(const PlanEntry& plan_entry, int rep
   return outcome;
 }
 
-double sum_agent_usage_usd(
+Result<double> sum_agent_usage_usd(
     const std::filesystem::path& run_dir,
     const std::map<std::string, std::string, std::less<>>& role_models,
     const std::map<std::string, ModelPrice, std::less<>>& prices) {
@@ -650,7 +654,9 @@ double sum_agent_usage_usd(
       }
       const auto price = prices.find(model->second);
       if (price == prices.end()) {
-        continue;
+        return fail(error_codes::kRunExecutorFailed,
+                    "no price configured for model '" + model->second +
+                        "' (role '" + role + "')");
       }
       total += static_cast<double>(totals.prompt_tokens) / 1e6 *
                    price->second.usd_per_mtok_in +

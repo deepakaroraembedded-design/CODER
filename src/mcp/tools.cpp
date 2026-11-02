@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -31,8 +32,12 @@ Json string_property(const std::string& description) {
   return Json{{"type", "string"}, {"description", description}};
 }
 
-Json integer_property(const std::string& description) {
-  return Json{{"type", "integer"}, {"description", description}};
+Json bounded_integer_property(const std::string& description, std::int64_t minimum,
+                              std::int64_t maximum) {
+  return Json{{"type", "integer"},
+              {"minimum", minimum},
+              {"maximum", maximum},
+              {"description", description}};
 }
 
 Json object_schema(Json properties, std::vector<std::string> required) {
@@ -289,6 +294,18 @@ std::optional<std::string> validate_value(const Json& schema, const Json& value,
       return path + " must be of type " + expected;
     }
   }
+  if (value.is_number()) {
+    const auto minimum = schema.find("minimum");
+    if (minimum != schema.end() && minimum->is_number() &&
+        value.get<double>() < minimum->get<double>()) {
+      return path + " must be >= " + minimum->dump();
+    }
+    const auto maximum = schema.find("maximum");
+    if (maximum != schema.end() && maximum->is_number() &&
+        value.get<double>() > maximum->get<double>()) {
+      return path + " must be <= " + maximum->dump();
+    }
+  }
   if (value.is_object()) {
     const auto required = schema.find("required");
     if (required != schema.end() && required->is_array()) {
@@ -357,7 +374,8 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
                                                         "(policy, requirements, "
                                                         "architecture, design, guideline, "
                                                         "pattern, external_reference)"}}},
-                         {"top_k", integer_property("Maximum number of results")}},
+                         {"top_k", bounded_integer_property(
+                                       "Maximum number of results", 1, 1000)}},
                     {"query"}),
       all,
       [dependencies](const Json& arguments) -> ToolResult {
@@ -374,11 +392,15 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
             types.push_back(*type);
           }
         }
+        std::int64_t top_k = static_cast<std::int64_t>(dependencies.default_top_k);
+        if (const auto requested = arguments.find("top_k");
+            requested != arguments.end() && requested->is_number_integer()) {
+          top_k = requested->get<std::int64_t>();
+        }
+        top_k = std::clamp<std::int64_t>(top_k, 1, 1000);
         auto hits = search_rag(
             dependencies, arguments.at("query").get<std::string>(),
-            std::move(types),
-            static_cast<std::uint32_t>(
-                arguments.value("top_k", dependencies.default_top_k)));
+            std::move(types), static_cast<std::uint32_t>(top_k));
         if (!hits) {
           return error_result(hits.error().code, hits.error().message);
         }
@@ -879,7 +901,8 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
       "an indexed file path or component directory.",
       object_schema(Json{{"task_id", string_property(
                                  "Symbol name, file path or component directory")},
-                         {"token_budget", integer_property("Token budget")}},
+                         {"token_budget", bounded_integer_property(
+                                              "Token budget", 0, 1000000)}},
                     {"task_id", "token_budget"}),
       {ToolRole::Coder, ToolRole::Reviewer},
       [dependencies](const Json& arguments) -> ToolResult {
@@ -889,9 +912,10 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
         codeintel::ContextPacker packer(*dependencies.symbols);
         codeintel::ContextRequest request;
         request.seeds = {arguments["task_id"].get<std::string>()};
-        const std::int64_t budget = arguments["token_budget"].get<int64_t>();
-        request.token_budget =
-            budget > 0 ? static_cast<std::uint32_t>(budget) : 0;
+        const std::int64_t budget =
+            std::clamp<std::int64_t>(arguments["token_budget"].get<int64_t>(), 0,
+                                     1000000);
+        request.token_budget = static_cast<std::uint32_t>(budget);
         auto packed = packer.pack(request);
         if (!packed) {
           return error_result(packed.error().code, packed.error().message);

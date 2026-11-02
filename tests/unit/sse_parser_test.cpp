@@ -53,6 +53,18 @@ TEST(SseParserTest, CommentsAndEventField) {
   EXPECT_EQ(events[0].type, "a");
 }
 
+TEST(SseParserTest, OversizedLinesAndEventsAreDropped) {
+  std::vector<OpencodeEvent> events;
+  SseParser parser([&](const OpencodeEvent& e) { events.push_back(e); });
+  const std::string huge(9u * 1024u * 1024u, 'x');
+  parser.feed(huge);
+  parser.feed("\n");
+  parser.feed("data: " + huge + "\n\n");
+  parser.feed("data: {\"type\":\"ok\",\"properties\":{}}\n\n");
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].type, "ok");
+}
+
 TEST(SseParserTest, InvalidJsonBecomesParseError) {
   std::vector<OpencodeEvent> events;
   SseParser parser([&](const OpencodeEvent& e) { events.push_back(e); });

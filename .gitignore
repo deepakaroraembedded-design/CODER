@@ -21,3 +21,7 @@ bench-work/
 .cache/
 compile_commands.json
 .opencode/node_modules/
+
+# Local secrets (FIREWORKS_API_KEY and friends) — never commit
+.config
+.env

@@ -90,7 +90,6 @@ target_link_libraries(cf_unit_tests PRIVATE
   cf_gates
   cf_rag
   cf_codeintel
-  cf_tidy
   cf_mcp_tools
   cf_refmirror
   cf_git
@@ -101,6 +100,10 @@ target_link_libraries(cf_unit_tests PRIVATE
   cf_telemetry
   cf_common
   GTest::gtest_main)
+# cf_tidy only exists when Clang LibTooling is available (CMakeLists.txt).
+if(TARGET cf_tidy)
+  target_link_libraries(cf_unit_tests PRIVATE cf_tidy)
+endif()
 
 # The CLI smoke test runs the built cf binary.
 target_compile_definitions(cf_unit_tests PRIVATE

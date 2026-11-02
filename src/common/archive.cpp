@@ -19,8 +19,11 @@
 namespace cf::common::archive {
 namespace {
 
-constexpr std::string_view kAad = "cf-archive-v1";
+constexpr std::string_view kAadV1 = "cf-archive-v1";
 constexpr std::size_t kHeaderBytes = 40;  // magic+version+size+nonce+tag
+constexpr std::size_t kAadBytes = 12;     // magic+version+plaintext size
+constexpr std::uint32_t kMaxOriginalSize = 256u * 1024u * 1024u;
+constexpr std::uint64_t kMaxCompressionRatio = 2000;
 
 std::vector<unsigned char> decode_key(std::string_view text) {
   if (text.size() != 64) {
@@ -70,8 +73,9 @@ std::optional<std::string> gzip_decompress(const unsigned char* data,
 }
 
 bool aes_crypt(const std::vector<unsigned char>& key,
-               const unsigned char* nonce, const unsigned char* tag,
-               bool encrypt, std::string_view input, std::string& output) {
+               const unsigned char* nonce, const unsigned char* aad,
+               std::size_t aad_size, unsigned char* tag, bool encrypt,
+               std::string_view input, std::string& output) {
   output.resize(input.size());
   EVP_CIPHER_CTX* context = EVP_CIPHER_CTX_new();
   if (context == nullptr) {
@@ -91,11 +95,10 @@ bool aes_crypt(const std::vector<unsigned char>& key,
                                           nonce)) == 1;
   int length = 0;
   if (ok) {
-    auto* aad = reinterpret_cast<const unsigned char*>(kAad.data());
     ok = (encrypt ? EVP_EncryptUpdate(context, nullptr, &length, aad,
-                                      static_cast<int>(kAad.size()))
+                                      static_cast<int>(aad_size))
                   : EVP_DecryptUpdate(context, nullptr, &length, aad,
-                                       static_cast<int>(kAad.size()))) == 1;
+                                       static_cast<int>(aad_size))) == 1;
   }
   if (ok) {
     auto* data = reinterpret_cast<unsigned char*>(output.data());
@@ -113,13 +116,10 @@ bool aes_crypt(const std::vector<unsigned char>& key,
                reinterpret_cast<unsigned char*>(output.data()) + length,
                &final_length) == 1;
       if (ok) {
-        ok = EVP_CIPHER_CTX_ctrl(
-                 context, EVP_CTRL_GCM_GET_TAG, 16,
-                 const_cast<unsigned char*>(tag ? tag : nullptr)) == 1;
+        ok = EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_GET_TAG, 16, tag) == 1;
       }
     } else {
-      ok = EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_SET_TAG, 16,
-                               const_cast<unsigned char*>(tag)) == 1;
+      ok = EVP_CIPHER_CTX_ctrl(context, EVP_CTRL_GCM_SET_TAG, 16, tag) == 1;
       if (ok) {
         ok = EVP_DecryptFinal_ex(
                  context,
@@ -189,20 +189,25 @@ bool write_encrypted(const std::filesystem::path& path, const Key& key,
   std::string ciphertext;
   unsigned char nonce[12] = {0};
   unsigned char tag[16] = {0};
-  if (RAND_bytes(nonce, sizeof(nonce)) != 1 ||
-      !aes_crypt(key, nonce, tag, true,
+  if (RAND_bytes(nonce, sizeof(nonce)) != 1) {
+    return false;
+  }
+  // Version 2 authenticates the header, including the plaintext length, so
+  // an attacker with archive write access cannot change it without failing
+  // the GCM tag (design section 14).
+  std::vector<unsigned char> file(kHeaderBytes + compressed->size(), 0);
+  file[0] = 'C';
+  file[1] = 'F';
+  file[2] = 'A';
+  file[3] = 'R';
+  file[4] = 2;
+  put_u32(file.data() + 8, static_cast<std::uint32_t>(plaintext.size()));
+  if (!aes_crypt(key, nonce, file.data(), kAadBytes, tag, true,
                  std::string_view(reinterpret_cast<const char*>(compressed->data()),
                                   compressed->size()),
                  ciphertext)) {
     return false;
   }
-  std::vector<unsigned char> file(kHeaderBytes + ciphertext.size(), 0);
-  file[0] = 'C';
-  file[1] = 'F';
-  file[2] = 'A';
-  file[3] = 'R';
-  file[4] = 1;
-  put_u32(file.data() + 8, static_cast<std::uint32_t>(plaintext.size()));
   std::memcpy(file.data() + 12, nonce, sizeof(nonce));
   std::memcpy(file.data() + 24, tag, sizeof(tag));
   std::memcpy(file.data() + kHeaderBytes, ciphertext.data(), ciphertext.size());
@@ -233,16 +238,31 @@ std::optional<std::string> read_encrypted(const std::filesystem::path& path,
   std::vector<unsigned char> file((std::istreambuf_iterator<char>(in)),
                                   std::istreambuf_iterator<char>());
   if (file.size() < kHeaderBytes || file[0] != 'C' || file[1] != 'F' ||
-      file[2] != 'A' || file[3] != 'R' || file[4] != 1) {
+      file[2] != 'A' || file[3] != 'R' ||
+      (file[4] != 1 && file[4] != 2)) {
     return std::nullopt;
   }
   const std::uint32_t original_size = read_u32(file.data() + 8);
+  const std::size_t ciphertext_size = file.size() - kHeaderBytes;
+  if (original_size > kMaxOriginalSize ||
+      (ciphertext_size > 0 &&
+       static_cast<std::uint64_t>(original_size) >
+           static_cast<std::uint64_t>(ciphertext_size) * kMaxCompressionRatio +
+               4096)) {
+    return std::nullopt;
+  }
   const std::string ciphertext(
-      reinterpret_cast<const char*>(file.data() + kHeaderBytes),
-      file.size() - kHeaderBytes);
+      reinterpret_cast<const char*>(file.data() + kHeaderBytes), ciphertext_size);
   std::string compressed;
-  if (!aes_crypt(key, file.data() + 12, file.data() + 24, false, ciphertext,
-                 compressed)) {
+  unsigned char tag[16] = {0};
+  std::memcpy(tag, file.data() + 24, sizeof(tag));
+  const bool version2 = file[4] == 2;
+  const std::string_view aad =
+      version2 ? std::string_view(reinterpret_cast<const char*>(file.data()), kAadBytes)
+               : kAadV1;
+  if (!aes_crypt(key, file.data() + 12,
+                 reinterpret_cast<const unsigned char*>(aad.data()), aad.size(),
+                 tag, false, ciphertext, compressed)) {
     return std::nullopt;
   }
   return gzip_decompress(

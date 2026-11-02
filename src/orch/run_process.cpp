@@ -9,6 +9,7 @@
 #include <spdlog/spdlog.h>
 #include <unistd.h>
 
+#include "cf/common/path.hpp"
 #include "cf/orch/escalation.hpp"
 #include "cf/orch/defect_export.hpp"
 #include "cf/orch/github_flow.hpp"
@@ -356,6 +357,10 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
           const auto slash = write.find('/');
           const std::string top = write.substr(0, slash);
           if (top.empty()) {
+            continue;
+          }
+          if (!cf::common::is_safe_relative_path(top)) {
+            spdlog::warn("ignoring unsafe plan write path '{}'", write);
             continue;
           }
           if (std::find(factory_config.ns_write_paths.begin(),

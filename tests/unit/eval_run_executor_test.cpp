@@ -10,6 +10,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -182,6 +183,21 @@ int main() {
   return ok == 1 ? 0 : 1;
 }
 )cpp";
+
+TEST(EvalRunExecutorTest, UnpricedModelsFailCostAccounting) {
+  const auto dir = make_temp_dir();
+  write_file(dir / "usage-coder.jsonl",
+             R"({"role":"coder","usage":{"prompt_tokens":10,"completion_tokens":2}})"
+             "\n");
+  const std::map<std::string, std::string, std::less<>> role_models = {
+      {"coder", "unpriced-model"}};
+  const std::map<std::string, cf::eval::ModelPrice, std::less<>> prices;
+  auto cost = cf::eval::sum_agent_usage_usd(dir, role_models, prices);
+  ASSERT_FALSE(cost.has_value());
+  EXPECT_NE(cost.error().message.find("unpriced-model"), std::string::npos);
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
 
 TEST(EvalRunExecutorTest, DrivesAPlanThroughTheRealPipeline) {
   const auto dir = make_temp_dir();

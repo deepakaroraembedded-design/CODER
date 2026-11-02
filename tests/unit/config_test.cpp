@@ -318,6 +318,43 @@ TEST_F(ConfigTest, RejectsInvalidRagSettings) {
             std::string::npos);
 }
 
+TEST_F(ConfigTest, RejectsNonPositiveBudgetAndSandboxValues) {
+  for (const char* snippet :
+       {"budget: {max_usd_total: 0}\n",
+        "budget: {max_usd_total: -1}\n",
+        "budget: {max_tokens_total: 0}\n",
+        "budget: {max_iterations_per_milestone: 0}\n",
+        "budget: {max_attempts_per_defect: 0}\n",
+        "budget: {max_wall_clock_hours: 0}\n",
+        "sandbox: {cpu: 0}\n",
+        "sandbox: {memory_gb: -2}\n",
+        "sandbox: {job_timeout_min: 0}\n"}) {
+    auto config = cf::cli::load_config(write_config(snippet));
+    EXPECT_FALSE(config.has_value()) << snippet;
+  }
+}
+
+TEST_F(ConfigTest, ApplyConfigRejectsEmbeddingProviderMixing) {
+  auto config = cf::cli::load_config(write_config(R"yaml(
+providers:
+  fireworks:
+    base_url: https://api.fireworks.ai/inference/v1
+    api_key_env: FIREWORKS_API_KEY
+  local-vllm:
+    base_url: http://vllm-host:8000/v1
+    api_key_env: VLLM_API_KEY
+models:
+  default_provider: fireworks
+  embeddings:
+    local-vllm: { model: local-embed }
+)yaml"));
+  ASSERT_TRUE(config.has_value()) << config.error().message;
+  ExecuteOptions options;
+  auto applied = cf::cli::apply_config(options, *config);
+  ASSERT_FALSE(applied.has_value());
+  EXPECT_NE(applied.error().message.find("models.embeddings"), std::string::npos);
+}
+
 TEST_F(ConfigTest, ApplyConfigResolvesProvidersAndRoles) {
   auto config = cf::cli::load_config(write_config(kFull));
   ASSERT_TRUE(config.has_value()) << config.error().message;

@@ -86,8 +86,11 @@ Result<CoverageTotals> parse_coverage(std::string_view format,
         continue;
       }
     }
-    totals.line = statements == 0 ? 1.0
-                                  : static_cast<double>(covered) / statements;
+    if (statements == 0) {
+      return fail(error_codes::kCoverageReport,
+                  "coverage report has no measured statements");
+    }
+    totals.line = static_cast<double>(covered) / statements;
     return totals;
   }
   if (format == "coverage-json") {
@@ -106,7 +109,11 @@ Result<CoverageTotals> parse_coverage(std::string_view format,
     };
     const double statements = number("num_statements");
     const double covered_lines = number("covered_lines");
-    totals.line = statements == 0.0 ? 1.0 : covered_lines / statements;
+    if (statements == 0.0) {
+      return fail(error_codes::kCoverageReport,
+                  "coverage report has no measured statements");
+    }
+    totals.line = covered_lines / statements;
     const double branches = number("num_branches");
     const double covered_branches = number("covered_branches");
     totals.has_branch = branches > 0.0;
@@ -142,7 +149,11 @@ Result<CoverageTotals> parse_coverage(std::string_view format,
     if (!counter("lines", covered, count)) {
       return fail(error_codes::kCoverageReport, "llvm-cov JSON has no line totals");
     }
-    totals.line = count == 0 ? 1.0 : static_cast<double>(covered) / count;
+    if (count == 0) {
+      return fail(error_codes::kCoverageReport,
+                  "coverage report has no measured lines");
+    }
+    totals.line = static_cast<double>(covered) / count;
     if (counter("branches", covered, count)) {
       totals.has_branch = count > 0;
       totals.branch = count == 0 ? 0.0 : static_cast<double>(covered) / count;
@@ -191,16 +202,20 @@ Result<CoverageTotals> parse_coverage(std::string_view format,
       position = end;
     }
     const std::uint64_t line_total = line_missed + line_covered;
-    totals.line = line_total == 0 ? 1.0
-                                  : static_cast<double>(line_covered) / line_total;
+    if (line_total == 0) {
+      return fail(error_codes::kCoverageReport,
+                  "coverage report has no measured lines");
+    }
+    totals.line = static_cast<double>(line_covered) / line_total;
     totals.has_branch = saw_branch;
     const std::uint64_t branch_total = branch_missed + branch_covered;
+    if (saw_branch && branch_total == 0) {
+      return fail(error_codes::kCoverageReport,
+                  "coverage report has no measured branches");
+    }
     totals.branch = !saw_branch || branch_total == 0
                         ? 0.0
                         : static_cast<double>(branch_covered) / branch_total;
-    if (saw_branch && branch_total == 0) {
-      totals.branch = 1.0;
-    }
     return totals;
   }
   if (format == "lcov") {
@@ -233,13 +248,18 @@ Result<CoverageTotals> parse_coverage(std::string_view format,
         saw_branch_record = true;
       }
     }
-    totals.line = lines_found == 0 ? 1.0
-                                   : static_cast<double>(lines_hit) / lines_found;
+    if (lines_found == 0) {
+      return fail(error_codes::kCoverageReport,
+                  "coverage report has no measured lines");
+    }
+    totals.line = static_cast<double>(lines_hit) / lines_found;
     totals.has_branch = saw_branch_record;
     if (saw_branch_record) {
-      totals.branch = branches_found == 0
-                          ? 1.0
-                          : static_cast<double>(branches_hit) / branches_found;
+      if (branches_found == 0) {
+        return fail(error_codes::kCoverageReport,
+                    "coverage report has no measured branches");
+      }
+      totals.branch = static_cast<double>(branches_hit) / branches_found;
     }
     return totals;
   }
@@ -313,8 +333,12 @@ Result<MutationTotals> parse_mutation(std::string_view format,
     }
     const double total = document.value("total", 0.0);
     const double killed = document.value("killed", 0.0);
+    if (total == 0.0) {
+      return fail(error_codes::kMutationReport,
+                  "mutation report has no measured mutants");
+    }
     MutationTotals totals;
-    totals.score = total == 0.0 ? 1.0 : killed / total;
+    totals.score = killed / total;
     return totals;
   }
   return fail(error_codes::kMutationReport,

@@ -251,7 +251,8 @@ TEST(SandboxEscapeTest, TimeoutLeavesNoContainerBehind) {
 
   cf::process::LocalProcessExecutor local;
   ProcessRequest list;
-  list.argv = {"docker", "ps", "-a", "--filter", "name=cf-sandbox-", "--format",
+  list.argv = {"docker", "ps", "-a", "--filter",
+               "name=cf-sandbox-" + std::to_string(::getpid()) + "-", "--format",
                "{{.Names}}"};
   list.timeout = std::chrono::seconds(10);
   const ProcessResult containers = local.run(list);

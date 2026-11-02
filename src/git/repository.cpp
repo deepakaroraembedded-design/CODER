@@ -7,8 +7,12 @@
 #include <system_error>
 #include <utility>
 
+#include "cf/common/path.hpp"
+
 namespace cf::git {
 namespace {
+
+using cf::common::is_safe_relative_path;
 
 std::string trim(std::string text) {
   while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0) {
@@ -20,22 +24,6 @@ std::string trim(std::string text) {
     ++begin;
   }
   return text.substr(begin);
-}
-
-bool is_safe_relative_path(const std::string& path) {
-  if (path.empty()) {
-    return false;
-  }
-  const std::filesystem::path parsed(path);
-  if (parsed.is_absolute() || parsed.has_root_name() || parsed.has_root_directory()) {
-    return false;
-  }
-  for (const auto& component : parsed) {
-    if (component == "..") {
-      return false;
-    }
-  }
-  return true;
 }
 
 std::vector<std::string> split_lines(const std::string& text) {

@@ -245,6 +245,89 @@ TEST_F(PrePushTest, SignedCommitsPassTheSignatureCheck) {
   EXPECT_FALSE(has_finding(*findings, "signature"));
 }
 
+TEST_F(PrePushTest, RootCommitsAreCheckedAgainstTheEmptyTree) {
+  const auto root_dir = dir_ / "rootrepo";
+  auto created = cf::git::Repository::create(root_dir, executor_);
+  ASSERT_TRUE(created.has_value()) << created.error().message;
+  write_file(root_dir / "CODEOWNERS", "* @team\n");
+  cf::git::CommitTrailers trailers;
+  trailers.op_id = "op_root";
+  auto root = created->commit_paths(root_dir, {"CODEOWNERS"}, "chore: root", trailers);
+  ASSERT_TRUE(root.has_value()) << root.error().message;
+  auto findings = check_pre_push(*created, "cf/R12/M3", *root);
+  ASSERT_TRUE(findings.has_value());
+  EXPECT_TRUE(has_finding(*findings, "protected-path"));
+}
+
+TEST_F(PrePushTest, EveryCommitInThePushedRangeIsContentChecked) {
+  auto branch = repository_->command({"branch", "base", initial_sha_});
+  ASSERT_TRUE(branch.has_value()) << branch.error().message;
+
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.milestone_id = "M3";
+  trailers.op_id = "op_add";
+  write_file(dir_ / "repo" / "config.env",
+             "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n");
+  const std::string with_secret = commit({"config.env"}, "chore: config", trailers);
+  ASSERT_FALSE(with_secret.empty());
+
+  std::filesystem::remove(dir_ / "repo" / "config.env");
+  cf::git::CommitTrailers remove_trailers;
+  remove_trailers.run_id = "R12";
+  remove_trailers.milestone_id = "M3";
+  remove_trailers.op_id = "op_remove";
+  const std::string removed =
+      commit({"config.env"}, "chore: remove config", remove_trailers);
+  ASSERT_FALSE(removed.empty());
+
+  PrePushConfig config;
+  config.base_branch = "base";
+  config.required_trailers.clear();
+  auto findings = check_pre_push(*repository_, "cf/R12/M3", removed, config);
+  ASSERT_TRUE(findings.has_value());
+  EXPECT_TRUE(has_finding(*findings, "secret"));
+}
+
+TEST_F(PrePushTest, GlobProtectedPathsAreMatched) {
+  PrePushConfig config;
+  config.protected_paths = {"*.pem", ".github/*", "infra/**/prod.tf"};
+  config.required_trailers.clear();
+
+  const std::vector<std::pair<std::string, std::string>> cases = {
+      {"certs/server.pem", "cert\n"},
+      {".github/workflows/ci.yml", "on: push\n"},
+      {"infra/live/prod.tf", "resource {}\n"},
+  };
+  for (const auto& [path, content] : cases) {
+    write_file(dir_ / "repo" / path, content);
+    cf::git::CommitTrailers trailers;
+    trailers.run_id = "R12";
+    trailers.milestone_id = "M3";
+    trailers.op_id = "op_" + path;
+    const std::string sha = commit({path}, "chore: " + path, trailers);
+    ASSERT_FALSE(sha.empty());
+    auto findings = check_pre_push(*repository_, "cf/R12/M3", sha, config);
+    ASSERT_TRUE(findings.has_value());
+    EXPECT_TRUE(has_finding(*findings, "protected-path")) << path;
+  }
+}
+
+TEST_F(PrePushTest, RequiredTrailersMustBeInTheTrailerBlock) {
+  write_file(dir_ / "repo" / "src" / "a.cpp", "x\n");
+  cf::git::CommitTrailers trailers;
+  trailers.op_id = "op_body";
+  const std::string sha = commit(
+      {"src/a.cpp"},
+      "feat: a\n\nThe body mentions CF-Run: R12 but has no trailer block.",
+      trailers);
+  PrePushConfig config;
+  config.required_trailers = {"CF-Run"};
+  auto findings = check_pre_push(*repository_, "cf/R12/M3", sha, config);
+  ASSERT_TRUE(findings.has_value());
+  EXPECT_TRUE(has_finding(*findings, "trailer"));
+}
+
 TEST_F(PrePushTest, MissingTrailersAreRejected) {
   write_file(dir_ / "repo" / "src" / "a.cpp", "x\n");
   cf::git::CommitTrailers trailers;  // no run, milestone or op

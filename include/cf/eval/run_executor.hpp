@@ -75,8 +75,9 @@ class RunProcessExecutor final : public PlanExecutor {
 
 // Sums the agent-turn usage files (`usage-<role>.jsonl`) written by the run
 // process: provider cost when present, otherwise an estimate from the
-// benchmark's price table. Returns the total in USD.
-double sum_agent_usage_usd(
+// benchmark's price table. An unpriced model is an error: cost is a reported
+// benchmark target and must not silently become zero.
+Result<double> sum_agent_usage_usd(
     const std::filesystem::path& run_dir,
     const std::map<std::string, std::string, std::less<>>& role_models,
     const std::map<std::string, ModelPrice, std::less<>>& prices);

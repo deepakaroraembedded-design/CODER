@@ -1215,6 +1215,25 @@ TEST(CliBinaryTest, BinaryCheckCommandRuns) {
   std::filesystem::remove_all(dir, ec);
 }
 
+TEST(CliBinaryTest, RejectsPathTraversalRunIds) {
+  const auto dir = make_temp_dir();
+  write_file(dir / "plan.yaml", kPlan);
+  write_file(dir / "profiles" / "test.yaml", kProfile);
+  cf::process::LocalProcessExecutor executor;
+  cf::process::ProcessRequest request;
+  request.argv = {std::string(CF_BINARY_DIR) + "/cf", "run", "--plan",
+                  (dir / "plan.yaml").string(), "--profiles",
+                  (dir / "profiles").string(), "--workspace",
+                  (dir / "work").string(), "--run-id", "../escape"};
+  const auto result = executor.run(request);
+  EXPECT_TRUE(result.launched) << result.error;
+  EXPECT_EQ(result.exit_code, 2);
+  EXPECT_NE(result.stderr_text.find("invalid run id"), std::string::npos);
+  EXPECT_FALSE(std::filesystem::exists(dir / "escape"));
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
 TEST(CliBinaryTest, RunReadsTheConfigFile) {
   const auto dir = make_temp_dir();
   write_file(dir / "plan.yaml", kPlan);

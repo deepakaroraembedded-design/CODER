@@ -45,7 +45,8 @@ std::string render_site(const CallEdge& edge, bool caller_known) {
 // offered, and an entry that does not fit is recorded as dropped. Accounting
 // is in characters (~4 per token), so the final estimate is exact.
 struct Pack {
-  explicit Pack(std::uint32_t token_budget) : budget_chars(token_budget * 4) {}
+  explicit Pack(std::uint32_t token_budget)
+      : budget_chars(static_cast<std::size_t>(token_budget) * 4) {}
 
   bool offer(const Symbol& symbol, std::set<std::string>& seen) {
     const std::string key =

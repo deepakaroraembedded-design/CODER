@@ -86,6 +86,8 @@ class SseParser {
   std::string data_;
   std::string event_name_;
   std::string event_id_;
+  bool discarding_line_ = false;
+  bool dropping_event_ = false;
 };
 
 // Background SSE stream. The callback runs on the stream's own thread.
