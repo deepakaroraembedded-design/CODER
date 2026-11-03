@@ -143,6 +143,14 @@ CREATE TABLE IF NOT EXISTS checkpoints (
   milestone_state     TEXT,
   at                  INT
 );
+-- The commit a milestone's changed-file scope starts from; persisted so a
+-- restarted orchestrator does not silently report an empty diff (B-33).
+CREATE TABLE IF NOT EXISTS milestone_bases (
+  run_id       TEXT,
+  milestone_id TEXT,
+  base_sha     TEXT,
+  PRIMARY KEY (run_id, milestone_id)
+);
 CREATE TABLE IF NOT EXISTS run_lease (
   run_id     TEXT PRIMARY KEY,
   holder     TEXT,
@@ -1380,6 +1388,39 @@ Result<std::vector<WaiverRecord>> RunStore::list_waivers(
       out.push_back(std::move(record));
     }
     return out;
+  });
+}
+
+Status RunStore::set_milestone_base(std::string_view run_id,
+                                    std::string_view milestone_id,
+                                    std::string_view base_sha) {
+  return sql_guard("set_milestone_base", [&]() -> Status {
+    SQLite::Statement stmt(
+        impl_->db,
+        "INSERT INTO milestone_bases (run_id, milestone_id, base_sha) "
+        "VALUES (?, ?, ?) ON CONFLICT(run_id, milestone_id) "
+        "DO UPDATE SET base_sha = excluded.base_sha");
+    stmt.bind(1, std::string(run_id));
+    stmt.bind(2, std::string(milestone_id));
+    stmt.bind(3, std::string(base_sha));
+    stmt.exec();
+    return {};
+  });
+}
+
+Result<std::string> RunStore::get_milestone_base(
+    std::string_view run_id, std::string_view milestone_id) const {
+  return sql_guard("get_milestone_base", [&]() -> Result<std::string> {
+    SQLite::Statement stmt(
+        impl_->db,
+        "SELECT base_sha FROM milestone_bases WHERE run_id = ? AND milestone_id = ?");
+    stmt.bind(1, std::string(run_id));
+    stmt.bind(2, std::string(milestone_id));
+    if (!stmt.executeStep()) {
+      return fail(error_codes::kNotFound,
+                  "no base commit for milestone " + std::string(milestone_id));
+    }
+    return stmt.getColumn(0).getString();
   });
 }
 

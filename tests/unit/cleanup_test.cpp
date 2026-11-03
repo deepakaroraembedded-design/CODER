@@ -140,6 +140,11 @@ class CleanupTest : public ::testing::Test {
 };
 
 TEST_F(CleanupTest, DeletesTheRunsBranchesAfterRetention) {
+  auto head = repository_->head_sha(dir_ / "repo");
+  ASSERT_TRUE(head.has_value());
+  ASSERT_TRUE(repository_
+                  ->command({"update-ref", "refs/cf/recovered/R12/100/coder", *head})
+                  .has_value());
   transport_->script(200,
                      R"({"number": 7, "state": "closed", "merged_at": "2020-01-01T00:00:00Z"})");
   transport_->script(204, "");
@@ -151,6 +156,11 @@ TEST_F(CleanupTest, DeletesTheRunsBranchesAfterRetention) {
   const auto document = nlohmann::json::parse(out.str());
   EXPECT_EQ(document["reason"], "deleted");
   EXPECT_EQ(document["deleted"].size(), 2u);
+  EXPECT_EQ(document["recovered_refs_deleted"], 1u);
+  EXPECT_FALSE(repository_
+                   ->command({"rev-parse", "--verify",
+                              "refs/cf/recovered/R12/100/coder"})
+                   .has_value());
 
   // The GitHub API (not the local remote) performs the deletion; verify the
   // exact DELETE calls and that an unrelated run's branch is untouched.

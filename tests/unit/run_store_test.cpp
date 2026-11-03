@@ -328,6 +328,20 @@ TEST_F(RunStoreTest, CheckpointsLatestWins) {
   EXPECT_EQ(latest->milestone_state, "Gating");
 }
 
+TEST_F(RunStoreTest, MilestoneBasePersistsAndUpdates) {
+  create_run();
+  EXPECT_EQ(store_->get_milestone_base("R12", "M3").error().code,
+            cf::store::error_codes::kNotFound);
+  ASSERT_TRUE(store_->set_milestone_base("R12", "M3", "abc123").has_value());
+  auto base = store_->get_milestone_base("R12", "M3");
+  ASSERT_TRUE(base.has_value()) << base.error().message;
+  EXPECT_EQ(*base, "abc123");
+  ASSERT_TRUE(store_->set_milestone_base("R12", "M3", "def456").has_value());
+  base = store_->get_milestone_base("R12", "M3");
+  ASSERT_TRUE(base.has_value());
+  EXPECT_EQ(*base, "def456");
+}
+
 TEST_F(RunStoreTest, LlmCallLedgerTotals) {
   create_run();
   cf::store::LlmCallRecord call;

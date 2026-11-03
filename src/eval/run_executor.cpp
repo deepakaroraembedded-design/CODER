@@ -85,8 +85,14 @@ Result<orch::RunState> run_with_crash_injection(
     orch::Dispatcher dispatcher(**handle, run_id, "bench-recovery");
     orch::RecoveryOptions options;
     options.holder = "bench-recovery";
-    auto report = recovery.resume(run_id, dispatcher, options,
-                                  store::unix_now() + 3600);
+    // Advance the same clock recovery reads, so the benchmark exercises the
+    // production grace-period path rather than a fabricated timestamp (B-43).
+    store::UnixTime simulated_now = store::unix_now() + 3600;
+    options.clock = [&simulated_now] { return simulated_now; };
+    options.sleep_for = [&simulated_now](std::chrono::seconds duration) {
+      simulated_now += duration.count();
+    };
+    auto report = recovery.resume(run_id, dispatcher, options, simulated_now);
     if (!report.has_value()) {
       return fail(error_codes::kRunExecutorFailed,
                   "recovery failed: " + report.error().message);

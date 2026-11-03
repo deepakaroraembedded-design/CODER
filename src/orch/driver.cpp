@@ -287,6 +287,29 @@ Result<std::filesystem::path> WorkspaceDriver::ensure_worktree(
   const std::filesystem::path path = worktree_for(milestone_id, role);
   std::error_code ec;
   if (std::filesystem::is_directory(path, ec)) {
+    if (role == "coder" &&
+        base_sha_.find(std::string(milestone_id)) == base_sha_.end()) {
+      if (store_ != nullptr) {
+        auto stored_base =
+            store_->get_milestone_base(config_.run_id, milestone_id);
+        if (stored_base.has_value()) {
+          base_sha_[std::string(milestone_id)] = *stored_base;
+        } else if (stored_base.error().code != store::error_codes::kNotFound) {
+          spdlog::warn("cannot read the base commit for {}: {}", milestone_id,
+                       stored_base.error().message);
+        }
+      }
+      if (base_sha_.find(std::string(milestone_id)) == base_sha_.end()) {
+        // Older runs predate the persisted base; start from the current head
+        // rather than silently reporting no changes at all.
+        auto head = repository_.head_sha(path);
+        if (head) {
+          base_sha_[std::string(milestone_id)] = *head;
+          spdlog::warn("base commit for {} was not persisted; using {}",
+                       milestone_id, head->substr(0, 12));
+        }
+      }
+    }
     return path;
   }
   const std::string branch = "cf-local/" + config_.run_id + "/" +
@@ -317,6 +340,14 @@ Result<std::filesystem::path> WorkspaceDriver::ensure_worktree(
     auto head = repository_.head_sha(path);
     if (head) {
       base_sha_[std::string(milestone_id)] = *head;
+      if (store_ != nullptr) {
+        auto saved =
+            store_->set_milestone_base(config_.run_id, milestone_id, *head);
+        if (!saved.has_value()) {
+          spdlog::warn("cannot persist the base commit for {}: {}",
+                       milestone_id, saved.error().message);
+        }
+      }
     }
   }
   return path;
@@ -1028,6 +1059,29 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
   }
   outcome.commit_sha = *head;
 
+  auto dirty = repository_.tracked_worktree_changes(*worktree);
+  if (!dirty || !dirty->empty()) {
+    cf::gates::GateResult result;
+    result.gate = "build";
+    result.passed = false;
+    std::string message;
+    if (!dirty) {
+      message = "cannot inspect the worktree: " + dirty.error().message;
+    } else {
+      message = "worktree has uncommitted tracked changes (";
+      for (std::size_t i = 0; i < dirty->size() && i < 8; ++i) {
+        if (i > 0) {
+          message += ", ";
+        }
+        message += (*dirty)[i];
+      }
+      message += "); refusing to attribute gate results to HEAD";
+    }
+    result.findings.push_back(cf::gates::GateFinding{"build", "error", message});
+    outcome.report.results.push_back(std::move(result));
+    return outcome;
+  }
+
   std::vector<std::string> changed_files;
   const auto base = base_sha_.find(milestone_id);
   if (base != base_sha_.end()) {
@@ -1289,6 +1343,29 @@ Result<GateOutcome> WorkspaceDriver::run_integration_gates(
     return tl::make_unexpected(head.error());
   }
   outcome.commit_sha = *head;
+
+  auto dirty = repository_.tracked_worktree_changes(*worktree);
+  if (!dirty || !dirty->empty()) {
+    cf::gates::GateResult result;
+    result.gate = "build";
+    result.passed = false;
+    std::string message;
+    if (!dirty) {
+      message = "cannot inspect the integration worktree: " + dirty.error().message;
+    } else {
+      message = "integration worktree has uncommitted tracked changes (";
+      for (std::size_t i = 0; i < dirty->size() && i < 8; ++i) {
+        if (i > 0) {
+          message += ", ";
+        }
+        message += (*dirty)[i];
+      }
+      message += "); refusing to attribute gate results to HEAD";
+    }
+    result.findings.push_back(cf::gates::GateFinding{"build", "error", message});
+    outcome.report.results.push_back(std::move(result));
+    return outcome;
+  }
 
   std::vector<std::string> changed_files;
   auto changes = repository_.diff(std::string(upstream), *head);

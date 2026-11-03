@@ -153,6 +153,10 @@ class Repository {
   // write-set enforcement (design section 6.13.2).
   Result<std::vector<std::string>> worktree_changes(
       const std::filesystem::path& worktree) const;
+  // Tracked paths only (untracked files ignored). A gate run must be
+  // attributable to HEAD; untracked coder scratch tests are allowed (B-29).
+  Result<std::vector<std::string>> tracked_worktree_changes(
+      const std::filesystem::path& worktree) const;
 
   // --- integration (design sections 6.13.3, 10.4.5) ------------------------
   // Squash-merges branch into the worktree's checked-out branch and commits

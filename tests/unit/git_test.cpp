@@ -196,6 +196,15 @@ TEST_F(GitTest, WorktreeChangesListsUncommittedPaths) {
   EXPECT_EQ((*changes)[1], "GUIDE.md");
 }
 
+TEST_F(GitTest, TrackedWorktreeChangesIgnoreUntrackedScratchFiles) {
+  write_file(dir_ / "repo" / "scratch.cpp", "scratch\n");
+  write_file(dir_ / "repo" / "README.md", "changed\n");
+  auto changes = repo_->tracked_worktree_changes(dir_ / "repo");
+  ASSERT_TRUE(changes.has_value()) << changes.error().message;
+  ASSERT_EQ(changes->size(), 1u);
+  EXPECT_EQ((*changes)[0], "README.md");
+}
+
 TEST_F(GitTest, WorktreeCreateCommitAndRemove) {
   const auto worktree = dir_ / "wt" / "coder";
   ASSERT_TRUE(repo_->create_worktree(worktree, "cf-local/R12/M3/coder").has_value());

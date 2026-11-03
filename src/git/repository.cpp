@@ -26,6 +26,35 @@ std::string trim(std::string text) {
   return text.substr(begin);
 }
 
+std::vector<std::string> parse_status_paths(const std::string& text) {
+  std::vector<std::string> paths;
+  std::istringstream lines(text);
+  std::string line;
+  while (std::getline(lines, line)) {
+    if (line.size() < 4 || line[2] != ' ') {
+      continue;
+    }
+    std::string path = line.substr(3);
+    const auto arrow = path.find(" -> ");
+    if (arrow != std::string::npos) {
+      // A rename changes both the old and the new path.
+      std::string old_path = path.substr(0, arrow);
+      path = path.substr(arrow + 4);
+      if (!old_path.empty() && old_path.front() == '"' && old_path.back() == '"') {
+        old_path = old_path.substr(1, old_path.size() - 2);
+      }
+      paths.push_back(std::move(old_path));
+    }
+    if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
+      path = path.substr(1, path.size() - 2);
+    }
+    if (!path.empty()) {
+      paths.push_back(std::move(path));
+    }
+  }
+  return paths;
+}
+
 std::vector<std::string> split_lines(const std::string& text) {
   std::vector<std::string> lines;
   std::istringstream stream(text);
@@ -566,32 +595,22 @@ Result<std::vector<std::string>> Repository::worktree_changes(
   if (status.exit_code != 0) {
     return fail(error_codes::kCommandFailed, trim(status.stderr_text));
   }
-  std::vector<std::string> paths;
-  std::istringstream lines(status.stdout_text);
-  std::string line;
-  while (std::getline(lines, line)) {
-    if (line.size() < 4 || line[2] != ' ') {
-      continue;
-    }
-    std::string path = line.substr(3);
-    const auto arrow = path.find(" -> ");
-    if (arrow != std::string::npos) {
-      // A rename changes both the old and the new path.
-      std::string old_path = path.substr(0, arrow);
-      path = path.substr(arrow + 4);
-      if (!old_path.empty() && old_path.front() == '"' && old_path.back() == '"') {
-        old_path = old_path.substr(1, old_path.size() - 2);
-      }
-      paths.push_back(std::move(old_path));
-    }
-    if (path.size() >= 2 && path.front() == '"' && path.back() == '"') {
-      path = path.substr(1, path.size() - 2);
-    }
-    if (!path.empty()) {
-      paths.push_back(std::move(path));
-    }
+  return parse_status_paths(status.stdout_text);
+}
+
+Result<std::vector<std::string>> Repository::tracked_worktree_changes(
+    const std::filesystem::path& worktree) const {
+  // -uno: only tracked files. Gate runs must be attributable to HEAD, while
+  // the coder may legitimately leave untracked scratch tests behind (B-29).
+  const process::ProcessResult status =
+      run_raw({"status", "--porcelain", "-uno"}, worktree);
+  if (!status.launched) {
+    return fail(error_codes::kCommandFailed, "cannot run git: " + status.error);
   }
-  return paths;
+  if (status.exit_code != 0) {
+    return fail(error_codes::kCommandFailed, trim(status.stderr_text));
+  }
+  return parse_status_paths(status.stdout_text);
 }
 
 Status Repository::rebase(const std::filesystem::path& worktree,

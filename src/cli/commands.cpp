@@ -1702,6 +1702,38 @@ int cleanup_one_run(const CleanupOptions& options, std::ostream& out,
     err << repository.error().code << ": " << repository.error().message << "\n";
     return 2;
   }
+
+  // Recovery parks partial work under refs/cf/recovered/<run>/...; prune it
+  // with the same retention policy as the run's branches (B-24).
+  std::size_t recovered_refs_deleted = 0;
+  Json recovered_refs_failed = Json::array();
+  const std::string recovered_prefix =
+      "refs/cf/recovered/" + options.run_id + "/";
+  auto recovered = repository->command(
+      {"for-each-ref", "--format=%(refname)", recovered_prefix});
+  if (!recovered) {
+    recovered_refs_failed.push_back(
+        Json{{"ref", recovered_prefix},
+             {"code", recovered.error().code},
+             {"message", recovered.error().message}});
+  } else {
+    std::istringstream recovered_lines(*recovered);
+    std::string recovered_ref;
+    while (std::getline(recovered_lines, recovered_ref)) {
+      if (recovered_ref.rfind(recovered_prefix, 0) != 0) {
+        continue;
+      }
+      auto removed = repository->command({"update-ref", "-d", recovered_ref});
+      if (removed) {
+        ++recovered_refs_deleted;
+      } else {
+        recovered_refs_failed.push_back(Json{{"ref", recovered_ref},
+                                             {"code", removed.error().code},
+                                             {"message", removed.error().message}});
+      }
+    }
+  }
+
   const std::string pattern = "refs/heads/cf/" + options.run_id + "/*";
   auto listed =
       repository->command({"ls-remote", "--heads", options.github_remote, pattern});
@@ -1745,12 +1777,16 @@ int cleanup_one_run(const CleanupOptions& options, std::ostream& out,
   }
   out << Json{{"run_id", options.run_id},
               {"pull_request", pull_request},
-              {"reason", failed.empty() ? "deleted" : "partial"},
+              {"reason", failed.empty() && recovered_refs_failed.empty()
+                             ? "deleted"
+                             : "partial"},
               {"deleted", std::move(deleted)},
-              {"failed", std::move(failed)}}
+              {"failed", std::move(failed)},
+              {"recovered_refs_deleted", recovered_refs_deleted},
+              {"recovered_refs_failed", std::move(recovered_refs_failed)}}
              .dump(2)
       << "\n";
-  return failed.empty() ? 0 : 1;
+  return failed.empty() && recovered_refs_failed.empty() ? 0 : 1;
 }
 
 int cleanup_command(const CleanupOptions& options, std::ostream& out,

@@ -383,6 +383,14 @@ class RunStore {
   Result<std::size_t> expire_waiver_requests(std::string_view run_id,
                                              UnixTime now);
 
+  // --- milestone change scope (design section 6.13.2) ----------------------
+  // The commit whose diff defines the milestone's changed files. Persisted so
+  // a restart does not lose the review/gate scope (B-33).
+  Status set_milestone_base(std::string_view run_id, std::string_view milestone_id,
+                            std::string_view base_sha);
+  Result<std::string> get_milestone_base(std::string_view run_id,
+                                         std::string_view milestone_id) const;
+
   // --- checkpoints (design section 6.12.3) ---------------------------------
   Status save_checkpoint(const CheckpointRecord& checkpoint);
   Result<CheckpointRecord> latest_checkpoint(std::string_view run_id,
