@@ -1,6 +1,7 @@
 #include "cf/orch/escalation.hpp"
 
 #include <fstream>
+#include <sstream>
 #include <system_error>
 #include <utility>
 
@@ -33,6 +34,44 @@ Json transition_json(const store::TransitionRecord& transition) {
               {"at", transition.at}};
 }
 
+Json defect_json(const store::DefectRecord& defect) {
+  return Json{{"id", defect.id},
+              {"milestone_id", defect.milestone_id},
+              {"status", defect.status},
+              {"severity", defect.severity},
+              {"attempts", defect.attempts},
+              {"fingerprint", defect.fingerprint},
+              {"body", Json::parse(defect.body_json, nullptr, false)}};
+}
+
+// The failing findings of a gate result, read from its report.json (design
+// section 12: the bundle carries the gate logs/findings).
+Json gate_json(const store::GateResultRow& row) {
+  Json entry{{"gate", row.gate},
+             {"milestone_id", row.milestone_id},
+             {"passed", row.passed},
+             {"report_ref", row.report_ref}};
+  std::ifstream in(row.report_ref, std::ios::binary);
+  if (in) {
+    const std::string text((std::istreambuf_iterator<char>(in)),
+                           std::istreambuf_iterator<char>());
+    const Json report = Json::parse(text, nullptr, false);
+    if (report.is_object()) {
+      Json findings = Json::array();
+      for (const auto& result : report.value("results", Json::array())) {
+        if (result.value("passed", true)) {
+          continue;
+        }
+        findings.push_back(Json{{"gate", result.value("gate", "")},
+                                {"findings", result.value("findings",
+                                                          Json::array())}});
+      }
+      entry["failing_results"] = std::move(findings);
+    }
+  }
+  return entry;
+}
+
 }  // namespace
 
 Result<std::string> write_escalation_bundle(store::RunStore& store,
@@ -52,9 +91,21 @@ Result<std::string> write_escalation_bundle(store::RunStore& store,
   if (!operations) {
     return tl::make_unexpected(operations.error());
   }
-  auto transitions = store.list_transitions(run_id, 20);
+  auto transitions = store.list_transitions(run_id, 50);
   if (!transitions) {
     return tl::make_unexpected(transitions.error());
+  }
+  auto defects = store.list_defects(run_id);
+  if (!defects) {
+    return tl::make_unexpected(defects.error());
+  }
+  auto gate_rows = store.list_all_gate_results(run_id);
+  if (!gate_rows) {
+    return tl::make_unexpected(gate_rows.error());
+  }
+  auto waiver_requests = store.list_waiver_requests(run_id);
+  if (!waiver_requests) {
+    return tl::make_unexpected(waiver_requests.error());
   }
   auto usd = store.total_usd(run_id);
   if (!usd) {
@@ -78,6 +129,35 @@ Result<std::string> write_escalation_bundle(store::RunStore& store,
     json_transitions.push_back(transition_json(transition));
   }
 
+  Json json_defects = Json::array();
+  std::string root_cause = "see the failing gates and defects";
+  for (const auto& defect : *defects) {
+    json_defects.push_back(defect_json(defect));
+    if (root_cause == "see the failing gates and defects" &&
+        defect.status != "VERIFIED" && defect.status != "WONT_FIX") {
+      root_cause = "open defect " + defect.id + " in milestone " +
+                   defect.milestone_id;
+    }
+  }
+  Json json_gates = Json::array();
+  for (const auto& row : *gate_rows) {
+    if (!row.passed) {
+      json_gates.push_back(gate_json(row));
+      if (root_cause == "see the failing gates and defects") {
+        root_cause = "gate '" + row.gate + "' failed for milestone " +
+                     row.milestone_id;
+      }
+    }
+  }
+  Json json_waivers = Json::array();
+  for (const auto& request : *waiver_requests) {
+    json_waivers.push_back(Json{{"id", request.id},
+                                {"rule", request.rule},
+                                {"scope", request.scope},
+                                {"status", request.status},
+                                {"requested_by", request.requested_by}});
+  }
+
   const Json bundle = Json{{"run_id", std::string(run_id)},
                            {"reason", std::string(reason)},
                            {"at", now},
@@ -86,6 +166,11 @@ Result<std::string> write_escalation_bundle(store::RunStore& store,
                            {"milestones", std::move(json_milestones)},
                            {"operations", std::move(json_operations)},
                            {"recent_transitions", std::move(json_transitions)},
+                           {"defects", std::move(json_defects)},
+                           {"failing_gates", std::move(json_gates)},
+                           {"waiver_requests", std::move(json_waivers)},
+                           {"likely_root_cause", root_cause},
+                           {"root_cause_source", "deterministic"},
                            {"cost", Json{{"usd", *usd}, {"tokens", *tokens}}}};
 
   const std::filesystem::path directory = dir / ("esc-" + std::to_string(now));

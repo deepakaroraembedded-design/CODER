@@ -390,6 +390,27 @@ TEST_F(RunStoreTest, ConcurrentWritersOnOneStoreDoNotLoseRows) {
   EXPECT_EQ(calls->size(), static_cast<std::size_t>(kThreads * kRows));
 }
 
+TEST_F(RunStoreTest, ConflictRegisterRoundTrips) {
+  create_run();
+  cf::store::ConflictRecord conflict;
+  conflict.run_id = "R12";
+  conflict.query = "line coverage";
+  conflict.topic = "CG-5.1";
+  conflict.winner_chunk_id = "policy@1#CG-5.1";
+  conflict.overridden_chunk_ids = {"guide@1#CG-5.1"};
+  conflict.deciding_rule = "precedence: policy over guideline";
+  conflict.unresolved = true;
+  conflict.at = now_;
+  ASSERT_TRUE(store_->record_conflict(conflict).has_value());
+  auto rows = store_->list_conflicts("R12");
+  ASSERT_TRUE(rows.has_value()) << rows.error().message;
+  ASSERT_EQ(rows->size(), 1u);
+  EXPECT_EQ(rows->front().winner_chunk_id, "policy@1#CG-5.1");
+  ASSERT_EQ(rows->front().overridden_chunk_ids.size(), 1u);
+  EXPECT_EQ(rows->front().overridden_chunk_ids[0], "guide@1#CG-5.1");
+  EXPECT_TRUE(rows->front().unresolved);
+}
+
 TEST_F(RunStoreTest, MilestoneBasePersistsAndUpdates) {
   create_run();
   EXPECT_EQ(store_->get_milestone_base("R12", "M3").error().code,

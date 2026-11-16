@@ -12,6 +12,7 @@
 namespace {
 
 using cf::rag::Chunk;
+using cf::rag::ConflictEvent;
 using cf::rag::Document;
 using cf::rag::DocType;
 using cf::rag::Hit;
@@ -264,6 +265,35 @@ TEST(RetrieverTest, PrecedenceResolvesTopicConflict) {
   ASSERT_EQ(hit.overridden_by.size(), 1u);
   EXPECT_EQ(hit.overridden_by[0], "guide@1#CG-5.1");
   EXPECT_NE(hit.deciding_rule.find("precedence"), std::string::npos);
+}
+
+TEST(RetrieverTest, ConflictCallbackReceivesTheRegisterEntry) {
+  RetrieverOptions options;
+  std::vector<ConflictEvent> events;
+  options.on_conflict = [&events](const ConflictEvent& event) {
+    events.push_back(event);
+  };
+  InMemoryRetriever retriever(options);
+  ASSERT_TRUE(retriever
+                  .add_chunk(make_chunk("policy", DocType::Policy,
+                                        "Line coverage must be at least 85 percent.", "CG-5.1"))
+                  .has_value());
+  ASSERT_TRUE(retriever
+                  .add_chunk(make_chunk("guide", DocType::Guideline,
+                                        "Line coverage should be at least 70 percent.",
+                                        "CG-5.1"))
+                  .has_value());
+  Query query;
+  query.text = "line coverage percent";
+  auto hits = retriever.search(query);
+  ASSERT_TRUE(hits.has_value()) << hits.error().message;
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events[0].query, "line coverage percent");
+  EXPECT_EQ(events[0].topic, "CG-5.1");
+  EXPECT_EQ(events[0].winner_chunk_id, "policy@1#CG-5.1");
+  ASSERT_EQ(events[0].overridden.size(), 1u);
+  EXPECT_EQ(events[0].overridden[0], "guide@1#CG-5.1");
+  EXPECT_FALSE(events[0].unresolved);
 }
 
 TEST(RetrieverTest, ConfiguredPrecedenceOverridesTheBuiltInOrder) {

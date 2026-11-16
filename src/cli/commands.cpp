@@ -34,6 +34,7 @@
 #include "cf/orch/dispatcher.hpp"
 #include "cf/orch/metrics.hpp"
 #include "cf/orch/recovery.hpp"
+#include "cf/orch/report.hpp"
 #include "cf/orch/run_process.hpp"
 #include "cf/orch/run_summary.hpp"
 #include "cf/orch/state_machine.hpp"
@@ -55,6 +56,83 @@ namespace cf::cli {
 namespace {
 
 using Json = nlohmann::json;
+
+// Resolves a secret reference without logging the value (design section 15):
+// plain paths are read, `secretmanager://env/NAME` reads the environment and
+// `secretmanager://file/PATH` reads a mounted secret file.
+Result<std::string> read_secret_ref(const std::string& ref) {
+  constexpr const char* kPrefix = "secretmanager://";
+  const auto read_file = [](const std::string& path) -> Result<std::string> {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+      return fail("CLI_SECRET_UNREADABLE", "cannot read secret file " + path);
+    }
+    std::ostringstream buffer;
+    buffer << in.rdbuf();
+    return buffer.str();
+  };
+  if (ref.rfind(kPrefix, 0) != 0) {
+    return read_file(ref);
+  }
+  const std::string rest = ref.substr(std::strlen(kPrefix));
+  if (rest.rfind("env/", 0) == 0) {
+    const std::string name = rest.substr(4);
+    const char* value = std::getenv(name.c_str());
+    if (value == nullptr || *value == '\0') {
+      return fail("CLI_SECRET_UNSET",
+                  "secret manager environment variable '" + name +
+                      "' is not set");
+    }
+    return std::string(value);
+  }
+  if (rest.rfind("file/", 0) == 0) {
+    return read_file(rest.substr(5));
+  }
+  return fail("CLI_SECRET_UNSUPPORTED",
+              "unsupported secretmanager reference '" + ref +
+                  "'; use secretmanager://env/NAME or secretmanager://file/PATH");
+}
+
+// Accepts a local checkout or a remote URL (design section 15). A remote is
+// cloned once into <workspace>/repos/<run> and reused on resume.
+Result<std::filesystem::path> prepare_checkout(
+    const std::filesystem::path& configured,
+    const std::filesystem::path& workspace, const std::string& run_id) {
+  std::error_code ec;
+  if (std::filesystem::is_directory(configured, ec)) {
+    return configured;
+  }
+  const std::string text = configured.string();
+  const bool remote = text.rfind("git@", 0) == 0 ||
+                      text.rfind("https://", 0) == 0 ||
+                      text.rfind("http://", 0) == 0 ||
+                      text.rfind("ssh://", 0) == 0 ||
+                      text.rfind("git://", 0) == 0;
+  if (!remote) {
+    return fail("CLI_REPO_NOT_FOUND",
+                "target repository does not exist: " + text);
+  }
+  const std::filesystem::path destination = workspace / "repos" / run_id;
+  if (std::filesystem::is_directory(destination, ec)) {
+    return destination;
+  }
+  std::filesystem::create_directories(destination.parent_path(), ec);
+  if (ec) {
+    return fail("CLI_REPO_CLONE_FAILED",
+                "cannot create the checkout directory: " + ec.message());
+  }
+  process::LocalProcessExecutor executor;
+  process::ProcessRequest request;
+  request.argv = {"git", "clone", "--", text, destination.string()};
+  request.timeout = std::chrono::minutes(10);
+  const process::ProcessResult clone = executor.run(request);
+  if (!clone.launched || clone.exit_code != 0) {
+    std::filesystem::remove_all(destination, ec);
+    return fail("CLI_REPO_CLONE_FAILED",
+                "git clone failed: " + clone.stderr_text);
+  }
+  return destination;
+}
 
 const std::vector<std::string> kOpenDefectStatuses = {
     "OPEN", "IN_PROGRESS", "FIXED_PENDING_VERIFY", "REOPENED", "DISPUTED"};
@@ -398,6 +476,19 @@ Result<orch::DesignPackage> refine_or_load(
         [store, run_id = options.run_id](std::int64_t latency_ms) {
           (void)store->record_rag_latency(run_id, latency_ms, store::unix_now());
         };
+    retriever_options.on_conflict =
+        [store, run_id = options.run_id](const rag::ConflictEvent& event) {
+          store::ConflictRecord row;
+          row.run_id = run_id;
+          row.query = event.query;
+          row.topic = event.topic;
+          row.winner_chunk_id = event.winner_chunk_id;
+          row.overridden_chunk_ids = event.overridden;
+          row.deciding_rule = event.deciding_rule;
+          row.unresolved = event.unresolved;
+          row.at = store::unix_now();
+          (void)store->record_conflict(row);
+        };
   }
   if (options.rag_index.has_value()) {
     retriever_options.hnsw = *options.rag_index == "hnswlib";
@@ -543,6 +634,14 @@ int check_command(const std::filesystem::path& plan_path,
     err << plan.error().code << ": " << plan.error().message << "\n";
     return 1;
   }
+  const auto requirements = plan::validate_requirements(
+      *plan, plan_path.parent_path().empty() ? std::filesystem::current_path()
+                                             : plan_path.parent_path());
+  if (!requirements) {
+    err << requirements.error().code << ": " << requirements.error().message
+        << "\n";
+    return 1;
+  }
   Json milestones = Json::array();
   for (const auto& milestone : plan->milestones) {
     milestones.push_back(milestone.id);
@@ -554,7 +653,10 @@ int check_command(const std::filesystem::path& plan_path,
                               {"standard", plan->target.standard},
                               {"build_system", plan->target.build_system},
                               {"test_framework", plan->target.test_framework}}},
-              {"profile", resolve_profile_id(*profiles, *plan)}}
+              {"profile", resolve_profile_id(*profiles, *plan)},
+              {"requirements_resolved",
+               requirements->has_value() ? requirements->value().string()
+                                         : std::string()}}
              .dump(2)
       << "\n";
   return 0;
@@ -572,6 +674,14 @@ int run_command(const std::filesystem::path& plan_path,
   auto plan = plan::parse_plan_file(plan_path, profile_check(*profiles));
   if (!plan) {
     err << plan.error().code << ": " << plan.error().message << "\n";
+    return 1;
+  }
+  const auto requirements = plan::validate_requirements(
+      *plan, plan_path.parent_path().empty() ? std::filesystem::current_path()
+                                             : plan_path.parent_path());
+  if (!requirements) {
+    err << requirements.error().code << ": " << requirements.error().message
+        << "\n";
     return 1;
   }
 
@@ -880,126 +990,15 @@ int report_command(const std::filesystem::path& workspace, const std::string& ru
     return 2;
   }
   auto plan = plan::parse_plan_file(run_directory(workspace, run_id) / "plan.yaml");
-  auto summary = orch::build_run_summary(
+  auto report = orch::write_run_report(
       **store, run_id, plan.has_value() ? &*plan : nullptr,
-      run_directory(workspace, run_id));
-  if (!summary) {
-    err << summary.error().code << ": " << summary.error().message << "\n";
-    return summary.error().code == store::error_codes::kNotFound ? 1 : 2;
+      run_directory(workspace, run_id), out_dir);
+  if (!report) {
+    err << report.error().code << ": " << report.error().message << "\n";
+    return report.error().code == store::error_codes::kNotFound ? 1 : 2;
   }
-
-  (void)(*store)->expire_waiver_requests(run_id, store::unix_now());
-  auto metric_samples =
-      orch::collect_run_metrics(**store, run_id, run_directory(workspace, run_id));
-  if (!metric_samples) {
-    err << metric_samples.error().code << ": " << metric_samples.error().message
-        << "\n";
-    return 2;
-  }
-  Json metrics = Json::array();
-  std::vector<telemetry::MetricPoint> metric_points;
-  metric_points.reserve(metric_samples->size());
-  for (const auto& sample : *metric_samples) {
-    metrics.push_back(Json{{"name", sample.name},
-                           {"labels", sample.labels},
-                           {"value", sample.value}});
-    const bool counter = sample.name == "cf_llm_tokens_total" ||
-                         sample.name == "cf_llm_usd_total" ||
-                         sample.name == "cf_escalations_total";
-    metric_points.push_back(telemetry::MetricPoint{
-        sample.name, sample.labels, sample.value,
-        counter ? telemetry::MetricKind::Counter
-                : telemetry::MetricKind::Gauge});
-  }
-  Json otlp = Json::object();
-  const char* otlp_endpoint = std::getenv("OTEL_EXPORTER_OTLP_ENDPOINT");
-  if (otlp_endpoint != nullptr && *otlp_endpoint != '\0') {
-    llm::CprTransport transport;
-    auto exported =
-        telemetry::export_otlp_metrics(metric_points, otlp_endpoint, transport);
-    if (exported) {
-      otlp = Json{{"endpoint", otlp_endpoint}, {"exported", true}};
-    } else {
-      otlp = Json{{"endpoint", otlp_endpoint},
-                  {"exported", false},
-                  {"error", exported.error().message}};
-      spdlog::warn("OTLP metrics export failed: {}", exported.error().message);
-    }
-  }
-
-  Json escalations = Json::array();
-  const std::filesystem::path escalation_dir =
-      run_directory(workspace, run_id) / "escalations";
-  std::error_code ec;
-  if (std::filesystem::is_directory(escalation_dir, ec)) {
-    for (const auto& entry : std::filesystem::directory_iterator(escalation_dir, ec)) {
-      const auto path = entry.path() / "bundle.json";
-      std::ifstream in(path);
-      const Json bundle = Json::parse(in, nullptr, false);
-      if (!bundle.is_discarded()) {
-        escalations.push_back(Json{{"bundle", entry.path().filename().string()},
-                                   {"reason", bundle.value("reason", "")}});
-      }
-    }
-  }
-
-  const Json document = Json{
-      {"run", Json{{"id", summary->run.run_id},
-                   {"state", summary->run.state},
-                   {"plan_id", summary->run.plan_id},
-                   {"created_at", summary->run.created_at},
-                   {"cost",
-                    Json{{"usd", summary->usd}, {"tokens", summary->tokens}}}}},
-      {"milestones", summary->milestones},
-      {"requirements", summary->requirements},
-      {"defects", summary->defects},
-      {"waivers", summary->waivers},
-      {"waiver_requests", summary->waiver_requests},
-      {"agent_usage",
-       Json{{"by_role", summary->agent_usage_by_role},
-            {"by_milestone", summary->agent_usage_by_milestone}}},
-      {"metrics", std::move(metrics)},
-      {"otlp_metrics", std::move(otlp)},
-      {"escalations", std::move(escalations)}};
-
-  std::filesystem::create_directories(out_dir, ec);
-  if (ec) {
-    err << "cannot create the report directory: " << ec.message() << "\n";
-    return 2;
-  }
-  {
-    std::ofstream json_out(out_dir / "report.json", std::ios::binary);
-    if (!json_out) {
-      err << "cannot write report.json\n";
-      return 2;
-    }
-    json_out << document.dump(2) << "\n";
-  }
-  {
-    std::ofstream markdown(out_dir / "report.md", std::ios::binary);
-    if (!markdown) {
-      err << "cannot write report.md\n";
-      return 2;
-    }
-    markdown << "# Run report: " << summary->run.run_id << "\n\n";
-    markdown << "- State: " << summary->run.state << "\n";
-    markdown << "- Plan: " << summary->run.plan_id << "\n";
-    markdown << "- Cost: $" << summary->usd << ", " << summary->tokens
-             << " tokens\n\n";
-    markdown << orch::render_run_summary_markdown(*summary);
-    markdown << "\n## Escalations\n\n";
-    if (document["escalations"].empty()) {
-      markdown << "None.\n";
-    } else {
-      for (const auto& row : document["escalations"]) {
-        markdown << "- " << row["bundle"].get<std::string>() << ": "
-                 << row["reason"].get<std::string>() << "\n";
-      }
-    }
-  }
-
-  out << Json{{"report_json", (out_dir / "report.json").string()},
-              {"report_md", (out_dir / "report.md").string()}}
+  out << Json{{"report_json", report->json_path.string()},
+              {"report_md", report->markdown_path.string()}}
              .dump(2)
       << "\n";
   return 0;
@@ -1447,18 +1446,15 @@ int reminder_one_run(const ReminderOptions& options, std::ostream& out,
   client_options.api_base = options.github_api_base;
   if (!options.github_app_id.empty() &&
       !options.github_private_key_file.empty()) {
-    std::ifstream key_file(options.github_private_key_file, std::ios::binary);
-    if (!key_file) {
-      err << "cannot read the GitHub App private key file: "
-          << options.github_private_key_file << "\n";
+    auto key = read_secret_ref(options.github_private_key_file);
+    if (!key) {
+      err << key.error().code << ": " << key.error().message << "\n";
       return 2;
     }
-    std::ostringstream key_buffer;
-    key_buffer << key_file.rdbuf();
     github::AppAuthOptions auth_options;
     auth_options.app_id = options.github_app_id;
     auth_options.installation_id = options.github_installation_id;
-    auth_options.private_key_pem = key_buffer.str();
+    auth_options.private_key_pem = *key;
     auth_options.api_base = options.github_api_base;
     app_auth = std::make_unique<github::AppAuth>(auth_options, *transport);
     github::AppAuth* auth = app_auth.get();
@@ -1641,18 +1637,15 @@ int cleanup_one_run(const CleanupOptions& options, std::ostream& out,
   client_options.api_base = options.github_api_base;
   if (!options.github_app_id.empty() &&
       !options.github_private_key_file.empty()) {
-    std::ifstream key_file(options.github_private_key_file, std::ios::binary);
-    if (!key_file) {
-      err << "cannot read the GitHub App private key file: "
-          << options.github_private_key_file << "\n";
+    auto key = read_secret_ref(options.github_private_key_file);
+    if (!key) {
+      err << key.error().code << ": " << key.error().message << "\n";
       return 2;
     }
-    std::ostringstream key_buffer;
-    key_buffer << key_file.rdbuf();
     github::AppAuthOptions auth_options;
     auth_options.app_id = options.github_app_id;
     auth_options.installation_id = options.github_installation_id;
-    auth_options.private_key_pem = key_buffer.str();
+    auth_options.private_key_pem = *key;
     auth_options.api_base = options.github_api_base;
     app_auth = std::make_unique<github::AppAuth>(auth_options, *transport);
     github::AppAuth* auth = app_auth.get();
@@ -2238,12 +2231,27 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
     err << plan.error().code << ": " << plan.error().message << "\n";
     return 1;
   }
+  // A local checkout is used as-is; a remote URL is cloned once into the
+  // workspace (design section 15). Later stages (reference version pinning,
+  // gates, worktrees) all use the resolved path.
+  std::filesystem::path repository_path = options.repository_path;
+  if (!repository_path.empty()) {
+    auto checkout = prepare_checkout(repository_path, options.workspace,
+                                     options.run_id);
+    if (!checkout) {
+      err << checkout.error().code << ": " << checkout.error().message << "\n";
+      return 2;
+    }
+    repository_path = *checkout;
+  }
   // Offline reference documentation (design section 6.3.1): mirror the
   // approved sets once per run and pin the project's dependency versions.
   // Terminal runs have nothing left to index.
   ReferenceDocs reference_docs;
   if (run->state != "Done" && run->state != "Aborted") {
-    auto prepared = prepare_reference_docs(options, directory);
+    ExecuteOptions docs_options = options;
+    docs_options.repository_path = repository_path;
+    auto prepared = prepare_reference_docs(docs_options, directory);
     if (!prepared) {
       err << prepared.error().code << ": " << prepared.error().message << "\n";
       return 1;
@@ -2400,12 +2408,12 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
     effective = orch::design_package_to_plan(*package, *plan);
   }
 
-  if (options.repository_path.empty()) {
+  if (repository_path.empty()) {
     err << "--repo is required to execute a run\n";
     return 1;
   }
   process::LocalProcessExecutor executor;
-  auto repository = git::Repository::open(options.repository_path, executor);
+  auto repository = git::Repository::open(repository_path, executor);
   if (!repository) {
     err << repository.error().code << ": " << repository.error().message << "\n";
     return 2;
@@ -2413,7 +2421,26 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   // Every CF commit is signed with the configured SSH key (design section
   // 10.4.2). The key is read by git on each commit.
   if (!options.github_signing_key_file.empty()) {
-    auto signing = repository->set_signing_key(options.github_signing_key_file);
+    std::filesystem::path signing_path = options.github_signing_key_file;
+    if (options.github_signing_key_file.rfind("secretmanager://", 0) == 0) {
+      auto key = read_secret_ref(options.github_signing_key_file);
+      if (!key) {
+        err << key.error().code << ": " << key.error().message << "\n";
+        return 2;
+      }
+      signing_path = run_directory(options.workspace, options.run_id) /
+                     "signing-key";
+      std::error_code key_ec;
+      std::filesystem::create_directories(signing_path.parent_path(), key_ec);
+      std::ofstream out(signing_path, std::ios::binary | std::ios::trunc);
+      out << *key;
+      out.close();
+      std::filesystem::permissions(
+          signing_path, std::filesystem::perms::owner_read |
+                            std::filesystem::perms::owner_write,
+          std::filesystem::perm_options::replace, key_ec);
+    }
+    auto signing = repository->set_signing_key(signing_path);
     if (!signing) {
       err << signing.error().code << ": " << signing.error().message << "\n";
       return 2;
@@ -2553,6 +2580,12 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   } else if (options.budget_tokens.has_value()) {
     config.orchestrator.max_tokens_total = options.budget_tokens;
   }
+  if (options.system_validation_every_n_milestones.has_value()) {
+    config.orchestrator.system_validation_every_n_milestones =
+        *options.system_validation_every_n_milestones;
+  }
+  config.orchestrator.max_usd_per_role = options.budget_usd_per_role;
+  config.orchestrator.max_tokens_per_role = options.budget_tokens_per_role;
   if (effective.budget.max_wall_clock_hours.has_value()) {
     config.orchestrator.max_wall_clock_hours =
         effective.budget.max_wall_clock_hours;
@@ -2637,18 +2670,15 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
           *options.github_pr_request_codeowners;
     }
     if (!options.github_app_id.empty() && !options.github_private_key_file.empty()) {
-      std::ifstream key_file(options.github_private_key_file, std::ios::binary);
-      if (!key_file) {
-        err << "cannot read the GitHub App private key file: "
-            << options.github_private_key_file << "\n";
+      auto key = read_secret_ref(options.github_private_key_file);
+      if (!key) {
+        err << key.error().code << ": " << key.error().message << "\n";
         return 2;
       }
-      std::ostringstream key_buffer;
-      key_buffer << key_file.rdbuf();
       github::AppAuthOptions auth_options;
       auth_options.app_id = options.github_app_id;
       auth_options.installation_id = options.github_installation_id;
-      auth_options.private_key_pem = key_buffer.str();
+      auth_options.private_key_pem = *key;
       auth_options.api_base = options.github_api_base;
       app_auth = std::make_unique<github::AppAuth>(auth_options, *transport);
       github::AppAuth* auth = app_auth.get();

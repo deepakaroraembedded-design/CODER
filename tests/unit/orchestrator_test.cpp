@@ -227,6 +227,40 @@ TEST_F(OrchestratorTest, AChangedInterfaceRevalidatesDoneDependents) {
   EXPECT_EQ(m2->state, "Done");
 }
 
+TEST_F(OrchestratorTest, PeriodicSystemValidationRunsBeforeTheRunEnds) {
+  create_run();
+  Plan plan = make_plan({milestone("M1"), milestone("M2", {"M1"})});
+  FakeDriver driver;
+  driver.on_turn = successful_turn;
+  driver.on_gates = full_review_gates;
+  driver.system_result = SystemValidationResult{true, true, ""};
+
+  OrchestratorConfig config;
+  config.system_validation_every_n_milestones = 1;
+  RunOrchestrator orchestrator(*store_, "R12", plan, driver, config);
+
+  auto state = orchestrator.step(now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, RunState::SystemValidation);
+  const auto m1 = store_->get_milestone("R12", "M1");
+  const auto m2 = store_->get_milestone("R12", "M2");
+  ASSERT_TRUE(m1.has_value());
+  ASSERT_TRUE(m2.has_value());
+  EXPECT_EQ(m1->state, "Done");
+  EXPECT_NE(m2->state, "Done");
+
+  state = orchestrator.step(now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, RunState::Executing);
+
+  state = orchestrator.step(now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, RunState::SystemValidation);
+  state = orchestrator.step(now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, RunState::Done);
+}
+
 TEST_F(OrchestratorTest, IndependentMilestonesBothComplete) {
   create_run();
   Plan plan = make_plan({milestone("M1"), milestone("M2")});
@@ -308,6 +342,36 @@ TEST_F(OrchestratorTest, BudgetExceededEscalatesAndWritesBundle) {
   ASSERT_EQ(bundle["milestones"].size(), 1u);
   EXPECT_EQ(bundle["milestones"][0]["id"], "M1");
   EXPECT_DOUBLE_EQ(bundle["cost"]["usd"].get<double>(), 2.0);
+  EXPECT_TRUE(bundle.contains("defects"));
+  EXPECT_TRUE(bundle.contains("failing_gates"));
+  EXPECT_TRUE(bundle.contains("waiver_requests"));
+  EXPECT_TRUE(bundle.contains("likely_root_cause"));
+}
+
+TEST_F(OrchestratorTest, PerRoleBudgetExceededEscalates) {
+  create_run();
+  Plan plan = make_plan({milestone("M1")});
+
+  LlmCallRecord call;
+  call.run_id = "R12";
+  call.role = "reviewer";
+  call.model = "test-model";
+  call.usd = 0.75;
+  call.prompt_tokens = 50;
+  call.at = now_;
+  ASSERT_TRUE(store_->record_llm_call(call).has_value());
+
+  FakeDriver driver;
+  OrchestratorConfig config;
+  config.max_usd_per_role["reviewer"] = 0.5;
+  RunOrchestrator orchestrator(*store_, "R12", plan, driver, config);
+
+  const auto state = orchestrator.step(now_);
+  ASSERT_TRUE(state.has_value()) << state.error().message;
+  EXPECT_EQ(*state, RunState::Escalated);
+  EXPECT_NE(orchestrator.last_escalation_reason().find("reviewer"),
+            std::string::npos);
+  EXPECT_TRUE(driver.log.empty());
 }
 
 TEST_F(OrchestratorTest, WallClockBudgetExceededEscalates) {

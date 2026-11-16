@@ -147,7 +147,10 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
   }
 
   if (const YAML::Node run = root["run"]) {
-    auto checked = check_keys(run, "run", {"workspace", "repo", "base_branch"});
+    auto checked = check_keys(
+        run, "run",
+        {"workspace", "repo", "base_branch",
+         "system_validation_every_n_milestones"});
     if (!checked) {
       return tl::make_unexpected(checked.error());
     }
@@ -164,6 +167,18 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
                                     config.run.base_branch);
         !status) {
       return tl::make_unexpected(status.error());
+    }
+    if (auto status = read_optional(
+            run["system_validation_every_n_milestones"],
+            "run.system_validation_every_n_milestones",
+            config.run.system_validation_every_n_milestones);
+        !status) {
+      return tl::make_unexpected(status.error());
+    }
+    if (config.run.system_validation_every_n_milestones.has_value() &&
+        *config.run.system_validation_every_n_milestones == 0) {
+      return invalid("run.system_validation_every_n_milestones",
+                     "must be greater than zero");
     }
   }
 
@@ -196,23 +211,11 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
         !status) {
       return tl::make_unexpected(status.error());
     }
-    if (config.github.private_key_ref.has_value() &&
-        config.github.private_key_ref->find("secretmanager://") == 0) {
-      return invalid("github.private_key_ref",
-                     "secret manager references are not resolvable in this "
-                     "build; use a PEM file path");
-    }
     if (auto status = read_optional(github["signing_key_ref"],
                                     "github.signing_key_ref",
                                     config.github.signing_key_ref);
         !status) {
       return tl::make_unexpected(status.error());
-    }
-    if (config.github.signing_key_ref.has_value() &&
-        config.github.signing_key_ref->find("secretmanager://") == 0) {
-      return invalid("github.signing_key_ref",
-                     "secret manager references are not resolvable in this "
-                     "build; use an SSH private key file path");
     }
     if (auto status = read_optional(github["branch_prefix"],
                                     "github.branch_prefix",
@@ -632,7 +635,8 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
       if (key == "max_usd_total" || key == "max_tokens_total" ||
           key == "max_iterations_per_milestone" ||
           key == "max_attempts_per_defect" ||
-          key == "max_wall_clock_hours") {
+          key == "max_wall_clock_hours" ||
+          key == "max_usd_per_role" || key == "max_tokens_per_role") {
         continue;
       }
       return unsupported("budget." + key);
@@ -666,6 +670,34 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
                                     config.budget.max_wall_clock_hours);
         !status) {
       return tl::make_unexpected(status.error());
+    }
+    if (const YAML::Node roles = budget["max_usd_per_role"]) {
+      if (!roles.IsMap()) {
+        return invalid("budget.max_usd_per_role", "must be a mapping");
+      }
+      for (const auto& entry : roles) {
+        const std::string role = entry.first.as<std::string>();
+        const double value = entry.second.as<double>();
+        if (role.empty() || !std::isfinite(value) || value <= 0.0) {
+          return invalid("budget.max_usd_per_role",
+                         "each role needs a positive USD limit");
+        }
+        config.budget.max_usd_per_role[role] = value;
+      }
+    }
+    if (const YAML::Node roles = budget["max_tokens_per_role"]) {
+      if (!roles.IsMap()) {
+        return invalid("budget.max_tokens_per_role", "must be a mapping");
+      }
+      for (const auto& entry : roles) {
+        const std::string role = entry.first.as<std::string>();
+        const std::uint64_t value = entry.second.as<std::uint64_t>();
+        if (role.empty() || value == 0) {
+          return invalid("budget.max_tokens_per_role",
+                         "each role needs a positive token limit");
+        }
+        config.budget.max_tokens_per_role[role] = value;
+      }
     }
     const auto positive = [](double value) {
       return std::isfinite(value) && value > 0.0;
@@ -855,7 +887,7 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
       return invalid("sandbox.network",
                      "gate jobs are network-isolated; only 'deny' is accepted");
     }
-    const auto positive = [](double value) {
+        const auto positive = [](double value) {
       return std::isfinite(value) && value > 0.0;
     };
     if (config.sandbox.cpu.has_value() && !positive(*config.sandbox.cpu)) {
@@ -912,6 +944,10 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   }
   if (config.github.installation_id.has_value()) {
     options.github_installation_id = *config.github.installation_id;
+  }
+  if (config.run.system_validation_every_n_milestones.has_value()) {
+    options.system_validation_every_n_milestones =
+        *config.run.system_validation_every_n_milestones;
   }
   if (config.github.private_key_ref.has_value()) {
     options.github_private_key_file = *config.github.private_key_ref;
@@ -1041,6 +1077,8 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   if (config.budget.max_tokens_total.has_value()) {
     options.budget_tokens = *config.budget.max_tokens_total;
   }
+  options.budget_usd_per_role = config.budget.max_usd_per_role;
+  options.budget_tokens_per_role = config.budget.max_tokens_per_role;
   if (config.budget.max_iterations_per_milestone.has_value()) {
     options.max_iterations_per_milestone =
         *config.budget.max_iterations_per_milestone;

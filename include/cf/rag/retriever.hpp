@@ -25,6 +25,18 @@
 
 namespace cf::rag {
 
+// One detected precedence conflict (design section 6.3): the winner, the
+// chunks it overrode and the rule that decided it. Unresolved conflicts must
+// be escalated to a document owner.
+struct ConflictEvent {
+  std::string query;
+  std::string topic;
+  std::string winner_chunk_id;
+  std::vector<std::string> overridden;
+  std::string deciding_rule;
+  bool unresolved = false;
+};
+
 struct RetrieverOptions {
   ChunkOptions chunking;
   double bm25_k1 = 1.2;
@@ -48,6 +60,9 @@ struct RetrieverOptions {
   // 14: cf_rag_latency_ms). The callback must be thread-safe when the
   // retriever is shared.
   std::function<void(std::int64_t)> on_search_latency_ms;
+  // Observes every resolved or unresolved conflict for the conflict register
+  // (design section 6.3). Must be thread-safe when the retriever is shared.
+  std::function<void(const ConflictEvent&)> on_conflict;
 };
 
 class Retriever {

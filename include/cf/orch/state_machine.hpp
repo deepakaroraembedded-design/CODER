@@ -50,6 +50,8 @@ enum class RunEvent {
   AllMilestonesDone,
   SystemDefectsFiled,
   SystemValidationPassed,
+  PeriodicValidationDue,
+  PeriodicValidationPassed,
   BudgetExceeded,
   NoProgress,
   HumanResolved,

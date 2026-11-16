@@ -13,6 +13,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -36,6 +37,11 @@ struct OrchestratorConfig {
   // Active time only: states waiting for people do not count (design
   // sections 12, 15).
   std::optional<double> max_wall_clock_hours;
+  // Hard per-agent limits (design NFR-02); the ledger is summed per role.
+  std::map<std::string, double, std::less<>> max_usd_per_role;
+  std::map<std::string, std::uint64_t, std::less<>> max_tokens_per_role;
+  // Run system validation after every N Done milestones (0: only at the end).
+  std::uint32_t system_validation_every_n_milestones = 0;
   // Empty: escalation bundles are not written.
   std::string escalation_dir;
 };
@@ -64,6 +70,7 @@ class RunOrchestrator {
   // Registers every plan milestone that has no row yet, in Pending.
   Status ensure_milestones_registered();
 
+  std::size_t last_periodic_validation_count_ = 0;
   store::RunStore& store_;
   std::string run_id_;
   const plan::Plan& plan_;

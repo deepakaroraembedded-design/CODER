@@ -203,6 +203,20 @@ struct DefectRecord {
   uint32_t attempts = 0;
 };
 
+// A detected precedence conflict (design section 6.3). The register is
+// exported by the report so document owners can fix the sources.
+struct ConflictRecord {
+  int64_t id = 0;
+  std::string run_id;
+  std::string query;
+  std::string topic;
+  std::string winner_chunk_id;
+  std::vector<std::string> overridden_chunk_ids;
+  std::string deciding_rule;
+  bool unresolved = false;
+  UnixTime at = 0;
+};
+
 // An agent's request for a human waiver (design section 12.1). Only the CLI
 // can grant the resulting waiver.
 struct WaiverRequestRecord {
@@ -368,6 +382,9 @@ class RunStore {
                                                   std::string_view fingerprint) const;
 
   // Empty milestone_id = all milestones; empty statuses = all statuses.
+  Status record_conflict(const ConflictRecord& conflict);
+  Result<std::vector<ConflictRecord>> list_conflicts(std::string_view run_id) const;
+
   Result<std::vector<DefectRecord>> list_defects(
       std::string_view run_id, std::string_view milestone_id = "",
       const std::vector<std::string>& statuses = {}) const;

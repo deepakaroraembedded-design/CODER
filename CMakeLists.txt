@@ -167,6 +167,7 @@ add_library(cf_orch STATIC
   src/orch/recovery.cpp
   src/orch/driver.cpp
   src/orch/agent_intents.cpp
+  src/orch/report.cpp
   src/orch/opencode_runner.cpp
   src/orch/opencode_session_driver.cpp
   src/orch/session_idle_tracker.cpp

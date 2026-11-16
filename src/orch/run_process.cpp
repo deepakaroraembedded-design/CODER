@@ -16,6 +16,7 @@
 #include "cf/orch/defect_export.hpp"
 #include "cf/orch/github_flow.hpp"
 #include "cf/orch/recovery.hpp"
+#include "cf/orch/report.hpp"
 #include "cf/llm/client.hpp"
 #include "cf/rag/embedder.hpp"
 #include "cf/rag/loader.hpp"
@@ -224,6 +225,18 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
     options->on_search_latency_ms = [this](std::int64_t latency_ms) {
       (void)store_.record_rag_latency(config_.run_id, latency_ms,
                                       store::unix_now());
+    };
+    options->on_conflict = [this](const rag::ConflictEvent& event) {
+      store::ConflictRecord row;
+      row.run_id = config_.run_id;
+      row.query = event.query;
+      row.topic = event.topic;
+      row.winner_chunk_id = event.winner_chunk_id;
+      row.overridden_chunk_ids = event.overridden;
+      row.deciding_rule = event.deciding_rule;
+      row.unresolved = event.unresolved;
+      row.at = store::unix_now();
+      (void)store_.record_conflict(row);
     };
     retriever = std::make_shared<rag::InMemoryRetriever>(*options);
     if (!config_.embeddings_model.empty()) {
@@ -515,7 +528,22 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
 
   StateMachine machine(store_, config_.run_id);
   RunState state = machine.current();
+  const auto ensure_report = [this, &run_dir]() {
+    const auto report = write_run_report(
+        store_, config_.run_id, &plan_, run_dir,
+        config_.workspace_root / "reports" / config_.run_id);
+    if (!report) {
+      spdlog::error("cannot write the final report: {}", report.error().message);
+      return false;
+    }
+    spdlog::info("final report: {} and {}", report->json_path.string(),
+                 report->markdown_path.string());
+    return true;
+  };
   if (state != RunState::Executing && state != RunState::SystemValidation) {
+    if (state == RunState::Done) {
+      (void)ensure_report();
+    }
     return state;  // waiting on a person or already terminal
   }
 
@@ -737,8 +765,11 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
       }
     }
 
-    if (state == RunState::Done || state == RunState::Escalated ||
-        state == RunState::Aborted) {
+    if (state == RunState::Done) {
+      (void)ensure_report();
+      return state;
+    }
+    if (state == RunState::Escalated || state == RunState::Aborted) {
       return state;
     }
     if (state == RunState::SystemValidation && previous == RunState::SystemValidation) {

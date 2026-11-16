@@ -48,6 +48,7 @@ run:
   workspace: /srv/cf/work
   repo: /srv/checkouts/product-y
   base_branch: main
+  system_validation_every_n_milestones: 5
 github:
   app_id: "12345"
   installation_id: "67890"
@@ -84,6 +85,8 @@ budget:
   max_iterations_per_milestone: 12
   max_attempts_per_defect: 4
   max_wall_clock_hours: 24
+  max_usd_per_role: {coder: 10, reviewer: 5}
+  max_tokens_per_role: {qa: 1000000}
 approvals:
   design_approval: 5d
   escalation: 3d
@@ -156,11 +159,16 @@ TEST_F(ConfigTest, LoadsTheFullSchema) {
   EXPECT_EQ(*config->models.embeddings.at("fireworks").dim, 768u);
   EXPECT_EQ(*config->models.embeddings.at("fireworks").index, "hosted");
 
+  ASSERT_TRUE(config->run.system_validation_every_n_milestones.has_value());
+  EXPECT_EQ(*config->run.system_validation_every_n_milestones, 5u);
   EXPECT_DOUBLE_EQ(*config->budget.max_usd_total, 150.0);
   EXPECT_EQ(*config->budget.max_tokens_total, 60000000u);
   EXPECT_EQ(*config->budget.max_iterations_per_milestone, 12u);
   EXPECT_EQ(*config->budget.max_attempts_per_defect, 4u);
   EXPECT_DOUBLE_EQ(*config->budget.max_wall_clock_hours, 24.0);
+  EXPECT_DOUBLE_EQ(config->budget.max_usd_per_role.at("coder"), 10.0);
+  EXPECT_DOUBLE_EQ(config->budget.max_usd_per_role.at("reviewer"), 5.0);
+  EXPECT_EQ(config->budget.max_tokens_per_role.at("qa"), 1000000u);
   EXPECT_EQ(*config->approvals.design_approval_business_days, 5u);
   EXPECT_EQ(*config->approvals.escalation_business_days, 3u);
   EXPECT_EQ(*config->approvals.waiver_business_days, 2u);
@@ -271,16 +279,14 @@ TEST_F(ConfigTest, UnknownAndUnsupportedKeysAreRejected) {
   EXPECT_NE(gate_policy.error().message.find("bogus"), std::string::npos);
 }
 
-TEST_F(ConfigTest, SecretManagerKeyReferencesAreRejected) {
+TEST_F(ConfigTest, SecretManagerKeyReferencesAreResolvedAtUse) {
   auto config = cf::cli::load_config(
-      write_config("github: {private_key_ref: \"secretmanager://cf/key\"}\n"));
-  ASSERT_FALSE(config.has_value());
-  EXPECT_NE(config.error().message.find("secret manager"), std::string::npos);
+      write_config("github: {private_key_ref: \"secretmanager://env/CF_PEM\"}\n"));
+  ASSERT_TRUE(config.has_value()) << config.error().message;
 
   auto signing = cf::cli::load_config(
-      write_config("github: {signing_key_ref: \"secretmanager://cf/sign\"}\n"));
-  ASSERT_FALSE(signing.has_value());
-  EXPECT_NE(signing.error().message.find("secret manager"), std::string::npos);
+      write_config("github: {signing_key_ref: \"secretmanager://file/srv/key\"}\n"));
+  ASSERT_TRUE(signing.has_value()) << signing.error().message;
 }
 
 TEST_F(ConfigTest, UnknownRolesAndBadTypesAreRejected) {

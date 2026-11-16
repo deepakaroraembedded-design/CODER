@@ -113,6 +113,36 @@ Result<std::optional<std::string>> RunOrchestrator::budget_exceeded(
           std::to_string(*config_.max_tokens_total));
     }
   }
+  if (!config_.max_usd_per_role.empty() ||
+      !config_.max_tokens_per_role.empty()) {
+    auto calls = store_.list_llm_calls(run_id_);
+    if (!calls) {
+      return tl::make_unexpected(calls.error());
+    }
+    std::map<std::string, double, std::less<>> usd_by_role;
+    std::map<std::string, uint64_t, std::less<>> tokens_by_role;
+    for (const auto& call : *calls) {
+      usd_by_role[call.role] += call.usd;
+      tokens_by_role[call.role] +=
+          static_cast<uint64_t>(call.prompt_tokens + call.completion_tokens);
+    }
+    for (const auto& [role, limit] : config_.max_usd_per_role) {
+      const double spent = usd_by_role[role];
+      if (spent >= limit) {
+        return std::optional<std::string>(
+            "agent cost budget exceeded for " + role + ": $" +
+            std::to_string(spent) + " of $" + std::to_string(limit));
+      }
+    }
+    for (const auto& [role, limit] : config_.max_tokens_per_role) {
+      const uint64_t spent = tokens_by_role[role];
+      if (spent >= limit) {
+        return std::optional<std::string>(
+            "agent token budget exceeded for " + role + ": " +
+            std::to_string(spent) + " of " + std::to_string(limit));
+      }
+    }
+  }
   if (config_.max_wall_clock_hours.has_value()) {
     auto seconds = active_seconds(now);
     if (!seconds) {
@@ -184,10 +214,16 @@ Result<RunState> RunOrchestrator::step(store::UnixTime now) {
     if (!validation.completed) {
       return state;
     }
-    const auto applied = machine_.apply(
-        validation.passed ? RunEvent::SystemValidationPassed
-                          : RunEvent::SystemDefectsFiled,
-        {}, now);
+    auto done = all_milestones_done();
+    if (!done) {
+      return tl::make_unexpected(done.error());
+    }
+    const RunEvent outcome =
+        validation.passed
+            ? (*done ? RunEvent::SystemValidationPassed
+                     : RunEvent::PeriodicValidationPassed)
+            : RunEvent::SystemDefectsFiled;
+    const auto applied = machine_.apply(outcome, {}, now);
     if (!applied) {
       return tl::make_unexpected(applied.error());
     }
@@ -310,6 +346,35 @@ Result<RunState> RunOrchestrator::step(store::UnixTime now) {
       }
       if (exceeded->has_value()) {
         return escalate(**exceeded, RunEvent::BudgetExceeded, now);
+      }
+    }
+
+    if (config_.system_validation_every_n_milestones > 0) {
+      std::size_t done_count = 0;
+      for (const auto& spec : plan_.milestones) {
+        const auto current = machine_.current(spec.id);
+        if (!current) {
+          return tl::make_unexpected(current.error());
+        }
+        if (*current == MilestoneState::Done) {
+          ++done_count;
+        }
+      }
+      if (done_count > 0 && done_count > last_periodic_validation_count_ &&
+          done_count % config_.system_validation_every_n_milestones == 0) {
+        const auto total_done = all_milestones_done();
+        if (!total_done) {
+          return tl::make_unexpected(total_done.error());
+        }
+        if (!*total_done) {
+          last_periodic_validation_count_ = done_count;
+          const auto applied =
+              machine_.apply(RunEvent::PeriodicValidationDue, {}, now);
+          if (!applied) {
+            return tl::make_unexpected(applied.error());
+          }
+          return *applied;
+        }
       }
     }
 

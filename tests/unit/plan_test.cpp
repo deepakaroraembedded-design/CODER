@@ -320,4 +320,49 @@ TEST(PlanTest, MalformedYamlFails) {
   EXPECT_EQ(plan.error().code, cf::plan::error_codes::kParseFailed);
 }
 
+
+TEST(PlanTest, RequirementsRefResolvesAndChecksEveryId) {
+  const auto dir = make_temp_dir();
+  {
+    std::ofstream out(dir / "reqs.md");
+    out << "# Requirements\n\nREQ-001 The registry exists.\n"
+           "REQ-010 The registry is thread safe.\n";
+  }
+  Plan plan;
+  plan.requirements_ref = "reqs.md";
+  MilestoneSpec milestone;
+  milestone.id = "M1";
+  milestone.title = "Registry";
+  milestone.requirements = {"REQ-001", "REQ-010"};
+  plan.milestones.push_back(milestone);
+  const auto resolved = cf::plan::validate_requirements(plan, dir);
+  ASSERT_TRUE(resolved.has_value()) << resolved.error().message;
+  ASSERT_TRUE(resolved->has_value());
+  EXPECT_EQ(resolved->value(), dir / "reqs.md");
+
+  plan.milestones[0].requirements.push_back("REQ-999");
+  const auto missing = cf::plan::validate_requirements(plan, dir);
+  ASSERT_FALSE(missing.has_value());
+  EXPECT_NE(missing.error().message.find("REQ-999"), std::string::npos);
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+TEST(PlanTest, MissingRequirementsFileFailsButUncheckedOutRepoIsDeferred) {
+  const auto dir = make_temp_dir();
+  Plan plan;
+  plan.requirements_ref = "missing.md";
+  const auto missing = cf::plan::validate_requirements(plan, dir);
+  EXPECT_FALSE(missing.has_value());
+
+  plan.requirements_ref = "repo://docs/SRS.md@v1";
+  const auto deferred = cf::plan::validate_requirements(plan, dir);
+  ASSERT_TRUE(deferred.has_value()) << deferred.error().message;
+  EXPECT_FALSE(deferred->has_value());
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
 }  // namespace

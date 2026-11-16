@@ -17,6 +17,8 @@
 #include <openssl/rand.h>
 #include <sqlite3.h>
 
+#include <nlohmann/json.hpp>
+
 #include <SQLiteCpp/Backup.h>
 #include <SQLiteCpp/SQLiteCpp.h>
 
@@ -99,6 +101,17 @@ CREATE TABLE IF NOT EXISTS waivers (
   UNIQUE (run_id, rule, scope)
 );
 -- Agent waiver requests awaiting a human (design section 12.1)
+CREATE TABLE IF NOT EXISTS conflicts (
+  id                 INTEGER PRIMARY KEY,
+  run_id             TEXT,
+  query              TEXT,
+  topic              TEXT,
+  winner_chunk_id    TEXT,
+  overridden_json    TEXT,
+  deciding_rule      TEXT,
+  unresolved         INT,
+  at                 INT
+);
 CREATE TABLE IF NOT EXISTS waiver_requests (
   id            TEXT PRIMARY KEY,
   run_id        TEXT,
@@ -187,6 +200,7 @@ CREATE INDEX IF NOT EXISTS idx_rag_latency_run ON rag_latency(run_id);
 CREATE INDEX IF NOT EXISTS idx_checkpoints_run ON checkpoints(run_id, milestone_id);
 CREATE INDEX IF NOT EXISTS idx_waivers_run ON waivers(run_id);
 CREATE INDEX IF NOT EXISTS idx_waiver_requests_run ON waiver_requests(run_id);
+CREATE INDEX IF NOT EXISTS idx_conflicts_run ON conflicts(run_id);
 )sql";
 
 constexpr const char* kOperationColumns =
@@ -1038,6 +1052,63 @@ Result<std::vector<GateResultRow>> RunStore::latest_gate_results(
                   "no gate results for run " + std::string(run_id));
     }
     return list_gate_results(run_id, stmt.getColumn(0).getString());
+  });
+}
+
+Status RunStore::record_conflict(const ConflictRecord& conflict) {
+  return locked_sql_guard(impl_->mutex, "record_conflict", [&]() -> Status {
+    const nlohmann::json overridden = conflict.overridden_chunk_ids;
+    SQLite::Statement stmt(
+        impl_->db,
+        "INSERT INTO conflicts (run_id, query, topic, winner_chunk_id, "
+        "overridden_json, deciding_rule, unresolved, at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    stmt.bind(1, conflict.run_id);
+    stmt.bind(2, conflict.query);
+    stmt.bind(3, conflict.topic);
+    stmt.bind(4, conflict.winner_chunk_id);
+    stmt.bind(5, overridden.dump());
+    stmt.bind(6, conflict.deciding_rule);
+    stmt.bind(7, conflict.unresolved ? 1 : 0);
+    stmt.bind(8, static_cast<int64_t>(conflict.at));
+    stmt.exec();
+    return {};
+  });
+}
+
+Result<std::vector<ConflictRecord>> RunStore::list_conflicts(
+    std::string_view run_id) const {
+  return locked_sql_guard(impl_->mutex, "list_conflicts",
+                          [&]() -> Result<std::vector<ConflictRecord>> {
+    SQLite::Statement stmt(
+        impl_->db,
+        "SELECT id, run_id, query, topic, winner_chunk_id, overridden_json, "
+        "deciding_rule, unresolved, at FROM conflicts WHERE run_id = ? "
+        "ORDER BY id");
+    stmt.bind(1, std::string(run_id));
+    std::vector<ConflictRecord> rows;
+    while (stmt.executeStep()) {
+      ConflictRecord row;
+      row.id = stmt.getColumn(0).getInt64();
+      row.run_id = stmt.getColumn(1).getString();
+      row.query = stmt.getColumn(2).getString();
+      row.topic = stmt.getColumn(3).getString();
+      row.winner_chunk_id = stmt.getColumn(4).getString();
+      const auto overridden = nlohmann::json::parse(
+          stmt.getColumn(5).getString(), nullptr, false);
+      if (overridden.is_array()) {
+        for (const auto& id : overridden) {
+          if (id.is_string()) {
+            row.overridden_chunk_ids.push_back(id.get<std::string>());
+          }
+        }
+      }
+      row.deciding_rule = stmt.getColumn(6).getString();
+      row.unresolved = stmt.getColumn(7).getInt() != 0;
+      row.at = stmt.getColumn(8).getInt64();
+      rows.push_back(std::move(row));
+    }
+    return rows;
   });
 }
 

@@ -94,6 +94,12 @@ struct ValidationOptions {
 
 Result<Plan> parse_plan_string(std::string_view text,
                                const ValidationOptions& options = {});
+// Resolves the plan's requirements_ref and verifies that every milestone
+// requirement ID appears in that document (design section 6.2 step 1). A
+// repo:// reference that is not present locally returns nullopt.
+Result<std::optional<std::filesystem::path>> validate_requirements(
+    const Plan& plan, const std::filesystem::path& search_root);
+
 Result<Plan> parse_plan_file(const std::filesystem::path& path,
                              const ValidationOptions& options = {});
 

@@ -30,14 +30,16 @@ struct FrameworkConfig {
     std::optional<std::string> workspace;
     std::optional<std::string> repo;
     std::optional<std::string> base_branch;
+    // Run system validation after every N Done milestones (design section 6.9).
+    std::optional<std::uint32_t> system_validation_every_n_milestones;
   };
   Run run;
 
   struct Github {
     std::optional<std::string> app_id;
     std::optional<std::string> installation_id;
-    // A filesystem path to the PEM. secretmanager:// references are rejected
-    // at load time (not resolvable in this build).
+    // A filesystem path to the PEM, or secretmanager://env/NAME or
+    // secretmanager://file/PATH (resolved at use).
     std::optional<std::string> private_key_ref;
     // SSH private key used to sign every CF commit (design section 10.4.2).
     // A filesystem path; secretmanager:// references are rejected.
@@ -101,6 +103,9 @@ struct FrameworkConfig {
     // Active time only: states that wait for people do not count (design
     // sections 12, 15).
     std::optional<double> max_wall_clock_hours;
+    // Hard per-role limits (design NFR-02); role -> USD or token cap.
+    std::map<std::string, double, std::less<>> max_usd_per_role;
+    std::map<std::string, std::uint64_t, std::less<>> max_tokens_per_role;
   };
   Budget budget;
 

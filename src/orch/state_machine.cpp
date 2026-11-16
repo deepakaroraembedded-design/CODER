@@ -13,7 +13,7 @@ struct RunTransition {
 };
 
 // Design section 7.1 (the run-level state diagram).
-constexpr std::array<RunTransition, 14> kRunTransitions = {{
+constexpr std::array<RunTransition, 16> kRunTransitions = {{
     {RunState::Created, RunEvent::Start, RunState::Ingesting},
     {RunState::Ingesting, RunEvent::IndexReady, RunState::Refining},
     {RunState::Refining, RunEvent::DesignPackageReady, RunState::AwaitingDesignApproval},
@@ -23,6 +23,8 @@ constexpr std::array<RunTransition, 14> kRunTransitions = {{
     {RunState::Executing, RunEvent::AllMilestonesDone, RunState::SystemValidation},
     {RunState::SystemValidation, RunEvent::SystemDefectsFiled, RunState::Executing},
     {RunState::SystemValidation, RunEvent::SystemValidationPassed, RunState::Done},
+    {RunState::Executing, RunEvent::PeriodicValidationDue, RunState::SystemValidation},
+    {RunState::SystemValidation, RunEvent::PeriodicValidationPassed, RunState::Executing},
     {RunState::Executing, RunEvent::BudgetExceeded, RunState::Escalated},
     {RunState::Executing, RunEvent::NoProgress, RunState::Escalated},
     {RunState::Escalated, RunEvent::HumanResolved, RunState::Executing},
@@ -124,6 +126,8 @@ std::string_view to_string(RunEvent event) {
     case RunEvent::AllMilestonesDone: return "all_milestones_done";
     case RunEvent::SystemDefectsFiled: return "system_defects_filed";
     case RunEvent::SystemValidationPassed: return "system_validation_passed";
+    case RunEvent::PeriodicValidationDue: return "periodic_validation_due";
+    case RunEvent::PeriodicValidationPassed: return "periodic_validation_passed";
     case RunEvent::BudgetExceeded: return "budget_exceeded";
     case RunEvent::NoProgress: return "no_progress";
     case RunEvent::HumanResolved: return "human_resolved";

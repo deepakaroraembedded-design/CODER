@@ -359,6 +359,16 @@ Result<std::vector<Hit>> InMemoryRetriever::search(const Query& query) const {
       hit.unresolved_conflict = true;
       hit.deciding_rule = "unresolved: requirement conflict";
     }
+    if (options_.on_conflict) {
+      ConflictEvent event;
+      event.query = query.text;
+      event.topic = topic;
+      event.winner_chunk_id = hit.chunk_id;
+      event.overridden = hit.overridden_by;
+      event.deciding_rule = hit.deciding_rule;
+      event.unresolved = hit.unresolved_conflict;
+      options_.on_conflict(event);
+    }
     winners.emplace(winner, std::move(hit));
   }
 

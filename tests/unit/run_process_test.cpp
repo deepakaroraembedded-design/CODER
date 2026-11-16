@@ -387,6 +387,13 @@ TEST(RunProcessTest, DrivesAFullRunToDoneWithFakeOpencode) {
   EXPECT_TRUE(contains(run_dir / "agent" / "calls-qa.jsonl", "submit_tests"));
   EXPECT_TRUE(contains(run_dir / "agent" / "calls-qa.jsonl", "verify_defect"));
 
+  // The final report is generated automatically before the run returns Done
+  // (design section 11.2).
+  const auto report_dir = config.workspace_root / "reports" / "R12";
+  ASSERT_TRUE(std::filesystem::exists(report_dir / "report.json"));
+  ASSERT_TRUE(std::filesystem::exists(report_dir / "report.md"));
+  EXPECT_TRUE(contains(report_dir / "report.json", "\"state\": \"Done\""));
+
   // Gates ran and passed on the milestone's commit.
   auto gates = store->latest_gate_results("R12", "M3");
   ASSERT_TRUE(gates.has_value()) << gates.error().message;

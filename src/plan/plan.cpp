@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <regex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -402,6 +403,65 @@ Result<Plan> parse_plan_file(const std::filesystem::path& path,
   } catch (const std::exception& e) {
     return fail(error_codes::kParseFailed, e.what());
   }
+}
+
+
+Result<std::optional<std::filesystem::path>> validate_requirements(
+    const Plan& plan, const std::filesystem::path& search_root) {
+  if (plan.requirements_ref.empty()) {
+    return std::optional<std::filesystem::path>{};
+  }
+  std::string reference = plan.requirements_ref;
+  bool repository_reference = false;
+  if (reference.rfind("file://", 0) == 0) {
+    reference = reference.substr(7);
+  } else if (reference.rfind("repo://", 0) == 0) {
+    reference = reference.substr(7);
+    repository_reference = true;
+    const std::size_t at = reference.rfind('@');
+    if (at != std::string::npos) {
+      reference.resize(at);
+    }
+  }
+  std::filesystem::path path(reference);
+  if (path.is_relative()) {
+    path = search_root / path;
+  }
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    if (repository_reference) {
+      return std::optional<std::filesystem::path>{};  // not checked out yet
+    }
+    return fail("PLAN_REQUIREMENTS_UNREADABLE",
+                "cannot read requirements_ref '" + plan.requirements_ref +
+                    "' (" + path.string() + ")");
+  }
+  const std::string text((std::istreambuf_iterator<char>(in)),
+                         std::istreambuf_iterator<char>());
+  std::vector<std::string> missing;
+  for (const auto& milestone : plan.milestones) {
+    for (const auto& requirement : milestone.requirements) {
+      const std::regex pattern("\\b" + requirement + "\\b");
+      if (!std::regex_search(text, pattern) &&
+          std::find(missing.begin(), missing.end(), requirement) ==
+              missing.end()) {
+        missing.push_back(requirement);
+      }
+    }
+  }
+  if (!missing.empty()) {
+    std::string list;
+    for (std::size_t i = 0; i < missing.size(); ++i) {
+      if (i > 0) {
+        list += ", ";
+      }
+      list += missing[i];
+    }
+    return fail("PLAN_REQUIREMENTS_MISSING",
+                "requirements_ref '" + plan.requirements_ref +
+                    "' does not define " + list);
+  }
+  return std::optional<std::filesystem::path>(path);
 }
 
 }  // namespace cf::plan
