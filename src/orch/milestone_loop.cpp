@@ -47,6 +47,34 @@ bool only_test_gate_failed(const cf::gates::GateReport& report) {
   return saw_failure;
 }
 
+// True when the gate run failed only in the mutation gate: the tests are too
+// weak, which QA owns (design section 6.9).
+bool only_mutation_gate_failed(const cf::gates::GateReport& report) {
+  bool saw_failure = false;
+  for (const auto& result : report.results) {
+    if (result.passed || result.skipped) {
+      continue;
+    }
+    if (result.gate != "mutation") {
+      return false;
+    }
+    saw_failure = true;
+  }
+  return saw_failure;
+}
+
+std::string weak_test_message(const cf::gates::GateReport& report) {
+  for (const auto& result : report.results) {
+    if (result.passed || result.gate != "mutation") {
+      continue;
+    }
+    for (const auto& finding : result.findings) {
+      return finding.message;
+    }
+  }
+  return "the mutation score is below the configured threshold";
+}
+
 // How many times the coder has disputed a test, from the dispute defect's
 // body (written by the cf-mcp dispute_test tool).
 int dispute_count(const std::string& body_json) {
@@ -246,6 +274,47 @@ Result<MilestoneState> MilestoneLoop::drive(std::string_view milestone_id,
             }
             // QA filed a defect: the coder fixes the code.
           }
+          // A mutation-only failure is a weak-test problem: QA strengthens the
+          // tests on the milestone worktree and the gates run again (design
+          // section 6.9). The defect stays open until the mutation gate passes.
+          if (!was_revalidation && only_mutation_gate_failed(outcome.report)) {
+            const std::string weak_id = "W-" + id;
+            store::DefectRecord weak;
+            weak.id = weak_id;
+            weak.run_id = machine_.run_id();
+            weak.milestone_id = id;
+            weak.status = "OPEN";
+            weak.severity = "major";
+            weak.fingerprint = "weak-tests:" + id;
+            weak.body_json =
+                nlohmann::json{{"category", "weak_test"},
+                               {"owner", "qa"},
+                               {"summary", weak_test_message(outcome.report)}}
+                    .dump();
+            auto stored = store_.upsert_defect(weak);
+            if (!stored) {
+              return tl::make_unexpected(stored.error());
+            }
+            const TurnResult repair = driver_.run_weak_test_repair(id);
+            if (!repair.completed) {
+              ++consecutive_turn_failures;
+              if (consecutive_turn_failures >=
+                  limits_.max_consecutive_turn_failures) {
+                return escalate(milestone_id,
+                                "the weak-test repair failed " +
+                                    std::to_string(consecutive_turn_failures) +
+                                    " times in a row: " + repair.detail,
+                                now);
+              }
+              continue;
+            }
+            if (repair.exit_criteria_met) {
+              (void)store_.set_defect_status(weak_id, "VERIFIED", 0);
+              consecutive_turn_failures = 0;
+              continue;  // gates run again with the strengthened tests
+            }
+            // QA filed a defect instead: the coder changes the production code.
+          }
           const std::string fingerprint = failure_fingerprint(outcome.report);
           if (fingerprint == last_gate_fingerprint) {
             ++consecutive_same_gate_failures;
@@ -268,6 +337,10 @@ Result<MilestoneState> MilestoneLoop::drive(std::string_view milestone_id,
         } else {
           consecutive_same_gate_failures = 0;
           last_gate_fingerprint.clear();
+          auto weak = store_.get_defect("W-" + id);
+          if (weak.has_value() && weak->status != "VERIFIED") {
+            (void)store_.set_defect_status(weak->id, "VERIFIED", weak->attempts);
+          }
           const ReviewKind review =
               decide_review(outcome.changes_since_approved, outcome.review_context);
           const auto applied = machine_.apply(

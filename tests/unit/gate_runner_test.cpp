@@ -409,6 +409,34 @@ common:
   EXPECT_EQ((*plan)[5].stage, GateStage::Expensive);
 }
 
+TEST(GatePlanTest, IncludesTheRuntimeGateWhenTheProfileDeclaresIt) {
+  const char* profile_yaml = R"yaml(
+id: runtime
+image: img
+languages:
+  cpp: { standard_var: CMAKE_CXX_STANDARD, format: { steps: [[true]] },
+         guardrails: { steps: [[true]] } }
+build_systems:
+  cmake: { steps: [[true]] }
+test_frameworks:
+  gtest: { steps: [[true]], languages: [cpp] }
+common:
+  runtime:
+    presets: [asan-ubsan]
+    steps:
+      - [bash, sanitizers.sh]
+)yaml";
+  auto profile = cf::gates::load_profile_string(profile_yaml);
+  ASSERT_TRUE(profile.has_value()) << profile.error().message;
+  auto plan = cf::gates::build_gate_plan(*profile, "cpp", "cmake", "gtest");
+  ASSERT_TRUE(plan.has_value()) << plan.error().message;
+  ASSERT_EQ(plan->size(), 5u);
+  EXPECT_EQ(plan->back().name, "sanitizers");
+  EXPECT_EQ(plan->back().stage, GateStage::Expensive);
+  ASSERT_EQ(plan->back().steps.size(), 1u);
+  EXPECT_EQ(plan->back().steps[0].argv.front(), "bash");
+}
+
 TEST(CoverageReportTest, GateEnforcesThresholdsFromTheReport) {
   const auto dir = std::filesystem::temp_directory_path() /
                    ("cf_coverage_gate_" + std::to_string(::getpid()));

@@ -83,6 +83,14 @@ class FakeDriver final : public MilestoneDriver {
     return result;
   }
 
+  TurnResult run_weak_test_repair(std::string_view milestone_id) override {
+    (void)milestone_id;
+    ++weak_repairs;
+    TurnResult result = completed_turn();
+    result.exit_criteria_met = true;
+    return result;
+  }
+
   GateOutcome run_gates(std::string_view milestone_id) override {
     (void)milestone_id;
     ++gate_runs;
@@ -145,6 +153,18 @@ class FakeDriver final : public MilestoneDriver {
     return outcome;
   }
 
+  static GateOutcome gates_fail_mutation(const std::string& message) {
+    GateOutcome outcome;
+    outcome.passed = false;
+    outcome.report.passed = false;
+    cf::gates::GateResult result;
+    result.gate = "mutation";
+    result.passed = false;
+    result.findings.push_back(cf::gates::GateFinding{"mutation", "error", message});
+    outcome.report.results.push_back(std::move(result));
+    return outcome;
+  }
+
   static GateOutcome gates_fail(const std::string& message, int64_t passing_tests = -1) {
     GateOutcome outcome;
     outcome.passed = false;
@@ -166,6 +186,7 @@ class FakeDriver final : public MilestoneDriver {
   std::function<void(MilestonePhase)> on_run;
   std::vector<MilestonePhase> phases;
   int gate_runs = 0;
+  int weak_repairs = 0;
   int dispute_decisions = 0;
   int test_repairs = 0;
 };
@@ -371,6 +392,27 @@ TEST_F(MilestoneLoopTest, TestDisputeIsDecidedByQaBeforeGating) {
       MilestonePhase::Validate,    MilestonePhase::Integrate};
   EXPECT_EQ(driver.phases, expected);
   EXPECT_EQ(driver.gate_runs, 3);
+}
+
+TEST_F(MilestoneLoopTest, MutationFailureIsRepairedByQaThenGatedAgain) {
+  FakeDriver driver;
+  driver.scripts = {FakeDriver::completed_turn(),     // author tests
+                    FakeDriver::completed_turn(),     // code
+                    FakeDriver::completed_turn(),     // review: approved
+                    FakeDriver::exit_criteria_met(),  // validate
+                    FakeDriver::merged()};            // integrate
+  driver.gate_scripts = {
+      FakeDriver::gates_fail_mutation("mutation score 0.42 is below 0.60"),
+      FakeDriver::gates_pass(true, {code_change()}),
+      FakeDriver::gates_pass(true, {code_change()}),
+      FakeDriver::gates_pass(true, {code_change()})};
+
+  EXPECT_EQ(drive(driver), MilestoneState::Done);
+  EXPECT_EQ(driver.weak_repairs, 1);
+  const auto weak = store_->get_defect("W-M3");
+  ASSERT_TRUE(weak.has_value()) << weak.error().message;
+  EXPECT_EQ(weak->status, "VERIFIED");
+  EXPECT_EQ(nlohmann::json::parse(weak->body_json).value("owner", ""), "qa");
 }
 
 TEST_F(MilestoneLoopTest, RevalidationTestFailureIsRepairedByQa) {

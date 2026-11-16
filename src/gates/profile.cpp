@@ -211,6 +211,7 @@ Profile parse_profile(const YAML::Node& root) {
         if (const YAML::Node tsan = node["tsan_when"]) {
           profile.runtime.tsan_when = as_string(tsan, "common.runtime.tsan_when");
         }
+        profile.runtime.steps = parse_gate_spec(node, "common.runtime").steps;
       } else if (name == "coverage") {
         if (const YAML::Node tool = node["tool"]) {
           profile.coverage.tool = as_string(tool, "common.coverage.tool");

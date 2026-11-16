@@ -37,7 +37,10 @@ common:
     steps:
       - [staticcheck, ./...]
       - [golangci-lint, run]
-  runtime: { presets: [race] }
+  runtime:
+    presets: [race]
+    steps:
+      - [go, test, -race, ./...]
   coverage:
     tool: go-cover
     line: 0.85

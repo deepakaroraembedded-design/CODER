@@ -58,6 +58,9 @@ struct TestFrameworkSpec {
 struct RuntimeSpec {
   std::vector<std::string> presets;  // e.g. [asan-ubsan]
   std::string tsan_when;             // e.g. "component.concurrent"
+  // Trusted stage-3 steps for the sanitizer/race-detector gate (design
+  // section 6.7 stage 3). Empty means the profile has no runtime runner.
+  std::vector<GateStep> steps;
 };
 
 struct CoverageSpec {

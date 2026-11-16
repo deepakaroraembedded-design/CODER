@@ -105,6 +105,14 @@ class MilestoneDriver {
                       false, false, false, false, false, ""};
   }
 
+  // QA repairs weak tests on the milestone's own worktree after a mutation
+  // gate failure (design section 6.9).
+  virtual TurnResult run_weak_test_repair(std::string_view milestone_id) {
+    (void)milestone_id;
+    return TurnResult{false, "", "weak-test repair is not supported by this driver",
+                      false, false, false, false, false, ""};
+  }
+
   // Run-level hook: runs the full system validation suite on the merged
   // result (design section 11.2). The default reports "not completed".
   virtual SystemValidationResult validate_system() { return {}; }

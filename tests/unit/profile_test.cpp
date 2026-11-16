@@ -72,7 +72,11 @@ common:
   analysis:
     steps:
       - [cppcheck, --enable=warning,performance, --error-exitcode=1, "--project={build_dir}/compile_commands.json"]
-  runtime:  { presets: [asan-ubsan], tsan_when: "component.concurrent" }
+  runtime:
+    presets: [asan-ubsan]
+    tsan_when: "component.concurrent"
+    steps:
+      - [bash, sanitizers.sh]
   coverage:
     tool: llvm-cov
     line: 0.85
@@ -111,6 +115,8 @@ TEST(ProfileTest, ParsesTheExampleProfile) {
   EXPECT_EQ(profile->common.at("analysis").steps.size(), 1u);
   EXPECT_EQ(profile->runtime.presets, std::vector<std::string>{"asan-ubsan"});
   EXPECT_EQ(profile->runtime.tsan_when, "component.concurrent");
+  ASSERT_EQ(profile->runtime.steps.size(), 1u);
+  EXPECT_EQ(profile->runtime.steps[0].argv.front(), "bash");
   EXPECT_EQ(profile->coverage.tool, "llvm-cov");
   EXPECT_DOUBLE_EQ(profile->coverage.line, 0.85);
   EXPECT_DOUBLE_EQ(profile->coverage.branch, 0.75);

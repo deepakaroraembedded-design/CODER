@@ -664,6 +664,11 @@ Result<std::vector<GateDefinition>> build_gate_plan(const Profile& profile,
                       profile.coverage.line, profile.coverage.branch},
         {}});
   }
+  if (!profile.runtime.steps.empty()) {
+    plan.push_back(
+        GateDefinition{"sanitizers", GateStage::Expensive, profile.runtime.steps,
+                       true, {}, {}});
+  }
   if (!profile.mutation.steps.empty()) {
     plan.push_back(GateDefinition{
         "mutation", GateStage::Expensive, profile.mutation.steps, true, {},

@@ -1638,6 +1638,72 @@ TurnResult WorkspaceDriver::run_test_repair(std::string_view milestone_id) {
   return result;
 }
 
+TurnResult WorkspaceDriver::run_weak_test_repair(std::string_view milestone_id) {
+  telemetry::ScopedContext log_context(config_.run_id, std::string(milestone_id),
+                                       "qa");
+  const std::string id(milestone_id);
+  auto worktree = ensure_worktree(milestone_id, "coder");
+  if (!worktree) {
+    return TurnResult{false, "", worktree.error().message, false, false, false,
+                      false, false, ""};
+  }
+  const std::string turn_op_id = record_checkpoint(milestone_id);
+  std::string brief =
+      "The mutation gate failed for milestone " + id +
+      ": the tests are not strong enough to detect the introduced changes. "
+      "The tests under tests/ are QA-owned: strengthen them so the mutants are "
+      "killed, or file a defect if the production code is wrong. Do not change "
+      "production code in this turn.";
+  if (store_ != nullptr) {
+    const std::string failures = failing_gate_summary(*store_, config_.run_id, id);
+    if (!failures.empty()) {
+      brief += " Failing gates: " + failures;
+    }
+  }
+  AgentTurnRequest request =
+      make_request(MilestonePhase::Validate, milestone_id, "qa");
+  request.worktree = worktree->string();
+  request.brief = std::move(brief);
+  auto outcome = agent_runner_.run_turn(request);
+  if (!outcome) {
+    spdlog::warn("weak-test repair for {} failed: {}", milestone_id,
+                 outcome.error().message);
+    return TurnResult{false, "", outcome.error().message, false, false, false,
+                      false, false, ""};
+  }
+  if (!outcome->completed) {
+    return TurnResult{false, "", outcome->detail, false, false, false, false,
+                      false, ""};
+  }
+  std::vector<std::string> qa_paths;
+  for (const char* path : {"tests", "qa"}) {
+    std::error_code ec;
+    if (std::filesystem::exists(*worktree / path, ec)) {
+      qa_paths.push_back(path);
+    }
+  }
+  if (!qa_paths.empty()) {
+    git::CommitTrailers trailers;
+    trailers.run_id = config_.run_id;
+    trailers.milestone_id = id;
+    trailers.waivers = waivers_trailer(milestone_id);
+    trailers.op_id = turn_op_id;
+    trailers.phase = "tests";
+    const auto committed = repository_.commit_paths(
+        *worktree, qa_paths, "test(" + id + "): strengthen mutation coverage",
+        trailers);
+    if (!committed && committed.error().code != git::error_codes::kNoChanges) {
+      return TurnResult{false, "", committed.error().message, false, false,
+                        false, false, false, ""};
+    }
+  }
+  TurnResult result;
+  result.completed = true;
+  result.summary = outcome->summary;
+  result.exit_criteria_met = outcome->exit_criteria_met;
+  return result;
+}
+
 std::vector<std::string> WorkspaceDriver::integration_interfaces(
     std::string_view milestone_id) {
   const auto it = changed_interfaces_.find(std::string(milestone_id));
