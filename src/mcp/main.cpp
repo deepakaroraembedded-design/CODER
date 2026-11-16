@@ -52,6 +52,11 @@ void record_call(const std::string& tool, const json& arguments,
     if (id != result.structured.end() && id->is_string()) {
       entry["result_id"] = *id;
     }
+    const auto deduplicated = result.structured.find("deduplicated");
+    if (deduplicated != result.structured.end() &&
+        deduplicated->is_boolean()) {
+      entry["result_deduplicated"] = *deduplicated;
+    }
   }
   std::ofstream out(path, std::ios::app);
   if (out) {
@@ -227,24 +232,28 @@ int main(int argc, char** argv) {
 
   std::shared_ptr<cf::rag::InMemoryRetriever> retriever;
   std::shared_ptr<cf::llm::FireworksClient> embedding_client;
+  std::shared_ptr<cf::rag::Embedder> embedder;
+  if (!embeddings_model.empty()) {
+    const char* key = std::getenv(embeddings_api_key_env.c_str());
+    if (key == nullptr || *key == '\0') {
+      spdlog::warn("{} is not set; hybrid retrieval uses BM25 only",
+                   embeddings_api_key_env);
+    } else {
+      cf::llm::ClientOptions embedding_options;
+      embedding_options.base_url = embeddings_base_url;
+      embedding_options.api_key = key;
+      embedding_client = std::make_shared<cf::llm::FireworksClient>(
+          embedding_options, std::make_unique<cf::llm::CprTransport>());
+      embedder = std::make_shared<cf::rag::FireworksEmbedder>(
+          *embedding_client, embeddings_model, run_id);
+    }
+  }
   if (!docs_dir.empty() || !reference_docs_dir.empty() ||
       !designs_dir.empty() || !catalog.empty()) {
     retriever =
         std::make_shared<cf::rag::InMemoryRetriever>(retriever_options);
-    if (!embeddings_model.empty()) {
-      const char* key = std::getenv(embeddings_api_key_env.c_str());
-      if (key == nullptr || *key == '\0') {
-        spdlog::warn("{} is not set; hybrid retrieval uses BM25 only",
-                     embeddings_api_key_env);
-      } else {
-        cf::llm::ClientOptions embedding_options;
-        embedding_options.base_url = embeddings_base_url;
-        embedding_options.api_key = key;
-        embedding_client = std::make_shared<cf::llm::FireworksClient>(
-            embedding_options, std::make_unique<cf::llm::CprTransport>());
-        retriever->set_embedder(std::make_shared<cf::rag::FireworksEmbedder>(
-            *embedding_client, embeddings_model, run_id));
-      }
+    if (embedder) {
+      retriever->set_embedder(embedder);
     }
     for (const auto& directory :
          {docs_dir, reference_docs_dir, designs_dir}) {
@@ -355,6 +364,7 @@ int main(int argc, char** argv) {
   dependencies.context.product = product;
   dependencies.context.language = language;
   dependencies.retriever = retriever.get();
+  dependencies.embedder = embedder.get();
   dependencies.default_top_k = top_k;
   dependencies.store = store.get();
   dependencies.store_read_only = store_read_only;

@@ -12,6 +12,7 @@
 
 #include "cf/gates/profile.hpp"
 #include "cf/mcp/tools.hpp"
+#include "cf/rag/embedder.hpp"
 
 namespace {
 
@@ -879,6 +880,78 @@ TEST(McpReferenceGapTest, UncoveredLookupIsLoggedForEscalation) {
   ASSERT_TRUE(line.is_object());
   EXPECT_EQ(line["library"], "cppreference");
   EXPECT_EQ(line["query"], "stable_sort");
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+
+class FakeDefectEmbedder final : public cf::rag::Embedder {
+ public:
+  cf::Result<std::vector<std::vector<float>>> embed(
+      const std::vector<std::string>& texts) override {
+    std::vector<std::vector<float>> vectors;
+    for (const auto& text : texts) {
+      if (text.find("drops") != std::string::npos) {
+        vectors.push_back({1.0f, 0.0f});
+      } else if (text.find("loses") != std::string::npos) {
+        vectors.push_back({0.99f, 0.14f});
+      } else {
+        vectors.push_back({0.0f, 1.0f});
+      }
+    }
+    return vectors;
+  }
+};
+
+TEST(McpDefectDedupTest, SemanticallySimilarDefectsShareAnIssue) {
+  const auto dir = make_temp_dir();
+  auto opened = cf::store::RunStore::open(dir / "run.db");
+  ASSERT_TRUE(opened.has_value());
+  auto store = std::move(*opened);
+  cf::store::RunRecord run;
+  run.run_id = "R12";
+  run.state = "Executing";
+  run.created_at = 1;
+  ASSERT_TRUE(store->create_run(run).has_value());
+
+  FakeDefectEmbedder embedder;
+  cf::mcp::ToolDependencies dependencies;
+  dependencies.run_id = "R12";
+  dependencies.milestone_id = "M3";
+  dependencies.role = "qa";
+  dependencies.store = store.get();
+  dependencies.embedder = &embedder;
+  const ToolRegistry registry =
+      cf::mcp::build_tool_registry(std::move(dependencies));
+
+  const ToolResult first = registry.call(
+      ToolRole::Qa, "file_defect",
+      Json{{"defect_json", Json{{"test_id", "t1"},
+                                {"summary", "ring buffer drops item"},
+                                {"severity", "major"}}}});
+  ASSERT_FALSE(first.is_error) << first.text;
+  const std::string id = first.structured["id"].get<std::string>();
+
+  const ToolResult similar = registry.call(
+      ToolRole::Qa, "file_defect",
+      Json{{"defect_json", Json{{"test_id", "t2"},
+                                {"summary", "ring buffer loses item"},
+                                {"severity", "minor"}}}});
+  ASSERT_FALSE(similar.is_error) << similar.text;
+  EXPECT_EQ(similar.structured["id"], id);
+  EXPECT_EQ(similar.structured["deduplicated"], true);
+
+  const ToolResult different = registry.call(
+      ToolRole::Qa, "file_defect",
+      Json{{"defect_json", Json{{"test_id", "t3"},
+                                {"summary", "parser crash on empty input"},
+                                {"severity", "major"}}}});
+  ASSERT_FALSE(different.is_error) << different.text;
+  EXPECT_NE(different.structured["id"], id);
+
+  auto defects = store->list_defects("R12");
+  ASSERT_TRUE(defects.has_value());
+  EXPECT_EQ(defects->size(), 2u);
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
 }

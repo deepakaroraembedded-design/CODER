@@ -114,6 +114,37 @@ TEST_F(AgentIntentsTest, CollidingProvisionalIdGetsAFreshId) {
   EXPECT_TRUE(store_->get_defect("D-2").has_value());
 }
 
+TEST_F(AgentIntentsTest, SemanticDedupHonoursTheMCPResultId) {
+  cf::store::DefectRecord existing;
+  existing.id = "D-1";
+  existing.run_id = "R12";
+  existing.milestone_id = "M1";
+  existing.status = "OPEN";
+  existing.severity = "major";
+  existing.fingerprint = "old-fingerprint";
+  existing.body_json = R"({"summary":"ring buffer drops item"})";
+  ASSERT_TRUE(store_->upsert_defect(existing).has_value());
+
+  const std::vector<Json> calls = {
+      Json{{"tool", "file_defect"},
+           {"result_id", "D-1"},
+           {"result_deduplicated", true},
+           {"arguments",
+            Json{{"defect_json", Json{{"test_id", "t2"},
+                                      {"summary", "ring buffer loses item"},
+                                      {"fingerprint", "new-fingerprint"}}}}}}};
+  ASSERT_TRUE(cf::orch::apply_agent_intents(*store_, "R12", "M3", calls,
+                                            id_map_)
+                  .has_value());
+  auto all = store_->list_defects("R12");
+  ASSERT_TRUE(all.has_value());
+  EXPECT_EQ(all->size(), 1u);
+  auto updated = store_->get_defect("D-1");
+  ASSERT_TRUE(updated.has_value());
+  EXPECT_EQ(updated->status, "REOPENED");
+  EXPECT_EQ(updated->severity, "medium");
+}
+
 TEST_F(AgentIntentsTest, TestDisputeCountsAndWaiverIsRecorded) {
   std::vector<Json> first = {
       Json{{"tool", "dispute_test"},

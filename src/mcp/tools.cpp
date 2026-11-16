@@ -3,7 +3,9 @@
 #include <algorithm>
 #include <fstream>
 #include <cctype>
+#include <cmath>
 #include <cstdint>
+#include <numeric>
 #include <set>
 #include <sstream>
 #include <utility>
@@ -14,6 +16,29 @@
 
 namespace cf::mcp {
 namespace {
+
+double cosine_similarity(const std::vector<float>& left,
+                         const std::vector<float>& right) {
+  if (left.size() != right.size() || left.empty()) {
+    return 0.0;
+  }
+  double dot = 0.0;
+  double left_norm = 0.0;
+  double right_norm = 0.0;
+  for (std::size_t i = 0; i < left.size(); ++i) {
+    dot += static_cast<double>(left[i]) * right[i];
+    left_norm += static_cast<double>(left[i]) * left[i];
+    right_norm += static_cast<double>(right[i]) * right[i];
+  }
+  if (left_norm == 0.0 || right_norm == 0.0) {
+    return 0.0;
+  }
+  return dot / (std::sqrt(left_norm) * std::sqrt(right_norm));
+}
+
+std::string defect_summary(const Json& defect) {
+  return defect.value("summary", defect.value("test_id", "defect"));
+}
 
 ToolResult error_result(std::string code, std::string message) {
   ToolResult result;
@@ -717,6 +742,37 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
 
         auto existing =
             dependencies.store->find_defect_by_fingerprint(dependencies.run_id, fingerprint);
+        if (!existing.has_value() && dependencies.embedder != nullptr) {
+          const std::string summary = defect_summary(defect);
+          auto all = dependencies.store->list_defects(dependencies.run_id);
+          if (all.has_value() && !all->empty() && !summary.empty()) {
+            std::vector<std::string> texts;
+            texts.reserve(all->size() + 1);
+            texts.push_back(summary);
+            for (const auto& candidate : *all) {
+              const Json body = Json::parse(candidate.body_json, nullptr, false);
+              texts.push_back(body.is_object() ? defect_summary(body)
+                                               : candidate.id);
+            }
+            auto vectors = dependencies.embedder->embed(texts);
+            if (vectors.has_value() && vectors->size() == texts.size() &&
+                !(*vectors)[0].empty()) {
+              std::size_t best = 1;
+              double best_score = 0.0;
+              for (std::size_t i = 1; i < vectors->size(); ++i) {
+                const double score =
+                    cosine_similarity((*vectors)[0], (*vectors)[i]);
+                if (score > best_score) {
+                  best_score = score;
+                  best = i;
+                }
+              }
+              if (best_score >= dependencies.defect_dedup_threshold) {
+                existing = (*all)[best - 1];
+              }
+            }
+          }
+        }
         std::string id;
         bool deduplicated = false;
         if (existing.has_value()) {

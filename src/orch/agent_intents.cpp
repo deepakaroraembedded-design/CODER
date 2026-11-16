@@ -41,7 +41,25 @@ Status apply_file_defect(store::RunStore& store, std::string_view run_id,
       defect.value("milestone_id", std::string(milestone_id));
   const std::string severity = defect.value("severity", "medium");
 
-  auto existing = store.find_defect_by_fingerprint(run_id, fingerprint);
+  // An MCP-side semantic de-duplication returns the existing defect id; honour
+  // it even though the new payload has a different fingerprint (design
+  // section 6.10).
+  std::optional<store::DefectRecord> existing;
+  if (call.value("result_deduplicated", false)) {
+    const std::string reported = call.value("result_id", "");
+    if (!reported.empty()) {
+      auto by_id = store.get_defect(reported);
+      if (by_id.has_value()) {
+        existing = *by_id;
+      }
+    }
+  }
+  if (!existing.has_value()) {
+    auto by_fingerprint = store.find_defect_by_fingerprint(run_id, fingerprint);
+    if (by_fingerprint.has_value()) {
+      existing = *by_fingerprint;
+    }
+  }
   if (existing.has_value()) {
     store::DefectRecord record = *existing;
     record.milestone_id = milestone;

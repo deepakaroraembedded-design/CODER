@@ -108,6 +108,10 @@ struct ToolDependencies {
   // The code intelligence symbol index (design section 6.5); find_symbol and
   // get_callers read it. Null until a run indexes its code.
   const codeintel::SymbolIndex* symbols = nullptr;
+  // Optional embeddings for semantic defect de-duplication (design section
+  // 6.10); fingerprint de-duplication is always exact.
+  rag::Embedder* embedder = nullptr;
+  double defect_dedup_threshold = 0.92;
   // Gate dry-run context; run_checks returns TOOL_UNAVAILABLE when null.
   const GateCheckContext* gate_checks = nullptr;
   // Pinned reference-document versions by library (design section 6.3.1);
