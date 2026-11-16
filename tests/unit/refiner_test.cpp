@@ -19,6 +19,7 @@ using cf::orch::DesignModel;
 using cf::orch::DesignPackage;
 using cf::orch::DesignRefiner;
 using cf::orch::DesignRefinerOptions;
+using cf::orch::design_package_to_markdown;
 using cf::orch::design_package_to_plan;
 
 class ScriptedModel final : public DesignModel {
@@ -74,6 +75,13 @@ const char* kDesign = R"json({
   "adrs": [
     {"id": "ADR-001", "title": "Layered design", "decision": "Use layers",
      "alternatives": ["hexagonal"], "pattern_id": "PAT-PRODUCER-CONSUMER"}
+  ],
+  "contracts": [
+    {"component": "core", "header": "include/core.hpp",
+     "declarations": [
+       {"name": "Core", "signature": "class Core;",
+        "description": "message bus entry point"}
+     ]}
   ]
 })json";
 
@@ -190,6 +198,11 @@ TEST(RefinerTest, KeepsTheFirstDesignWhenTheCritiqueIsUnreadable) {
   auto package = refiner.refine(sample_plan());
   ASSERT_TRUE(package.has_value()) << package.error().message;
   EXPECT_EQ(package->milestones[0].title, "Core");
+  ASSERT_EQ(package->contracts.size(), 1u);
+  EXPECT_EQ(package->contracts[0].header, "include/core.hpp");
+  const std::string markdown = design_package_to_markdown(*package);
+  EXPECT_NE(markdown.find("Component contracts"), std::string::npos);
+  EXPECT_NE(markdown.find("include/core.hpp"), std::string::npos);
 }
 
 TEST(RefinerTest, KeepsTheFirstDesignWhenTheRevisionIsInvalid) {
@@ -371,6 +384,24 @@ TEST(RefinerTest, ToleratesProseAroundTheJson) {
   auto package = cf::orch::parse_design_package(text);
   ASSERT_TRUE(package.has_value()) << package.error().message;
   EXPECT_EQ(package->milestones.size(), 2u);
+}
+
+
+TEST(RefinerTest, MultiMilestoneDesignsNeedContracts) {
+  ScriptedModel model;
+  model.replies = {R"json({"system_design": "x",
+    "milestones": [
+      {"id": "M1", "requirements": ["REQ-1"], "acceptance": ["a"]},
+      {"id": "M2", "requirements": ["REQ-2"], "acceptance": ["a"], "depends_on": ["M1"]}
+    ],
+    "adrs": [{"id": "ADR-1", "title": "t", "decision": "d"}]})json",
+                   kOkCritique};
+  DesignRefiner refiner(model, nullptr,
+                        DesignRefinerOptions{"test-planner", 6, true, ""});
+  const auto package = refiner.refine(sample_plan());
+  ASSERT_FALSE(package.has_value());
+  EXPECT_NE(package.error().message.find("component contracts"),
+            std::string::npos);
 }
 
 }  // namespace

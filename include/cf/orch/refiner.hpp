@@ -57,6 +57,21 @@ struct DesignMilestone {
   std::vector<std::string> writes_interfaces;
 };
 
+// A component-level interface contract (design section 6.2 step 3): the
+// header the component publishes and the declarations other milestones may
+// rely on.
+struct DesignContractDeclaration {
+  std::string name;
+  std::string signature;
+  std::string description;
+};
+
+struct DesignContract {
+  std::string component;
+  std::string header;  // repository-relative path
+  std::vector<DesignContractDeclaration> declarations;
+};
+
 // The design package (stored as runs/<run>/design.json).
 struct DesignPackage {
   std::string plan_id;
@@ -65,6 +80,7 @@ struct DesignPackage {
   std::string system_design;
   std::vector<DesignMilestone> milestones;
   std::vector<DesignAdr> adrs;
+  std::vector<DesignContract> contracts;
 };
 
 // The planner model. Production wraps llm::FireworksClient::chat; tests

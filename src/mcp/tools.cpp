@@ -1,6 +1,7 @@
 #include "cf/mcp/tools.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <cctype>
 #include <cstdint>
 #include <set>
@@ -569,6 +570,17 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
                       hits->end());
         }
         if (hits->empty()) {
+          if (!dependencies.reference_gaps_file.empty()) {
+            std::ofstream gaps(dependencies.reference_gaps_file,
+                               std::ios::app | std::ios::binary);
+            if (gaps) {
+              gaps << Json{{"library", library},
+                           {"version", version},
+                           {"query", arguments.at("query").get<std::string>()}}
+                          .dump()
+                   << "\n";
+            }
+          }
           ToolResult result;
           result.text = "not covered by the offline reference mirror";
           result.structured = Json{{"covered", false}, {"hits", Json::array()}};

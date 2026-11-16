@@ -3,6 +3,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -854,6 +855,30 @@ TEST(McpReadOnlyStoreTest, WriteToolsBecomePendingIntents) {
   EXPECT_FALSE(waiver.is_error) << waiver.text;
   EXPECT_EQ(waiver.structured["status"], "PENDING");
 
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
+
+TEST(McpReferenceGapTest, UncoveredLookupIsLoggedForEscalation) {
+  const auto dir = make_temp_dir();
+  auto retriever = std::make_shared<cf::rag::InMemoryRetriever>();
+  cf::mcp::ToolDependencies dependencies;
+  dependencies.reference_gaps_file = dir / "reference-gaps.jsonl";
+  dependencies.retriever = retriever.get();
+  const ToolRegistry registry =
+      cf::mcp::build_tool_registry(std::move(dependencies));
+  const ToolResult result = registry.call(
+      ToolRole::Coder, "lookup_reference",
+      Json{{"query", "stable_sort"}, {"library", "cppreference"}});
+  ASSERT_FALSE(result.is_error);
+  EXPECT_EQ(result.structured["covered"], false);
+  std::ifstream in(dir / "reference-gaps.jsonl");
+  ASSERT_TRUE(in.good());
+  const Json line = Json::parse(in, nullptr, false);
+  ASSERT_TRUE(line.is_object());
+  EXPECT_EQ(line["library"], "cppreference");
+  EXPECT_EQ(line["query"], "stable_sort");
   std::error_code ec;
   std::filesystem::remove_all(dir, ec);
 }

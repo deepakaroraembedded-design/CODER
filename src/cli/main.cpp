@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -374,20 +375,99 @@ int main(int argc, char** argv) {
       std::cerr << plan.error().code << ": " << plan.error().message << "\n";
       return 2;
     }
-    for (const auto& [role, model] : plan->role_models) {
-      options.role_models[role] = model;
-    }
     const std::string provider =
         inference.empty() ? plan->inference : inference;
-    if (provider != "fireworks") {
+    const std::string default_provider =
+        file_config.models.default_provider.empty()
+            ? std::string("fireworks")
+            : file_config.models.default_provider;
+    if (provider != default_provider) {
       const auto endpoint = file_config.providers.find(provider);
       if (endpoint == file_config.providers.end()) {
-        std::cerr << "plan inference '" << provider
-                  << "' has no providers entry in cf.yaml\n";
-        return 2;
+        if (provider != "fireworks") {
+          std::cerr << "plan inference '" << provider
+                    << "' has no providers entry in cf.yaml\n";
+          return 2;
+        }
+        options.provider_base_url = "https://api.fireworks.ai/inference/v1";
+        options.api_key_env = "FIREWORKS_API_KEY";
+      } else {
+        options.provider_base_url = endpoint->second.base_url;
+        options.api_key_env = endpoint->second.api_key_env;
       }
-      options.provider_base_url = endpoint->second.base_url;
-      options.api_key_env = endpoint->second.api_key_env;
+      const std::map<std::string, std::string, std::less<>> pinned = {
+          {"coder", "accounts/fireworks/models/deepseek-v4p1-flash"},
+          {"reviewer", "accounts/fireworks/models/kimi-k3"},
+          {"qa", "accounts/fireworks/models/glm-5p3"}};
+      // Role models and embeddings are provider-specific; never mix the
+      // default provider's Fireworks ids into a local-vLLM run (design
+      // section 13.1).
+      std::set<std::string> explicit_roles;
+      for (const auto& override : model_overrides) {
+        const std::size_t equals = override.find('=');
+        if (equals != std::string::npos) {
+          explicit_roles.insert(override.substr(0, equals));
+        }
+      }
+      for (const auto& [role, spec] : file_config.models.roles) {
+        if (explicit_roles.count(role) > 0) {
+          continue;
+        }
+        const auto id = spec.ids.find(provider);
+        if (id == spec.ids.end()) {
+          if (provider == "fireworks" && pinned.count(role) > 0) {
+            options.role_models[role] = pinned.at(role);
+            continue;
+          }
+          if (role == "planner") {
+            continue;  // planner falls back to the coder model
+          }
+          std::cerr << "models.roles." << role << " has no '" << provider
+                    << "' model id\n";
+          return 2;
+        }
+        options.role_models[role] = id->second;
+      }
+      // Embeddings for the selected provider, or BM25-only when the provider
+      // has no embedding entry.
+      auto embedding = file_config.models.embeddings.find(provider);
+      if (embedding == file_config.models.embeddings.end()) {
+        const std::string prefix = provider + "-";
+        for (auto it = file_config.models.embeddings.begin();
+             it != file_config.models.embeddings.end(); ++it) {
+          if (it->first.rfind(prefix, 0) == 0) {
+            embedding = it;
+            break;
+          }
+        }
+      }
+      if (embedding != file_config.models.embeddings.end()) {
+        const auto embedding_provider =
+            file_config.providers.find(embedding->first);
+        if (embedding_provider == file_config.providers.end() &&
+            embedding->first != "fireworks") {
+          std::cerr << "models.embeddings." << embedding->first
+                    << " has no providers entry\n";
+          return 2;
+        }
+        options.embeddings_model = embedding->second.model;
+        options.embeddings_dim = embedding->second.dim;
+        if (embedding_provider != file_config.providers.end()) {
+          options.embeddings_base_url = embedding_provider->second.base_url;
+          options.embeddings_api_key_env =
+              embedding_provider->second.api_key_env;
+        } else {
+          options.embeddings_base_url =
+              "https://api.fireworks.ai/inference/v1";
+          options.embeddings_api_key_env = "FIREWORKS_API_KEY";
+        }
+      } else {
+        options.embeddings_model.clear();
+        options.embeddings_dim.reset();
+      }
+    }
+    for (const auto& [role, model] : plan->role_models) {
+      options.role_models[role] = model;
     }
     for (const auto& override : model_overrides) {
       const std::size_t equals = override.find('=');

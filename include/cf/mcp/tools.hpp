@@ -114,6 +114,9 @@ struct ToolDependencies {
   // lookup_reference uses it when the agent omits the version.
   const std::map<std::string, std::string, std::less<>>* reference_versions =
       nullptr;
+  // JSONL log of lookup_reference misses for the reference-gap escalation
+  // (design section 6.3.1); empty disables it.
+  std::filesystem::path reference_gaps_file;
   // Business-day deadline for a request_waiver request (design section
   // 12.1); defaults to two business days.
   std::uint32_t waiver_deadline_business_days = 2;

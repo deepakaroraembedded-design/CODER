@@ -560,6 +560,9 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   spec.calls_file =
       sandboxed ? "/cf/agent/" + calls_file.filename().string()
                 : calls_file.string();
+  spec.reference_gaps_file =
+      sandboxed ? "/cf/agent/reference-gaps.jsonl"
+                : (agent_root / "reference-gaps.jsonl").string();
 
   // The writable mount points must exist before the container starts,
   // otherwise Docker creates them root-owned and the agent cannot write.

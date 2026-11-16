@@ -81,6 +81,18 @@ Result<RunReport> write_run_report(store::RunStore& store,
     }
   }
 
+  Json reference_gaps = Json::array();
+  {
+    std::ifstream gaps(run_dir / "agent" / "reference-gaps.jsonl");
+    std::string line;
+    while (std::getline(gaps, line)) {
+      const Json parsed = Json::parse(line, nullptr, false);
+      if (parsed.is_object()) {
+        reference_gaps.push_back(parsed);
+      }
+    }
+  }
+
   Json escalations = Json::array();
   const std::filesystem::path escalation_dir = run_dir / "escalations";
   std::error_code ec;
@@ -112,6 +124,7 @@ Result<RunReport> write_run_report(store::RunStore& store,
        Json{{"by_role", summary->agent_usage_by_role},
             {"by_milestone", summary->agent_usage_by_milestone}}},
       {"conflicts", std::move(conflicts)},
+      {"reference_gaps", std::move(reference_gaps)},
       {"metrics", std::move(metrics)},
       {"otlp_metrics", std::move(otlp)},
       {"escalations", std::move(escalations)}};

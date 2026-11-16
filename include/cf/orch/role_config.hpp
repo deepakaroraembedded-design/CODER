@@ -57,6 +57,7 @@ struct RoleConfigSpec {
   std::string embeddings_api_key_env;
   std::uint32_t waiver_deadline_business_days = 0;  // 0: omit the flag
   std::string calls_file;  // CF_MCP_CALLS_FILE for this role
+  std::string reference_gaps_file;  // CF_REFERENCE_GAPS_FILE for this role
   // Agent-side gate dry run (run_checks, design section 9.1). Empty
   // profile_path leaves the tool unavailable.
   std::string profile_path;

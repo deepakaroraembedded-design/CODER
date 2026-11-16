@@ -365,6 +365,10 @@ int main(int argc, char** argv) {
   }
   if (!reference_versions.empty()) {
     dependencies.reference_versions = &reference_versions;
+  if (const char* gaps = std::getenv("CF_REFERENCE_GAPS_FILE");
+      gaps != nullptr && *gaps != '\0') {
+    dependencies.reference_gaps_file = gaps;
+  }
   }
   const cf::mcp::ToolRegistry registry =
       cf::mcp::build_tool_registry(std::move(dependencies));

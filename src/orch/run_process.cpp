@@ -1,6 +1,7 @@
 #include "cf/orch/run_process.hpp"
 
 #include <algorithm>
+#include <fstream>
 #include <memory>
 #include <string_view>
 #include <system_error>
@@ -621,6 +622,7 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   }
 
   uint32_t validation_failures = 0;
+  std::set<std::string> escalated_reference_gaps;
   for (int step = 0; step < 100000; ++step) {
     // Waiting for a person: an agent waiver request pauses the run before
     // another turn (design section 12.1). The request has its own deadline;
@@ -762,6 +764,42 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
       auto synced = defect_export->sync(config_.run_id, epoch, now);
       if (!synced) {
         return tl::make_unexpected(synced.error());
+      }
+    }
+
+    // Repeated reference-mirror gaps for the same library are escalated so a
+    // person can add the set to the manifest (design section 6.3.1).
+    if (state == RunState::Executing) {
+      std::map<std::string, int, std::less<>> gap_counts;
+      std::ifstream gaps(run_dir / "agent" / "reference-gaps.jsonl");
+      for (std::string line; std::getline(gaps, line);) {
+        const auto parsed = nlohmann::json::parse(line, nullptr, false);
+        if (!parsed.is_object()) {
+          continue;
+        }
+        const std::string library = parsed.value("library", "");
+        if (!library.empty()) {
+          ++gap_counts[library];
+        }
+      }
+      for (const auto& [library, count] : gap_counts) {
+        if (count < 3 || escalated_reference_gaps.count(library) > 0) {
+          continue;
+        }
+        escalated_reference_gaps.insert(library);
+        const std::string reason =
+            "the reference mirror repeatedly lacks '" + library + "' (" +
+            std::to_string(count) + " lookups)";
+        if (!config_.orchestrator.escalation_dir.empty()) {
+          (void)write_escalation_bundle(
+              store_, config_.run_id, config_.orchestrator.escalation_dir,
+              reason, now);
+        }
+        const auto applied = machine.apply(RunEvent::NoProgress, {}, now);
+        if (!applied) {
+          return tl::make_unexpected(applied.error());
+        }
+        return *applied;
       }
     }
 

@@ -166,7 +166,8 @@ nlohmann::json build_role_config(const RoleConfigSpec& spec) {
     config["mcp"]["cf"]["environment"] = Json{
         {"CF_MCP_CALLS_FILE", spec.calls_file},
         {"CF_MCP_ROLE", spec.role},
-        {"CF_MCP_READ_ONLY", "1"}};
+        {"CF_MCP_READ_ONLY", "1"},
+        {"CF_REFERENCE_GAPS_FILE", spec.reference_gaps_file}};
   }
   return config;
 }

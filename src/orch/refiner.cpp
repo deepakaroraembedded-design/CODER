@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 #include <yaml-cpp/yaml.h>
 
+#include "cf/common/path.hpp"
 #include "cf/rag/catalog.hpp"
 #include "cf/rag/retriever.hpp"
 
@@ -68,6 +69,35 @@ DesignMilestone milestone_from_json(const Json& node) {
   return milestone;
 }
 
+Json contract_to_json(const DesignContract& contract) {
+  Json declarations = Json::array();
+  for (const auto& declaration : contract.declarations) {
+    declarations.push_back(Json{{"name", declaration.name},
+                                {"signature", declaration.signature},
+                                {"description", declaration.description}});
+  }
+  return Json{{"component", contract.component},
+              {"header", contract.header},
+              {"declarations", std::move(declarations)}};
+}
+
+DesignContract contract_from_json(const Json& node) {
+  DesignContract contract;
+  contract.component = node.value("component", "");
+  contract.header = node.value("header", "");
+  for (const auto& item : node.value("declarations", Json::array())) {
+    if (!item.is_object()) {
+      continue;
+    }
+    DesignContractDeclaration declaration;
+    declaration.name = item.value("name", "");
+    declaration.signature = item.value("signature", "");
+    declaration.description = item.value("description", "");
+    contract.declarations.push_back(std::move(declaration));
+  }
+  return contract;
+}
+
 Json package_to_json(const DesignPackage& package) {
   Json milestones = Json::array();
   for (const auto& milestone : package.milestones) {
@@ -81,12 +111,17 @@ Json package_to_json(const DesignPackage& package) {
                         {"alternatives", adr.alternatives},
                         {"pattern_id", adr.pattern_id}});
   }
+  Json contracts = Json::array();
+  for (const auto& contract : package.contracts) {
+    contracts.push_back(contract_to_json(contract));
+  }
   return Json{{"plan_id", package.plan_id},
               {"product", package.product},
               {"model", package.model},
               {"system_design", package.system_design},
               {"milestones", std::move(milestones)},
-              {"adrs", std::move(adrs)}};
+              {"adrs", std::move(adrs)},
+              {"contracts", std::move(contracts)}};
 }
 
 std::string plan_summary(const plan::Plan& plan) {
@@ -126,6 +161,9 @@ Rules:
   be complete enough that independent milestones can run in parallel without
   touching the same files or interfaces (design section 6.13.2).
 - Give every milestone concrete entry/exit acceptance criteria.
+- A multi-milestone design publishes component contracts: for each public
+  component interface, name the component, its repo-relative header path and
+  the declarations other milestones may rely on (name, signature, purpose).
 - Record at least one ADR per component-level pattern or interface choice,
   and give every ADR a `pattern_id` from the pattern catalog.
 - Respect the plan's forbidden constraints and the retrieved company
@@ -204,6 +242,11 @@ Result<DesignPackage> parse_design_package(std::string_view text) {
   package.system_design = node.value("system_design", "");
   for (const auto& item : node.value("milestones", Json::array())) {
     package.milestones.push_back(milestone_from_json(item));
+  }
+  for (const auto& item : node.value("contracts", Json::array())) {
+    if (item.is_object()) {
+      package.contracts.push_back(contract_from_json(item));
+    }
   }
   for (const auto& item : node.value("adrs", Json::array())) {
     DesignAdr adr;
@@ -310,6 +353,34 @@ Status validate_design_package(const DesignPackage& package, const plan::Plan& p
   if (package.adrs.empty()) {
     return fail(error_codes::kDesignInvalid, "the design has no ADRs");
   }
+  // Multi-milestone designs publish component contracts (design section 6.2
+  // step 3); each declaration must be usable by another milestone.
+  if (package.milestones.size() > 1 && package.contracts.empty()) {
+    return fail(error_codes::kDesignInvalid,
+                "the design has no component contracts");
+  }
+  for (const auto& contract : package.contracts) {
+    if (contract.component.empty() || contract.header.empty()) {
+      return fail(error_codes::kDesignInvalid,
+                  "a component contract needs a component and a header path");
+    }
+    if (!cf::common::is_safe_relative_path(contract.header)) {
+      return fail(error_codes::kDesignInvalid,
+                  "contract header must be repository-relative: " +
+                      contract.header);
+    }
+    if (contract.declarations.empty()) {
+      return fail(error_codes::kDesignInvalid,
+                  "contract for " + contract.component +
+                      " has no declarations");
+    }
+    for (const auto& declaration : contract.declarations) {
+      if (declaration.name.empty() || declaration.signature.empty()) {
+        return fail(error_codes::kDesignInvalid,
+                    "contract declaration needs a name and a signature");
+      }
+    }
+  }
   std::set<std::string> adr_ids;
   for (const auto& adr : package.adrs) {
     if (adr.id.empty() || adr.title.empty() || adr.decision.empty()) {
@@ -373,6 +444,18 @@ std::string design_package_to_markdown(const DesignPackage& package) {
     out << "- Acceptance criteria:\n";
     for (const auto& criterion : milestone.acceptance) {
       out << "  - " << criterion << "\n";
+    }
+    out << "\n";
+  }
+  out << "## Component contracts\n\n";
+  for (const auto& contract : package.contracts) {
+    out << "### " << contract.component << " — `" << contract.header << "`\n\n";
+    for (const auto& declaration : contract.declarations) {
+      out << "- `" << declaration.signature << "`";
+      if (!declaration.description.empty()) {
+        out << " — " << declaration.description;
+      }
+      out << "\n";
     }
     out << "\n";
   }
@@ -565,6 +648,13 @@ std::string DesignRefiner::design_prompt(const plan::Plan& plan) const {
          "  \"adrs\": [\n"
          "    {\"id\": \"ADR-001\", \"title\": \"...\", \"decision\": \"...\",\n"
          "     \"alternatives\": [\"...\"], \"pattern_id\": \"<catalog id>\"}\n"
+         "  ],\n"
+         "  \"contracts\": [\n"
+         "    {\"component\": \"...\", \"header\": \"include/<name>.hpp\",\n"
+         "     \"declarations\": [\n"
+         "       {\"name\": \"...\", \"signature\": \"<declaration>\",\n"
+         "        \"description\": \"...\"}\n"
+         "     ]}\n"
          "  ]\n"
          "}\n";
   return out.str();
