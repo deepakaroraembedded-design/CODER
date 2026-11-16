@@ -61,6 +61,7 @@ add_executable(cf_unit_tests
   treesitter_python_test.cpp
   treesitter_go_test.cpp
   mcp_tools_test.cpp
+  mcp_http_test.cpp
   eval_test.cpp
   eval_benchmark_test.cpp
   eval_run_executor_test.cpp
@@ -92,6 +93,7 @@ target_link_libraries(cf_unit_tests PRIVATE
   cf_rag
   cf_codeintel
   cf_mcp_tools
+  cf_mcp_stdio
   cf_refmirror
   cf_git
   cf_cli

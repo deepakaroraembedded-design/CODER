@@ -8,6 +8,9 @@
 // Every tools/call is appended as one JSON line to CF_MCP_CALLS_FILE when that
 // environment variable is set, so the orchestrator can observe the agent's
 // structured submissions. The Phase 0a harness spike lives in cf-mcp-spike.
+#include <atomic>
+#include <chrono>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -15,6 +18,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <thread>
 
 #include <CLI/CLI.hpp>
 #include <nlohmann/json.hpp>
@@ -22,6 +26,7 @@
 #include <spdlog/spdlog.h>
 
 #include "cf/codeintel/symbol_index.hpp"
+#include "cf/mcp/http_server.hpp"
 #include "cf/mcp/stdio_server.hpp"
 #include "cf/mcp/tools.hpp"
 #include "cf/rag/embedder.hpp"
@@ -165,6 +170,15 @@ int main(int argc, char** argv) {
                  "Environment variable holding the embeddings API key");
   app.add_option("--waiver-deadline-days", waiver_deadline_days,
                  "Business-day deadline for request_waiver (default 2)");
+  bool http_only = false;
+  app.add_flag("--http", http_only,
+               "Serve only the streamable-HTTP transport (POST /mcp)");
+  std::string http_host = "127.0.0.1";
+  app.add_option("--http-host", http_host,
+                 "HTTP bind address (default 127.0.0.1)");
+  std::uint16_t http_port = 0;
+  app.add_option("--http-port", http_port,
+                 "HTTP port (0 picks a free port); also starts HTTP next to stdio");
   CLI11_PARSE(app, argc, argv);
 
   spdlog::set_default_logger(spdlog::stderr_color_mt("cf-mcp"));
@@ -432,6 +446,30 @@ int main(int argc, char** argv) {
                  json{{"code", -32601}, {"message", "method not found: " + method}}}};
   };
 
+  std::unique_ptr<cf::mcp::HttpServer> http;
+  if (http_only || http_port != 0) {
+    auto started = cf::mcp::HttpServer::start(http_host, http_port, handler);
+    if (!started) {
+      spdlog::error("cf-mcp: {}", started.error().message);
+      return 2;
+    }
+    http = std::move(*started);
+    spdlog::info("cf-mcp HTTP listening on {}:{}", http_host, http->port());
+  }
+  if (http_only) {
+    static volatile std::sig_atomic_t stop_requested = 0;
+    std::signal(SIGINT, [](int) { stop_requested = 1; });
+    std::signal(SIGTERM, [](int) { stop_requested = 1; });
+    while (stop_requested == 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    http->stop();
+    return 0;
+  }
   cf::mcp::StdioServer server(handler);
-  return server.run();
+  const int result = server.run();
+  if (http) {
+    http->stop();
+  }
+  return result;
 }

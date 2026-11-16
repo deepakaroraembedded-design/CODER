@@ -110,10 +110,12 @@ target_link_libraries(cf_agents PUBLIC
 
 # cf-mcp: MCP server over stdio
 add_library(cf_mcp_stdio STATIC
-  src/mcp/stdio_server.cpp)
+  src/mcp/stdio_server.cpp
+  src/mcp/http_server.cpp)
 target_link_libraries(cf_mcp_stdio PUBLIC
   cf_common
   cf_telemetry
+  Boost::system
   nlohmann_json::nlohmann_json
   spdlog::spdlog)
 
