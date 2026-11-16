@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """Hidden recovery checks for the crash scenario (design section 6.12.5).
 
 After the injected SIGKILL and the resume, the run must be Done, every
@@ -11,6 +12,13 @@ import os
 import sqlite3
 import subprocess
 import sys
+
+
+def _cf_write_hidden_result(tests, passed):
+    path = os.environ.get("CF_HIDDEN_RESULT")
+    if path:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write('{"tests": %d, "passed": %d}\n' % (tests, passed))
 
 
 def main():
@@ -59,6 +67,7 @@ def main():
     check(len(milestone_commits) == len(set(milestone_commits)))
 
     print('{"tests": %d, "passed": %d}' % (tests, passed))
+    _cf_write_hidden_result(tests, passed)
     return 0 if passed == tests else 1
 
 

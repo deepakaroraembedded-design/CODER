@@ -358,6 +358,7 @@ Result<orch::DesignPackage> refine_or_load(
     llm::ClientOptions client_options;
     client_options.base_url = options.provider_base_url;
     client_options.api_key = key;
+    client_options.prices = llm::default_prices();
     // Encrypted prompt/response archive and the cost ledger (design
     // sections 6.11, 14). The key is CF_ARCHIVE_KEY; without it the archive
     // is skipped, while the ledger is always recorded.
@@ -432,6 +433,7 @@ Result<orch::DesignPackage> refine_or_load(
         llm::ClientOptions embedding_options;
         embedding_options.base_url = options.embeddings_base_url;
         embedding_options.api_key = key;
+        embedding_options.prices = llm::default_prices();
         llm::UsageCallback on_call;
         if (store != nullptr) {
           on_call = [store](const llm::CallRecord& record) {
@@ -2332,10 +2334,25 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
       return 1;
     }
   } else {
+    // --skip-refinement must not approve a design package on the operator's
+    // behalf. If a package exists (an earlier refinement finished or was
+    // sent back), require the explicit human approval path (B-34).
+    std::error_code design_ec;
+    const bool design_exists =
+        std::filesystem::exists(directory / "design.json", design_ec);
     for (int step = 0; step < 8; ++step) {
       const orch::RunState state = machine.current();
       if (state == orch::RunState::Executing) {
         break;
+      }
+      if (design_exists &&
+          (state == orch::RunState::Refining ||
+           state == orch::RunState::AwaitingDesignApproval)) {
+        err << "run " << options.run_id
+            << " already has a design package; review it and run:\n"
+            << "  cf approve --run " << options.run_id
+            << " --stage design [--request-changes --reason ...]\n";
+        return 1;
       }
       if (state == orch::RunState::Created || state == orch::RunState::Ingesting ||
           state == orch::RunState::Refining ||
@@ -2511,9 +2528,9 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
   // Clang's AST is the primary C/C++ back end; the tree-sitter factories stay
   // linked as the fallback for projects Clang cannot parse.
   codeintel_backends.add(
-      codeintel::make_clang_backend("c", {".c"}));
+      codeintel::make_clang_backend("c", {".c"}, effective.target.standard));
   codeintel_backends.add(codeintel::make_clang_backend(
-      "cpp", {".cc", ".cpp", ".cxx", ".c++", ".cp"}));
+      "cpp", {".cc", ".cpp", ".cxx", ".c++", ".cp"}, effective.target.standard));
 #else
   codeintel_backends.add(codeintel::make_c_backend());
   codeintel_backends.add(codeintel::make_cpp_backend());

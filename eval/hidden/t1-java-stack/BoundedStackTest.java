@@ -23,6 +23,19 @@ public final class BoundedStackTest {
     }
   }
 
+
+  private static void writeHiddenResult(int tests, int passed) {
+    String path = System.getenv("CF_HIDDEN_RESULT");
+    if (path == null || path.isEmpty()) {
+      return;
+    }
+    String json = "{\"tests\":" + tests + ",\"passed\":" + passed + "}";
+    try {
+      java.nio.file.Files.writeString(java.nio.file.Path.of(path), json);
+    } catch (java.io.IOException ignored) {
+    }
+  }
+
   public static void main(String[] args) {
     BoundedStack<Integer> stack = new BoundedStack<>(2);
     check(stack.isEmpty(), "new stack is empty");
@@ -40,6 +53,7 @@ public final class BoundedStackTest {
                      IllegalArgumentException.class),
           "non-positive capacity throws");
     System.out.println("{\"tests\":" + tests + ",\"passed\":" + passed + "}");
+    writeHiddenResult(tests, passed);
     if (passed != tests) {
       System.exit(1);
     }

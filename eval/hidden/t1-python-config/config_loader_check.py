@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+
 """Hidden acceptance checks for the layered config loader (design 17.2).
 
 Runs against the integration worktree: imports src/config_loader and checks
@@ -11,6 +12,13 @@ import json
 import os
 import sys
 import tempfile
+
+
+def _cf_write_hidden_result(tests, passed):
+    path = os.environ.get("CF_HIDDEN_RESULT")
+    if path:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write('{"tests": %d, "passed": %d}\n' % (tests, passed))
 
 
 def main():
@@ -37,6 +45,7 @@ def main():
     except Exception as error:  # noqa: BLE001 - report any import failure
         print("cannot import config_loader: %s" % error, file=sys.stderr)
         print('{"tests": 1, "passed": 0}')
+        _cf_write_hidden_result(1, 0)
         return 1
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -105,6 +114,7 @@ def main():
         case(not_an_object)
 
     print('{"tests": %d, "passed": %d}' % (checks, passed))
+    _cf_write_hidden_result(checks, passed)
     return 0 if passed == checks else 1
 
 

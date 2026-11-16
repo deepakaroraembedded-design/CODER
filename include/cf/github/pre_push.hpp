@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -23,6 +24,10 @@ struct PrePushConfig {
   uint64_t max_file_mb = 5;
   bool allow_binaries = false;
   std::vector<std::string> required_trailers = {"CF-Run", "CF-Milestone", "CF-Op"};
+  // Trailer values that must match exactly on every pushed commit (for
+  // example CF-Run against the run being pushed); an empty map only checks
+  // presence (B-25).
+  std::map<std::string, std::string, std::less<>> expected_trailers;
   // Design section 10.4.6 check 7: when true, every commit in
   // base_branch..commit must carry an SSH/GPG signature. base_branch is a
   // ref or commit (the run's base branch); when it does not resolve, only the

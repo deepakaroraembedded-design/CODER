@@ -24,4 +24,8 @@ let rejected = false;
 try { new LineItem('X', 0, new Money(1)); } catch (error) { rejected = error instanceof TypeError; }
 check(rejected, 'rejects zero quantity');
 console.log(JSON.stringify({ tests, passed }));
+const _cfResultPath = process.env.CF_HIDDEN_RESULT;
+if (_cfResultPath) {
+  require('fs').writeFileSync(_cfResultPath, JSON.stringify({ tests, passed }));
+}
 process.exit(passed === tests ? 0 : 1);

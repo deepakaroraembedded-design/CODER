@@ -244,7 +244,8 @@ TEST_F(MilestoneLoopTest, HappyPathReachesDone) {
       MilestonePhase::AuthorTests, MilestonePhase::Code, MilestonePhase::Review,
       MilestonePhase::Validate, MilestonePhase::Integrate};
   EXPECT_EQ(driver.phases, expected);
-  EXPECT_EQ(driver.gate_runs, 1);
+  // Three consecutive test passes (design section 11.1 item 3).
+  EXPECT_EQ(driver.gate_runs, 3);
 
   const auto stored = store_->get_milestone("R12", "M3");
   ASSERT_TRUE(stored.has_value());
@@ -369,7 +370,7 @@ TEST_F(MilestoneLoopTest, TestDisputeIsDecidedByQaBeforeGating) {
       MilestonePhase::AuthorTests, MilestonePhase::Code,     MilestonePhase::Review,
       MilestonePhase::Validate,    MilestonePhase::Integrate};
   EXPECT_EQ(driver.phases, expected);
-  EXPECT_EQ(driver.gate_runs, 1);
+  EXPECT_EQ(driver.gate_runs, 3);
 }
 
 TEST_F(MilestoneLoopTest, RevalidationTestFailureIsRepairedByQa) {
@@ -396,8 +397,10 @@ TEST_F(MilestoneLoopTest, RevalidationTestFailureIsRepairedByQa) {
 
   EXPECT_EQ(drive(driver), MilestoneState::Done);
   EXPECT_EQ(driver.test_repairs, 1);
-  // Revalidation gated twice (failed, repaired, passed) plus the first run.
-  EXPECT_EQ(driver.gate_runs, 3);
+  // Revalidation gated twice (failed, repaired, passed), plus the first
+  // run's one Gating pass and two stability repeats, plus two stability
+  // repeats after revalidation.
+  EXPECT_EQ(driver.gate_runs, 7);
 }
 
 TEST_F(MilestoneLoopTest, RevalidationBuildFailureGoesToTheCoder) {
@@ -636,7 +639,7 @@ TEST_F(MilestoneLoopTest, RevalidatingRerunsGates) {
                                                 MilestonePhase::Validate,
                                                 MilestonePhase::Integrate};
   EXPECT_EQ(driver.phases, expected);
-  EXPECT_EQ(driver.gate_runs, 1);
+  EXPECT_EQ(driver.gate_runs, 3);
 }
 
 TEST_F(MilestoneLoopTest, RebaseConflictReturnsToFix) {
@@ -650,8 +653,13 @@ TEST_F(MilestoneLoopTest, RebaseConflictReturnsToFix) {
                     FakeDriver::completed_turn(),     // review: approved
                     FakeDriver::exit_criteria_met(),  // validate
                     FakeDriver::merged()};            // integrate
-  driver.gate_scripts = {FakeDriver::gates_pass(true, {code_change()}),
-                         FakeDriver::gates_pass(false, {code_change(4, 1)})};
+  driver.gate_scripts = {
+      FakeDriver::gates_pass(true, {code_change()}),
+      FakeDriver::gates_pass(true, {code_change()}),
+      FakeDriver::gates_pass(true, {code_change()}),
+      FakeDriver::gates_pass(false, {code_change(4, 1)}),
+      FakeDriver::gates_pass(false, {code_change(4, 1)}),
+      FakeDriver::gates_pass(false, {code_change(4, 1)})};
 
   EXPECT_EQ(drive(driver), MilestoneState::Done);
   const auto stored = store_->get_milestone("R12", "M3");

@@ -14,6 +14,7 @@ namespace cf::codeintel {
 // backend indexes. Falls back to the tree-sitter back end when a translation
 // unit cannot be parsed.
 std::unique_ptr<LanguageBackend> make_clang_backend(
-    std::string language, std::vector<std::string> extensions);
+    std::string language, std::vector<std::string> extensions,
+    std::string standard = "");
 
 }  // namespace cf::codeintel

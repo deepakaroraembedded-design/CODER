@@ -101,8 +101,24 @@ std::vector<std::filesystem::path> extract_document_files(
 }
 
 struct TempDirectory {
+  explicit TempDirectory(const std::filesystem::path& preferred) {
+    std::error_code error;
+    std::filesystem::create_directories(preferred.parent_path(), error);
+    std::string pattern =
+        (preferred.parent_path() /
+         (preferred.filename().string() + "-XXXXXX")).string();
+    std::vector<char> buffer(pattern.begin(), pattern.end());
+    buffer.push_back('\0');
+    char* created = ::mkdtemp(buffer.data());
+    if (created != nullptr) {
+      path = created;
+    }
+  }
   std::filesystem::path path;
   ~TempDirectory() {
+    if (path.empty()) {
+      return;
+    }
     std::error_code error;
     std::filesystem::remove_all(path, error);
   }
@@ -416,13 +432,18 @@ Result<MirrorReport> run_mirror(const Manifest& manifest, const MirrorOptions& o
           options.executor != nullptr ? *options.executor : local_executor;
       std::vector<std::string> argv;
       if (suffix == ".zip") {
-        argv = {"unzip", "-q", archive.string(), "-d", extracted.string()};
+        argv = {"unzip", "-q", "-o", archive.string(), "-d",
+                extracted.string()};
       } else {
-        std::string flag = "-xf";
-        if (suffix == ".tar.gz" || suffix == ".tgz") flag = "-xzf";
-        if (suffix == ".tar.bz2" || suffix == ".tbz2") flag = "-xjf";
-        if (suffix == ".tar.xz" || suffix == ".txz") flag = "-xJf";
-        argv = {"tar", flag, archive.string(), "-C", extracted.string()};
+        argv = {"tar", "--extract", "--file", archive.string(), "--directory",
+                extracted.string(), "--no-same-owner", "--no-same-permissions"};
+        if (suffix == ".tar.gz" || suffix == ".tgz") {
+          argv.insert(argv.begin() + 1, "--gzip");
+        } else if (suffix == ".tar.bz2" || suffix == ".tbz2") {
+          argv.insert(argv.begin() + 1, "--bzip2");
+        } else if (suffix == ".tar.xz" || suffix == ".txz") {
+          argv.insert(argv.begin() + 1, "--xz");
+        }
       }
       if (!run_extractor(executor, argv, extracted, options.timeout)) {
         entry.status = "extract_failed";

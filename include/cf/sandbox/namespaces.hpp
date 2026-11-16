@@ -24,7 +24,10 @@ namespace cf::sandbox {
 
 struct NamespaceSandboxSpec {
   std::string worktree;                     // mounted read-only at /work
-  std::vector<std::string> writable_paths;  // relative to the worktree
+  std::vector<std::string> writable_paths;  // relative to the worktree (dirs)
+  // Relative write-set entries that are files, not directories; a missing
+  // root file (Makefile, pom.xml, ...) is created as a file (design 6.8.1).
+  std::vector<std::string> writable_files;
   // Additional read-only bind mounts, e.g. a dependency cache.
   std::vector<std::pair<std::string, std::string>> extra_readonly_mounts;
   // Additional writable bind mounts, e.g. the run directory shared with the
@@ -64,6 +67,9 @@ class NamespaceExecutor final : public process::ProcessExecutor {
 
   NamespaceSandboxSpec spec_;
   std::array<std::atomic<pid_t>, kMaxChildren> children_{};
+  // A pidfd per live child pins the pid so a concurrent stop() can never
+  // signal a recycled pid. 0: free slot, -1: no pidfd (fallback to kill).
+  std::array<std::atomic<int>, kMaxChildren> child_fds_{};
   std::atomic<bool> stopping_{false};
 };
 

@@ -36,12 +36,23 @@ using nlohmann::json;
 
 const char* kProtocolVersion = "2025-06-18";
 
-void record_call(const std::string& tool, const json& arguments) {
+void record_call(const std::string& tool, const json& arguments,
+                 const cf::mcp::ToolResult& result) {
   const char* path = std::getenv("CF_MCP_CALLS_FILE");
   if (path == nullptr || *path == '\0') {
     return;
   }
   json entry = {{"tool", tool}, {"arguments", arguments}};
+  const char* role = std::getenv("CF_MCP_ROLE");
+  if (role != nullptr && *role != '\0') {
+    entry["role"] = role;
+  }
+  if (result.structured.is_object()) {
+    const auto id = result.structured.find("id");
+    if (id != result.structured.end() && id->is_string()) {
+      entry["result_id"] = *id;
+    }
+  }
   std::ofstream out(path, std::ios::app);
   if (out) {
     out << entry.dump() << "\n";
@@ -287,9 +298,13 @@ int main(int argc, char** argv) {
     }
   }
 
+  const bool store_read_only = std::getenv("CF_MCP_READ_ONLY") != nullptr &&
+                               std::string(std::getenv("CF_MCP_READ_ONLY")) == "1";
   std::unique_ptr<cf::store::RunStore> store;
   if (!db_path.empty()) {
-    auto opened = cf::store::RunStore::open(db_path);
+    cf::store::RunStore::OpenOptions open_options;
+    open_options.read_only = store_read_only;
+    auto opened = cf::store::RunStore::open(db_path, open_options);
     if (!opened) {
       spdlog::error("cannot open run store: {}", opened.error().message);
       return 4;
@@ -342,6 +357,7 @@ int main(int argc, char** argv) {
   dependencies.retriever = retriever.get();
   dependencies.default_top_k = top_k;
   dependencies.store = store.get();
+  dependencies.store_read_only = store_read_only;
   dependencies.patterns = &catalog;
   dependencies.symbols = symbols.get();
   if (checks_enabled) {
@@ -386,8 +402,8 @@ int main(int argc, char** argv) {
     if (method == "tools/call") {
       const std::string tool = params.value("name", "");
       const json arguments = params.value("arguments", json::object());
-      record_call(tool, arguments);
       const cf::mcp::ToolResult result = registry.call(*role, tool, arguments);
+      record_call(tool, arguments, result);
       return json{{"jsonrpc", "2.0"},
                   {"id", request.value("id", json())},
                   {"result", tool_result_json(result)}};

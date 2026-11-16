@@ -715,9 +715,11 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
           record.severity = severity;
           record.body_json = defect.dump();
           record.status = "REOPENED";
-          const auto stored = dependencies.store->upsert_defect(record);
-          if (!stored) {
-            return error_result(stored.error().code, stored.error().message);
+          if (!dependencies.store_read_only) {
+            const auto stored = dependencies.store->upsert_defect(record);
+            if (!stored) {
+              return error_result(stored.error().code, stored.error().message);
+            }
           }
         } else {
           auto all = dependencies.store->list_defects(dependencies.run_id);
@@ -732,13 +734,18 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
           record.fingerprint = fingerprint;
           record.body_json = defect.dump();
           record.attempts = 0;
-          const auto stored = dependencies.store->upsert_defect(record);
-          if (!stored) {
-            return error_result(stored.error().code, stored.error().message);
+          if (!dependencies.store_read_only) {
+            const auto stored = dependencies.store->upsert_defect(record);
+            if (!stored) {
+              return error_result(stored.error().code, stored.error().message);
+            }
           }
         }
         ToolResult result;
         result.text = (deduplicated ? "updated defect " : "filed defect ") + id;
+        if (dependencies.store_read_only) {
+          result.text += " (intent; the orchestrator records it)";
+        }
         result.structured = Json{
             {"id", id}, {"fingerprint", fingerprint}, {"deduplicated", deduplicated}};
         return result;
@@ -763,13 +770,15 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
                               "result must be VERIFIED or REOPENED");
         }
         auto defect = dependencies.store->get_defect(id);
-        if (!defect) {
+        if (!defect && !dependencies.store_read_only) {
           return error_result("TOOL_NOT_FOUND", defect.error().message);
         }
-        const auto stored = dependencies.store->set_defect_status(
-            id, result_status, defect->attempts);
-        if (!stored) {
-          return error_result(stored.error().code, stored.error().message);
+        if (!dependencies.store_read_only) {
+          const auto stored = dependencies.store->set_defect_status(
+              id, result_status, defect->attempts);
+          if (!stored) {
+            return error_result(stored.error().code, stored.error().message);
+          }
         }
         ToolResult result;
         result.text = "defect " + id + " marked " + result_status;
@@ -850,9 +859,11 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
                  {"decided", false},
                  {"summary", "test dispute: " + test_id}}
                 .dump();
-        const auto stored = dependencies.store->upsert_defect(record);
-        if (!stored) {
-          return error_result(stored.error().code, stored.error().message);
+        if (!dependencies.store_read_only) {
+          const auto stored = dependencies.store->upsert_defect(record);
+          if (!stored) {
+            return error_result(stored.error().code, stored.error().message);
+          }
         }
         ToolResult result;
         result.text = "dispute recorded against " + test_id + " as defect " + id +
@@ -1072,9 +1083,21 @@ ToolRegistry build_tool_registry(ToolDependencies dependencies) {
         request.requested_at = now;
         request.deadline_at = add_business_days(
             now, dependencies.waiver_deadline_business_days);
-        auto recorded = dependencies.store->record_waiver_request(request);
-        if (!recorded) {
-          return error_result(recorded.error().code, recorded.error().message);
+        store::WaiverRequestRecord pending;
+        pending.id = "pending";
+        pending.status = "PENDING";
+        pending.rule = request.rule;
+        pending.scope = request.scope;
+        pending.requested_by = request.requested_by;
+        pending.deadline_at = request.deadline_at;
+        const store::WaiverRequestRecord* recorded = &pending;
+        if (!dependencies.store_read_only) {
+          auto stored = dependencies.store->record_waiver_request(request);
+          if (!stored) {
+            return error_result(stored.error().code, stored.error().message);
+          }
+          pending = *stored;
+          recorded = &pending;
         }
         ToolResult result;
         result.structured =

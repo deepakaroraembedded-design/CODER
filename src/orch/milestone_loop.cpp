@@ -349,6 +349,21 @@ Result<MilestoneState> MilestoneLoop::drive(std::string_view milestone_id,
           }
           exit_met = open->empty();
         }
+        // Definition of Done, item 3 (design section 11.1): the tests pass
+        // three times in a row to catch flakiness. The Gating run was the
+        // first pass; repeat twice on the same head.
+        if (exit_met) {
+          for (int repeat = 2; repeat <= 3; ++repeat) {
+            const GateOutcome again = driver_.run_gates(id);
+            if (!again.passed) {
+              return escalate(milestone_id,
+                              "the QA test suite passed once but failed on "
+                              "repetition " + std::to_string(repeat) +
+                                  " (flaky tests)",
+                              now);
+            }
+          }
+        }
         const auto applied = machine_.apply(
             milestone_id,
             exit_met ? MilestoneEvent::ExitCriteriaMet : MilestoneEvent::DefectsFiled,

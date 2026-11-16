@@ -73,6 +73,22 @@ TEST(ProcessTest, ChildExitDoesNotWaitForALeakedPipe) {
   EXPECT_LT(elapsed, std::chrono::seconds(3));
 }
 
+TEST(ProcessTest, ChildExitWithAWritingBackgroundProcessStillTimesOut) {
+  LocalProcessExecutor executor;
+  ProcessRequest request;
+  // A writer that keeps the pipe ready without gaps: the direct child exits
+  // immediately, but stdout never reaches EOF and a poll-based loop that
+  // ignores the deadline would spin forever.
+  request.argv = {"sh", "-c", "yes x &"};
+  request.timeout = std::chrono::milliseconds(500);
+  const auto started = std::chrono::steady_clock::now();
+  const auto result = executor.run(request);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  EXPECT_TRUE(result.launched) << result.error;
+  EXPECT_TRUE(result.timed_out);
+  EXPECT_LT(elapsed, std::chrono::seconds(5));
+}
+
 TEST(ProcessTest, StderrIsCapturedSeparately) {
   LocalProcessExecutor executor;
   ProcessRequest request;

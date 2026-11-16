@@ -99,38 +99,6 @@ std::string failing_gate_summary(const store::RunStore& store,
   return out;
 }
 
-// Build and cache directories an agent may create while working; they are
-// never committed by the snapshot, so they do not count as out-of-scope
-// changes (design section 6.13.2).
-bool is_build_artifact(std::string_view path) {
-  static const std::set<std::string_view> ignored = {
-      "build",        "out",           "dist",          "target",
-      "node_modules", "__pycache__",   ".cache",        ".pytest_cache",
-      ".mypy_cache",  ".ruff_cache",   "cmake-build-debug", "cmake-build-release",
-      "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml",
-      "yarn.lock",    "bun.lockb"};
-  // Test runners create caches below the source tree (for example
-  // tests/__pycache__/x.pyc), so inspect every component rather than only the
-  // first. Build trees can also be nested inside a role worktree.
-  std::size_t begin = 0;
-  while (begin < path.size()) {
-    const std::size_t slash = path.find('/', begin);
-    const std::string_view component =
-        path.substr(begin, slash == std::string_view::npos
-                               ? std::string_view::npos
-                               : slash - begin);
-    if (ignored.count(component) > 0 || component.rfind("build", 0) == 0 ||
-        component.rfind("cmake-build", 0) == 0) {
-      return true;
-    }
-    if (slash == std::string_view::npos) {
-      break;
-    }
-    begin = slash + 1;
-  }
-  return path.size() >= 4 && path.substr(path.size() - 4) == ".pyc";
-}
-
 // The gate sandbox needs the same language-agnostic writable set as the
 // agent: the plan's write-set roots plus the toolchains' build directories
 // (B-22). An empty milestone means the integration branch, so use every
@@ -189,7 +157,8 @@ std::vector<std::string> gate_writable_paths(const plan::Plan& plan,
 // (design section 6.13.2): an exact entry or a path below a directory entry.
 bool commit_has_snapshot_for(const git::Repository& repository,
                              const std::filesystem::path& worktree,
-                             std::string_view milestone_id, std::string_view phase) {
+                             std::string_view milestone_id, std::string_view phase,
+                             std::string_view op_id) {
   auto head = repository.head_sha(worktree);
   if (!head) {
     return false;
@@ -200,8 +169,10 @@ bool commit_has_snapshot_for(const git::Repository& repository,
   }
   const std::string milestone = "CF-Milestone: " + std::string(milestone_id);
   const std::string phase_line = "CF-Phase: " + std::string(phase);
+  const std::string op_line = "CF-Op: " + std::string(op_id);
   return message->find(milestone) != std::string::npos &&
-         message->find(phase_line) != std::string::npos;
+         message->find(phase_line) != std::string::npos &&
+         message->find(op_line) != std::string::npos;
 }
 
 bool is_test_path(std::string_view path) {
@@ -224,10 +195,10 @@ bool is_test_path(std::string_view path) {
     }
     begin = slash + 1;
   }
-  const std::string_view base = lowered.substr(lowered.find_last_of('/') + 1);
-  const auto ends_with = [base](std::string_view suffix) {
+  const std::string base = lowered.substr(lowered.find_last_of('/') + 1);
+  const auto ends_with = [&base](std::string_view suffix) {
     return base.size() >= suffix.size() &&
-           base.substr(base.size() - suffix.size()) == suffix;
+           std::string_view(base).substr(base.size() - suffix.size()) == suffix;
   };
   return ends_with("_test.go") || ends_with("_test.cpp") ||
          ends_with("_test.cc") || ends_with("_test.cxx") ||
@@ -501,9 +472,9 @@ AgentTurnRequest WorkspaceDriver::make_request(MilestonePhase phase,
   return request;
 }
 
-void WorkspaceDriver::record_checkpoint(std::string_view milestone_id) {
+std::string WorkspaceDriver::record_checkpoint(std::string_view milestone_id) {
   if (store_ == nullptr) {
-    return;
+    return store::new_op_id();
   }
   nlohmann::json heads = nlohmann::json::object();
   for (const char* role : {"coder", "qa", "reviewer"}) {
@@ -525,11 +496,19 @@ void WorkspaceDriver::record_checkpoint(std::string_view milestone_id) {
   const auto milestone = store_->get_milestone(config_.run_id, milestone_id);
   checkpoint.milestone_state = milestone.has_value() ? milestone->state : "";
   checkpoint.at = store::unix_now();
+  auto latest = store_->latest_checkpoint(config_.run_id, milestone_id);
+  const bool same_turn =
+      latest.has_value() && !latest->turn_op_id.empty() &&
+      latest->milestone_state == checkpoint.milestone_state &&
+      latest->worktree_heads_json == checkpoint.worktree_heads_json;
+  checkpoint.turn_op_id =
+      same_turn ? latest->turn_op_id : store::new_op_id();
   const auto saved = store_->save_checkpoint(checkpoint);
   if (!saved.has_value()) {
     spdlog::warn("cannot record the checkpoint for {}: {}", milestone_id,
                  saved.error().message);
   }
+  return checkpoint.turn_op_id;
 }
 
 Result<std::filesystem::path> WorkspaceDriver::ensure_integration_worktree() {
@@ -732,7 +711,7 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
   // The pre-turn checkpoint (design section 6.12.3): a crash during the turn
   // resets the worktrees to this commit instead of trying to continue a
   // half-finished model turn.
-  record_checkpoint(milestone_id);
+  const std::string turn_op_id = record_checkpoint(milestone_id);
 
   AgentTurnRequest request = make_request(phase, milestone_id, role);
   request.worktree = worktree->string();
@@ -749,7 +728,7 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
     if (changes.has_value()) {
       outside = false;
       for (const auto& path : *changes) {
-        if (!is_build_artifact(path)) {
+        if (!cf::common::is_build_artifact(path)) {
           outside = true;
           break;
         }
@@ -788,12 +767,13 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
       auto stored = snapshot(milestone_id, role, test_paths,
                              "test(" + std::string(milestone_id) + "): " +
                                  outcome->summary,
-                             store::new_op_id(), "tests");
+                             turn_op_id, "tests");
       if (!stored) {
         const bool no_changes = stored.error().code == git::error_codes::kNoChanges;
         const bool snapshot_recovered =
             no_changes && commit_has_snapshot_for(repository_, *worktree,
-                                                  milestone_id, "tests");
+                                                  milestone_id, "tests",
+                                                  turn_op_id);
         if (!snapshot_recovered) {
           return TurnResult{false, "", stored.error().message, false, false, false,
                             false, false, ""};
@@ -822,7 +802,7 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
           }
           std::vector<std::string> outside;
           for (const auto& path : *changes) {
-            if (is_build_artifact(path)) {
+            if (cf::common::is_build_artifact(path)) {
               continue;
             }
             // A coder may create ad-hoc tests to verify its work. They are
@@ -861,7 +841,7 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
       auto stored = snapshot(milestone_id, role, snapshot_paths,
                              prefix + "(" + std::string(milestone_id) + "): " +
                                  outcome->summary,
-                             store::new_op_id(),
+                             turn_op_id,
                              phase == MilestonePhase::Code ? "code" : "fix");
       // A dispute-only turn may have changed nothing, and so may a fix on an
       // already-integrated milestone (the work is merged; the turn resolved a
@@ -871,8 +851,9 @@ TurnResult WorkspaceDriver::run(MilestonePhase phase, std::string_view milestone
         const bool no_changes = stored.error().code == git::error_codes::kNoChanges;
         const bool snapshot_recovered =
             no_changes &&
-            commit_has_snapshot_for(repository_, *worktree, milestone_id,
-                                    phase == MilestonePhase::Code ? "code" : "fix");
+            commit_has_snapshot_for(
+                repository_, *worktree, milestone_id,
+                phase == MilestonePhase::Code ? "code" : "fix", turn_op_id);
         const bool permitted =
             no_changes && (!outcome->disputed_test_id.empty() ||
                            integrated_.count(std::string(milestone_id)) > 0 ||
@@ -927,7 +908,7 @@ TurnResult WorkspaceDriver::run_test_dispute(std::string_view milestone_id) {
     return TurnResult{false, "", worktree.error().message, false, false, false, false,
                       false, ""};
   }
-  record_checkpoint(milestone_id);
+  (void)record_checkpoint(milestone_id);
 
   std::string brief =
       "Decide the open test dispute(s) for milestone " + id +
@@ -1058,6 +1039,50 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
     return outcome;
   }
   outcome.commit_sha = *head;
+
+  // Gates must measure HEAD, not files the coder left behind (B-29). Scratch
+  // tests are ephemeral and are removed; any other untracked file is refused
+  // rather than silently influencing the build.
+  auto untracked = repository_.untracked_files(*worktree);
+  if (!untracked) {
+    cf::gates::GateResult result;
+    result.gate = "build";
+    result.passed = false;
+    result.findings.push_back(cf::gates::GateFinding{
+        "build", "error", "cannot list untracked files: " +
+                              untracked.error().message});
+    outcome.report.results.push_back(std::move(result));
+    return outcome;
+  }
+  std::vector<std::string> unexpected_untracked;
+  for (const auto& path : *untracked) {
+    if (cf::common::is_build_artifact(path)) {
+      continue;
+    }
+    if (is_test_path(path) || is_qa_owned_path(path) ||
+        path.rfind("qa/", 0) == 0) {
+      std::error_code remove_ec;
+      std::filesystem::remove(*worktree / path, remove_ec);
+      continue;
+    }
+    unexpected_untracked.push_back(path);
+  }
+  if (!unexpected_untracked.empty()) {
+    cf::gates::GateResult result;
+    result.gate = "build";
+    result.passed = false;
+    std::string message = "worktree has untracked files (";
+    for (std::size_t i = 0; i < unexpected_untracked.size() && i < 8; ++i) {
+      if (i > 0) {
+        message += ", ";
+      }
+      message += unexpected_untracked[i];
+    }
+    message += "); refusing to attribute gate results to HEAD";
+    result.findings.push_back(cf::gates::GateFinding{"build", "error", message});
+    outcome.report.results.push_back(std::move(result));
+    return outcome;
+  }
 
   auto dirty = repository_.tracked_worktree_changes(*worktree);
   if (!dirty || !dirty->empty()) {
@@ -1344,6 +1369,50 @@ Result<GateOutcome> WorkspaceDriver::run_integration_gates(
   }
   outcome.commit_sha = *head;
 
+  // Gates must measure HEAD, not files the coder left behind (B-29). Scratch
+  // tests are ephemeral and are removed; any other untracked file is refused
+  // rather than silently influencing the build.
+  auto untracked = repository_.untracked_files(*worktree);
+  if (!untracked) {
+    cf::gates::GateResult result;
+    result.gate = "build";
+    result.passed = false;
+    result.findings.push_back(cf::gates::GateFinding{
+        "build", "error", "cannot list untracked files: " +
+                              untracked.error().message});
+    outcome.report.results.push_back(std::move(result));
+    return outcome;
+  }
+  std::vector<std::string> unexpected_untracked;
+  for (const auto& path : *untracked) {
+    if (cf::common::is_build_artifact(path)) {
+      continue;
+    }
+    if (is_test_path(path) || is_qa_owned_path(path) ||
+        path.rfind("qa/", 0) == 0) {
+      std::error_code remove_ec;
+      std::filesystem::remove(*worktree / path, remove_ec);
+      continue;
+    }
+    unexpected_untracked.push_back(path);
+  }
+  if (!unexpected_untracked.empty()) {
+    cf::gates::GateResult result;
+    result.gate = "build";
+    result.passed = false;
+    std::string message = "worktree has untracked files (";
+    for (std::size_t i = 0; i < unexpected_untracked.size() && i < 8; ++i) {
+      if (i > 0) {
+        message += ", ";
+      }
+      message += unexpected_untracked[i];
+    }
+    message += "); refusing to attribute gate results to HEAD";
+    result.findings.push_back(cf::gates::GateFinding{"build", "error", message});
+    outcome.report.results.push_back(std::move(result));
+    return outcome;
+  }
+
   auto dirty = repository_.tracked_worktree_changes(*worktree);
   if (!dirty || !dirty->empty()) {
     cf::gates::GateResult result;
@@ -1509,7 +1578,7 @@ TurnResult WorkspaceDriver::run_test_repair(std::string_view milestone_id) {
     return TurnResult{false, "", worktree.error().message, false, false, false, false,
                       false, ""};
   }
-  record_checkpoint(milestone_id);
+  (void)record_checkpoint(milestone_id);
 
   std::string brief =
       "Revalidation test repair for milestone " + id +

@@ -23,4 +23,8 @@ const totals = sum(['alpha=7', 'beta=2', 'alpha=5', 'ignored', 'beta=3', '=1']);
 check(totals.alpha === 12 && totals.beta === 5, 'aggregates valid lines');
 check(Object.keys(totals).length === 2, 'ignores malformed lines');
 console.log(JSON.stringify({ tests, passed }));
+const _cfResultPath = process.env.CF_HIDDEN_RESULT;
+if (_cfResultPath) {
+  require('fs').writeFileSync(_cfResultPath, JSON.stringify({ tests, passed }));
+}
 process.exit(passed === tests ? 0 : 1);

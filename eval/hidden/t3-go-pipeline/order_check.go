@@ -32,6 +32,9 @@ func main() {
 	check(err != nil, "rejects zero quantity")
 
 	fmt.Printf("{\"tests\": %d, \"passed\": %d}\n", tests, passed)
+	if path := os.Getenv("CF_HIDDEN_RESULT"); path != "" {
+		_ = os.WriteFile(path, []byte(fmt.Sprintf("{\"tests\": %d, \"passed\": %d}\n", tests, passed)), 0644)
+	}
 	if passed != tests {
 		os.Exit(1)
 	}

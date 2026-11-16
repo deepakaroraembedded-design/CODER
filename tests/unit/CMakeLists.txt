@@ -5,6 +5,7 @@ add_executable(cf_unit_tests
   hash_test.cpp
   utf8_test.cpp
   run_store_test.cpp
+  agent_intents_test.cpp
   dispatcher_test.cpp
   state_machine_test.cpp
   scheduler_test.cpp

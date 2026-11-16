@@ -98,6 +98,10 @@ struct ToolDependencies {
   // (design section 15, rag.top_k).
   std::uint32_t default_top_k = 8;
   store::RunStore* store = nullptr;
+  // True when the store is the disposable read-only agent snapshot: write
+  // tools return the id the agent saw and the orchestrator applies the intent
+  // from the calls file (design section 6.8.1).
+  bool store_read_only = false;
   // The curated pattern catalog (design section 6.2); get_pattern reads it
   // directly and falls back to the retrieval index when it is absent.
   const std::vector<rag::PatternEntry>* patterns = nullptr;

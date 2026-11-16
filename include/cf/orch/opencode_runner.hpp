@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -20,6 +21,7 @@
 #include <nlohmann/json.hpp>
 
 #include "cf/common/result.hpp"
+#include "cf/llm/client.hpp"
 #include "cf/orch/agent_runner.hpp"
 #include "cf/orch/prompt_library.hpp"
 
@@ -84,6 +86,24 @@ struct OpencodeRunnerOptions {
   // Versioned role templates (prompts/<role>.md); embedded defaults apply
   // when the directory is not provided.
   PromptLibrary prompts = PromptLibrary::defaults();
+  // Refreshes the agent's read-only store snapshot before each turn
+  // (design section 6.8.1). Empty keeps the current view.
+  std::function<Status(const AgentTurnRequest&)> before_turn;
+  // Applies write-shaped MCP calls (defects, waivers, disputes) to the real
+  // store after the runner has read them; the agent's cf-mcp only writes a
+  // disposable snapshot (design section 6.8.1).
+  std::function<Status(const AgentTurnRequest&,
+                       const std::vector<nlohmann::json>&)>
+      intent_handler;
+  // Role model ids and the price table used to turn opencode token counts
+  // into dollars (opencode reports cost 0 for custom provider entries).
+  std::map<std::string, std::string, std::less<>> role_models;
+  std::map<std::string, llm::ModelPrice, std::less<>> prices;
+  // Called once per finished turn when a ledger callback is installed; the
+  // run process records it in the store so the budget sees agent cost.
+  llm::UsageCallback on_usage;
+  // Refuse to run a USD budget without a price for every role model (B-14).
+  bool require_priced_models = false;
 };
 
 class OpencodeAgentRunner final : public AgentRunner {

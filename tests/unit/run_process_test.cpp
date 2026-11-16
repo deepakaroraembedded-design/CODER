@@ -382,10 +382,10 @@ TEST(RunProcessTest, DrivesAFullRunToDoneWithFakeOpencode) {
                            std::istreambuf_iterator<char>());
     return text.find(needle) != std::string::npos;
   };
-  EXPECT_TRUE(contains(run_dir / "calls-coder.jsonl", "submit_work"));
-  EXPECT_TRUE(contains(run_dir / "calls-reviewer.jsonl", "submit_review"));
-  EXPECT_TRUE(contains(run_dir / "calls-qa.jsonl", "submit_tests"));
-  EXPECT_TRUE(contains(run_dir / "calls-qa.jsonl", "verify_defect"));
+  EXPECT_TRUE(contains(run_dir / "agent" / "calls-coder.jsonl", "submit_work"));
+  EXPECT_TRUE(contains(run_dir / "agent" / "calls-reviewer.jsonl", "submit_review"));
+  EXPECT_TRUE(contains(run_dir / "agent" / "calls-qa.jsonl", "submit_tests"));
+  EXPECT_TRUE(contains(run_dir / "agent" / "calls-qa.jsonl", "verify_defect"));
 
   // Gates ran and passed on the milestone's commit.
   auto gates = store->latest_gate_results("R12", "M3");

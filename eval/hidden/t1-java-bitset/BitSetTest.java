@@ -22,6 +22,19 @@ public final class BitSetTest {
     }
   }
 
+
+  private static void writeHiddenResult(int tests, int passed) {
+    String path = System.getenv("CF_HIDDEN_RESULT");
+    if (path == null || path.isEmpty()) {
+      return;
+    }
+    String json = "{\"tests\":" + tests + ",\"passed\":" + passed + "}";
+    try {
+      java.nio.file.Files.writeString(java.nio.file.Path.of(path), json);
+    } catch (java.io.IOException ignored) {
+    }
+  }
+
   public static void main(String[] args) {
     BitSet bits = new BitSet(8);
     bits.set(2);
@@ -33,6 +46,7 @@ public final class BitSetTest {
     check(throwsType(() -> bits.get(8), IndexOutOfBoundsException.class), "range");
     check(throwsType(() -> new BitSet(0), IllegalArgumentException.class), "size");
     System.out.println("{\"tests\":" + tests + ",\"passed\":" + passed + "}");
+    writeHiddenResult(tests, passed);
     if (passed != tests) {
       System.exit(1);
     }

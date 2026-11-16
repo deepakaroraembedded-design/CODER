@@ -91,8 +91,15 @@ Status GithubFlow::ensure_push(std::string_view run_id,
 
   // Design section 10.4.6: run the pre-push checks on the exact commit before
   // any intent is recorded or any network call is made.
+  github::PrePushConfig pre_push = config_.pre_push;
+  pre_push.expected_trailers["CF-Run"] = std::string(run_id);
+  const std::string milestone_branch =
+      "cf/" + std::string(run_id) + "/" + std::string(milestone_id);
+  if (!milestone_id.empty() && branch == milestone_branch) {
+    pre_push.expected_trailers["CF-Milestone"] = std::string(milestone_id);
+  }
   auto findings =
-      github::check_pre_push(repository_, branch, *commit, config_.pre_push);
+      github::check_pre_push(repository_, branch, *commit, pre_push);
   if (!findings) {
     return tl::make_unexpected(findings.error());
   }

@@ -660,7 +660,7 @@ TEST_F(CliTest, RefinementStopsAtTheApprovalGateAndTheRefinedPlanDrivesExecution
                            const std::string& worktree)
       -> cf::Result<std::unique_ptr<cf::orch::SessionDriver>> {
     return std::unique_ptr<cf::orch::SessionDriver>(std::make_unique<ScriptedDriver>(
-        role, worktree, run_dir / ("calls-" + role + ".jsonl")));
+        role, worktree, run_dir / "agent" / ("calls-" + role + ".jsonl")));
   };
   std::ostringstream exec_out;
   std::ostringstream exec_err;
@@ -1137,7 +1137,7 @@ TEST_F(CliTest, ExecuteCommandDrivesTheRunToDone) {
                            const std::string& worktree)
       -> cf::Result<std::unique_ptr<cf::orch::SessionDriver>> {
     return std::unique_ptr<cf::orch::SessionDriver>(std::make_unique<ScriptedDriver>(
-        role, worktree, run_dir / ("calls-" + role + ".jsonl")));
+        role, worktree, run_dir / "agent" / ("calls-" + role + ".jsonl")));
   };
 
   cf::cli::ExecuteOptions options;
@@ -1179,8 +1179,8 @@ TEST_F(CliTest, ExecuteCommandDrivesTheRunToDone) {
   const auto integration = workspace_ / "wt" / "R12" / "integration";
   EXPECT_TRUE(std::filesystem::exists(integration / "src" / "m3.cpp"));
   EXPECT_TRUE(std::filesystem::exists(integration / "tests" / "m3_test.cpp"));
-  EXPECT_TRUE(std::filesystem::exists(run_dir / "calls-coder.jsonl"));
-  EXPECT_TRUE(std::filesystem::exists(run_dir / "calls-reviewer.jsonl"));
+  EXPECT_TRUE(std::filesystem::exists(run_dir / "agent" / "calls-coder.jsonl"));
+  EXPECT_TRUE(std::filesystem::exists(run_dir / "agent" / "calls-reviewer.jsonl"));
 
   // GitHub flow: the milestone branch is on the remote and a draft PR exists.
   auto remote_branch = repository->remote_branch_sha("origin", "cf/R12/M1");

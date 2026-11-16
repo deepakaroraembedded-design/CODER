@@ -25,3 +25,7 @@ compile_commands.json
 # Local secrets (FIREWORKS_API_KEY and friends) — never commit
 .config
 .env
+
+# Python bytecode from eval seeds/checks
+__pycache__/
+*.pyc

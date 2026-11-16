@@ -272,6 +272,26 @@ TEST(NamespaceEscapeTest, SeccompBlocksDangerousSyscalls) {
                      "libc.ptrace(0, 0, 0, 0); print(ctypes.get_errno())"});
   ASSERT_EQ(ptrace.exit_code, 0) << ptrace.stderr_text;
   EXPECT_EQ(ptrace.stdout_text, "1\n");
+
+  // clone3 is answered with ENOSYS so the runtime falls back to clone(),
+  // whose namespace-flag word is filtered (design section 6.8.2).
+  const ProcessResult clone3 =
+      run_in_ns({}, {"/usr/bin/python3", "-c",
+                     "import ctypes; libc = ctypes.CDLL('libc.so.6', use_errno=True); "
+                     "buf = ctypes.create_string_buffer(64); "
+                     "libc.syscall(435, ctypes.byref(buf), 8); "
+                     "print(ctypes.get_errno())"});
+  ASSERT_EQ(clone3.exit_code, 0) << clone3.stderr_text;
+  EXPECT_EQ(clone3.stdout_text, "38\n");
+
+  // Ordinary threads and fork must keep working (they use clone/clone3
+  // without namespace flags).
+  const ProcessResult threads =
+      run_in_ns({}, {"/usr/bin/python3", "-c",
+                     "import threading; t = threading.Thread(target=lambda: None); "
+                     "t.start(); t.join(); print('ok')"});
+  ASSERT_EQ(threads.exit_code, 0) << threads.stderr_text;
+  EXPECT_EQ(threads.stdout_text, "ok\n");
 }
 
 TEST(NamespaceEscapeTest, CgroupLimitsAreEnforcedWhenDelegated) {

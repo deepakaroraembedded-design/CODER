@@ -14,4 +14,8 @@ check(counts.hello === 2 && counts.world === 1 && counts.typescript === 1, 'coun
 check(Object.keys(count('')).length === 0, 'empty input');
 check(count('a-b a_b').a === 2 && count('a-b a_b').b === 1, 'punctuation separates');
 console.log(JSON.stringify({ tests, passed }));
+const _cfResultPath = process.env.CF_HIDDEN_RESULT;
+if (_cfResultPath) {
+  require('fs').writeFileSync(_cfResultPath, JSON.stringify({ tests, passed }));
+}
 process.exit(passed === tests ? 0 : 1);

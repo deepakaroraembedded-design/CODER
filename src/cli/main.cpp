@@ -12,6 +12,7 @@
 
 #include "cf/cli/commands.hpp"
 #include "cf/cli/config.hpp"
+#include "cf/plan/plan.hpp"
 #include "cf/telemetry/logging.hpp"
 
 namespace {
@@ -126,6 +127,18 @@ int main(int argc, char** argv) {
   run->add_option("--github-signing-key-file", github_signing_key_file,
                   "SSH private key that signs every CF commit");
   run->add_option("--github-token", github_token, "Static GitHub token");
+  std::optional<double> budget_usd;
+  run->add_option("--budget-usd", budget_usd,
+                  "Run cost limit in USD (plan budget wins)");
+  std::optional<std::uint64_t> budget_tokens;
+  run->add_option("--budget-tokens", budget_tokens,
+                  "Run token limit (plan budget wins)");
+  std::optional<double> budget_wall_clock_hours;
+  run->add_option("--budget-wall-clock-hours", budget_wall_clock_hours,
+                  "Active wall-clock limit in hours (plan budget wins)");
+  std::string inference;
+  run->add_option("--inference", inference,
+                  "Inference provider: fireworks or local-vllm (plan wins)");
   std::string config_path;
   run->add_option("--config", config_path,
                   "cf.yaml configuration file (design section 15); default: "
@@ -354,6 +367,28 @@ int main(int argc, char** argv) {
     if (run->count("--github-signing-key-file") > 0) {
       options.github_signing_key_file = github_signing_key_file;
     }
+    // The plan decides the provider and may name per-role models (design
+    // sections 8.1, 13.1, D11); explicit flags still win.
+    auto plan = cf::plan::parse_plan_file(plan_path);
+    if (!plan) {
+      std::cerr << plan.error().code << ": " << plan.error().message << "\n";
+      return 2;
+    }
+    for (const auto& [role, model] : plan->role_models) {
+      options.role_models[role] = model;
+    }
+    const std::string provider =
+        inference.empty() ? plan->inference : inference;
+    if (provider != "fireworks") {
+      const auto endpoint = file_config.providers.find(provider);
+      if (endpoint == file_config.providers.end()) {
+        std::cerr << "plan inference '" << provider
+                  << "' has no providers entry in cf.yaml\n";
+        return 2;
+      }
+      options.provider_base_url = endpoint->second.base_url;
+      options.api_key_env = endpoint->second.api_key_env;
+    }
     for (const auto& override : model_overrides) {
       const std::size_t equals = override.find('=');
       if (equals == std::string::npos) {
@@ -361,6 +396,15 @@ int main(int argc, char** argv) {
         return 2;
       }
       options.role_models[override.substr(0, equals)] = override.substr(equals + 1);
+    }
+    if (run->count("--budget-usd") > 0) {
+      options.budget_usd = budget_usd;
+    }
+    if (run->count("--budget-tokens") > 0) {
+      options.budget_tokens = budget_tokens;
+    }
+    if (run->count("--budget-wall-clock-hours") > 0) {
+      options.budget_wall_clock_hours = budget_wall_clock_hours;
     }
     return cf::cli::execute_command(options, std::cout, std::cerr);
   }

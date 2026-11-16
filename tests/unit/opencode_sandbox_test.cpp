@@ -83,14 +83,15 @@ TEST(OpencodeSandboxTest, LauncherCarriesTheDesignLayout) {
   EXPECT_TRUE(contains(argv, "/ws/wt/R12/M3/coder/src:/work/src"));
   EXPECT_TRUE(contains(argv, "/ws/wt/R12/M3/coder/include:/work/include"));
   EXPECT_TRUE(contains(argv, "/ws/wt/R12/M3/coder/.git:/work/.git:ro"));
-  EXPECT_TRUE(contains(argv, "/ws/runs/R12:/cf"));
+  EXPECT_TRUE(contains(argv, "/ws/runs/R12:/cf:ro"));
+  EXPECT_TRUE(contains(argv, "/ws/runs/R12/agent:/cf/agent"));
   EXPECT_TRUE(contains(argv, "/opt/cf/cf-mcp:/usr/local/bin/cf-mcp:ro"));
   EXPECT_TRUE(contains(argv, "/tmp:rw,noexec,nosuid,nodev,size=64m"));
   EXPECT_TRUE(contains(argv, "/build:rw,exec,nosuid,nodev,size=1g"));
 
   EXPECT_TRUE(contains(argv, "HOME=/home/cf"));
   EXPECT_TRUE(contains(argv, "OPENCODE_CONFIG=/cf/opencode-coder.json"));
-  EXPECT_TRUE(contains(argv, "CF_MCP_CALLS_FILE=/cf/calls-coder.jsonl"));
+  EXPECT_TRUE(contains(argv, "CF_MCP_CALLS_FILE=/cf/agent/calls-coder.jsonl"));
   EXPECT_TRUE(contains(argv, "CF_ROLE=coder"));
   EXPECT_TRUE(contains(argv, "CF_FAKE_SCRIPT=/cf/script.json"));
   // The egress proxy is reachable and used for all traffic.
@@ -444,7 +445,7 @@ TEST(OpencodeSandboxTest, NamespaceSandboxedRunProcessReachesDone) {
   EXPECT_TRUE(std::filesystem::exists(integration / "src" / "m3.cpp"));
   EXPECT_TRUE(std::filesystem::exists(integration / "tests" / "m3_test.cpp"));
   EXPECT_TRUE(std::filesystem::exists(integration / "pom.xml"));
-  auto calls = std::ifstream(run_dir / "calls-coder.jsonl");
+  auto calls = std::ifstream(run_dir / "agent" / "calls-coder.jsonl");
   const std::string calls_text((std::istreambuf_iterator<char>(calls)),
                                std::istreambuf_iterator<char>());
   EXPECT_NE(calls_text.find("submit_work"), std::string::npos);
@@ -585,7 +586,7 @@ TEST(OpencodeSandboxTest, SandboxedRunProcessReachesDone) {
   EXPECT_TRUE(std::filesystem::exists(integration / "src" / "m3.cpp"));
   EXPECT_TRUE(std::filesystem::exists(integration / "tests" / "m3_test.cpp"));
   EXPECT_TRUE(std::filesystem::exists(integration / "pom.xml"));
-  auto calls = std::ifstream(run_dir / "calls-coder.jsonl");
+  auto calls = std::ifstream(run_dir / "agent" / "calls-coder.jsonl");
   const std::string calls_text((std::istreambuf_iterator<char>(calls)),
                                std::istreambuf_iterator<char>());
   EXPECT_NE(calls_text.find("submit_work"), std::string::npos);

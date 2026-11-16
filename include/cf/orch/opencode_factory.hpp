@@ -27,6 +27,9 @@ namespace cf::orch {
 struct OpencodeFactoryConfig {
   std::string run_id;
   std::filesystem::path run_dir;  // <workspace>/runs/<run>
+  // Writable agent state (calls files, store snapshots, logs), mounted at
+  // /cf/agent. The rest of run_dir is mounted read-only at /cf.
+  std::filesystem::path agent_dir;
   std::string opencode_binary = "opencode";
   std::string hostname = "127.0.0.1";
   std::string provider_base_url = "https://api.fireworks.ai/inference/v1";
@@ -105,6 +108,7 @@ struct OpencodeFactoryConfig {
   // egress allow-listing is still pending (design section 6.8.2), so point
   // this at a user-defined network with restricted egress where available.
   std::string sandbox_network;
+  std::size_t pids_limit = 0;  // 0: no limit (sandbox.pids_limit)
   std::string docker_binary = "docker";
   // Host path of the cf-mcp binary, mounted at /usr/local/bin/cf-mcp.
   std::string mcp_binary_host;

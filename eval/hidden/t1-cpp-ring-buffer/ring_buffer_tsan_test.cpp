@@ -7,9 +7,23 @@
 // ordering and race freedom are checked in one bounded run.
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <thread>
 
 #include "ring_buffer.hpp"
+
+
+namespace {
+void write_hidden_result(int tests, int passed) {
+  const char* path = std::getenv("CF_HIDDEN_RESULT");
+  if (path == nullptr || *path == '\0') {
+    return;
+  }
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out << "{\"tests\": " << tests << ", \"passed\": " << passed << "}\n";
+}
+}  // namespace
 
 int main() {
   constexpr int kItems = 20000;
@@ -47,5 +61,6 @@ int main() {
   const bool ok = mismatches == 0 && consumed == kItems;
   const int passed = ok ? 1 : 0;
   std::printf("{\"tests\": 1, \"passed\": %d}\n", passed);
+  write_hidden_result(1, passed);
   return passed == 1 ? 0 : 1;
 }

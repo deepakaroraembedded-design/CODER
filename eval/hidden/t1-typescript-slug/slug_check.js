@@ -18,4 +18,8 @@ check(slugify('A/B__C'), 'a-b-c', 'punctuation runs');
 check(slugify('---already---'), 'already', 'strips edge hyphens');
 check(slugify(''), '', 'empty input');
 console.log(JSON.stringify({ tests, passed }));
+const _cfResultPath = process.env.CF_HIDDEN_RESULT;
+if (_cfResultPath) {
+  require('fs').writeFileSync(_cfResultPath, JSON.stringify({ tests, passed }));
+}
 process.exit(passed === tests ? 0 : 1);

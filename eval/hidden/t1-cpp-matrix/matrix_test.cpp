@@ -1,7 +1,21 @@
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 
 #include "golden/matrix.hpp"
+
+
+namespace {
+void write_hidden_result(int tests, int passed) {
+  const char* path = std::getenv("CF_HIDDEN_RESULT");
+  if (path == nullptr || *path == '\0') {
+    return;
+  }
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out << "{\"tests\": " << tests << ", \"passed\": " << passed << "}\n";
+}
+}  // namespace
 
 int main() {
   const golden::Matrix2 identity{1, 0, 0, 1};
@@ -25,5 +39,6 @@ int main() {
         "transpose");
   check(golden::determinant(value) == -2, "determinant");
   std::cout << "{\"tests\":" << tests << ",\"passed\":" << passed << "}\n";
+  write_hidden_result(tests, passed);
   return passed == tests ? 0 : 1;
 }

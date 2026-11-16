@@ -17,6 +17,16 @@
 #include <spdlog/spdlog.h>
 
 namespace cf::llm {
+
+std::map<std::string, ModelPrice, std::less<>> default_prices() {
+  return {
+      {"accounts/fireworks/models/deepseek-v4p1-flash", {0.3, 1.2}},
+      {"accounts/fireworks/models/kimi-k3", {3.0, 15.0}},
+      {"accounts/fireworks/models/glm-5p3", {1.4, 4.4}},
+      {"accounts/fireworks/models/glm-5p3-flash", {0.15, 0.5}},
+      {"accounts/fireworks/routers/kimi-k3-fast", {4.5, 22.5}},
+  };
+}
 namespace {
 
 std::string to_lower(std::string_view text) {

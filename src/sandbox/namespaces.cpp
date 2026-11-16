@@ -198,7 +198,28 @@ int setup_root(const NamespaceSandboxSpec& spec, const std::string& root) {
   if (!spec.worktree.empty()) {
     // Missing writable directories are created in the host worktree first
     // (docker's bind mounts do the same); empty directories are invisible to
-    // git, so this does not affect the recorded diff.
+    // git, so this does not affect the recorded diff. Declared write-set
+    // files are created as files so a missing root file (Makefile, pom.xml)
+    // never becomes a directory.
+    for (const auto& path : spec.writable_files) {
+      if (!cf::common::is_safe_relative_path(path)) {
+        return -1;
+      }
+      const std::string full = spec.worktree + "/" + path;
+      struct stat st {};
+      if (::stat(full.c_str(), &st) != 0) {
+        const auto slash = path.find_last_of('/');
+        if (slash != std::string::npos &&
+            make_dirs(spec.worktree + "/" + path.substr(0, slash), 0755) != 0) {
+          return -1;
+        }
+        const int fd = ::open(full.c_str(), O_CREAT | O_WRONLY, 0644);
+        if (fd < 0) {
+          return -1;
+        }
+        ::close(fd);
+      }
+    }
     for (const auto& path : spec.writable_paths) {
       if (!cf::common::is_safe_relative_path(path)) {
         return -1;
@@ -218,31 +239,24 @@ int setup_root(const NamespaceSandboxSpec& spec, const std::string& root) {
     if (bind_mount(spec.worktree, root + "/work", true) != 0) {
       return -1;
     }
+    const auto mount_writable = [&](const std::string& path) {
+      return bind_mount(spec.worktree + "/" + path, root + "/work/" + path,
+                        false);
+    };
+    for (const auto& path : spec.writable_files) {
+      if (mount_writable(path) != 0) {
+        return -1;
+      }
+    }
     for (const auto& path : spec.writable_paths) {
-      const std::string source = spec.worktree + "/" + path;
-      const std::string target = root + "/work/" + path;
-      struct stat st {};
-      if (::stat(source.c_str(), &st) == 0 && !S_ISDIR(st.st_mode)) {
-        struct stat target_stat {};
-        if (::stat(target.c_str(), &target_stat) != 0) {
-          return -1;
-        }
-      } else if (make_dir(target, 0755) != 0) {
-        return -1;
-      }
-      if (bind_mount(source, target, false) != 0) {
+      if (mount_writable(path) != 0) {
         return -1;
       }
     }
   }
-  for (const auto& [source, target] : spec.extra_writable_mounts) {
-    if (make_dirs(root + target, 0755) != 0) {
-      return -1;
-    }
-    if (bind_mount(source, root + target, false) != 0) {
-      return -1;
-    }
-  }
+  // Every extra mount target is created before any bind mount: /cf is
+  // mounted read-only afterwards, so a nested /cf/agent mount point must
+  // already exist.
   for (const auto& [source, target] : spec.extra_readonly_mounts) {
     struct stat source_stat {};
     if (::stat(source.c_str(), &source_stat) != 0) {
@@ -264,7 +278,22 @@ int setup_root(const NamespaceSandboxSpec& spec, const std::string& root) {
       }
       ::close(fd);
     }
+  }
+  for (const auto& [source, target] : spec.extra_writable_mounts) {
+    (void)source;
+    if (make_dirs(root + target, 0755) != 0) {
+      return -1;
+    }
+  }
+  // Read-only mounts first, then writable ones: a writable mount nested
+  // inside a read-only parent (/cf/agent under /cf) must win.
+  for (const auto& [source, target] : spec.extra_readonly_mounts) {
     if (bind_mount(source, root + target, true) != 0) {
+      return -1;
+    }
+  }
+  for (const auto& [source, target] : spec.extra_writable_mounts) {
+    if (bind_mount(source, root + target, false) != 0) {
       return -1;
     }
   }
@@ -470,6 +499,28 @@ int apply_seccomp() {
     filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<unsigned>(nr), 0, 1));
     filter.push_back(BPF_STMT(BPF_RET | BPF_K, kDeniedErrno));
   }
+  // clone()/clone3() with namespace flags create a new namespace, which the
+  // seccomp deny-list must also cover (B-19). clone3 cannot be inspected
+  // (its flags live behind a pointer), so it returns ENOSYS and glibc falls
+  // back to clone(); clone's low 32-bit flags word is checked here.
+#ifdef SYS_clone3
+  filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                            static_cast<unsigned>(SYS_clone3), 0, 1));
+  filter.push_back(
+      BPF_STMT(BPF_RET | BPF_K,
+               SECCOMP_RET_ERRNO | (ENOSYS & SECCOMP_RET_DATA)));
+#endif
+  constexpr unsigned kNamespaceCloneFlags =
+      static_cast<unsigned>(CLONE_NEWNS | CLONE_NEWCGROUP | CLONE_NEWUTS |
+                            CLONE_NEWIPC | CLONE_NEWUSER | CLONE_NEWPID |
+                            CLONE_NEWNET);
+  filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K,
+                            static_cast<unsigned>(SYS_clone), 0, 4));
+  filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                            offsetof(struct seccomp_data, args[0])));
+  filter.push_back(BPF_STMT(BPF_ALU | BPF_AND | BPF_K, kNamespaceCloneFlags));
+  filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0));
+  filter.push_back(BPF_STMT(BPF_RET | BPF_K, kDeniedErrno));
   filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
 
   struct sock_fprog program {};
@@ -565,35 +616,73 @@ NamespaceExecutor::NamespaceExecutor(NamespaceSandboxSpec spec) : spec_(std::mov
   for (auto& child : children_) {
     child.store(0);
   }
+  for (auto& fd : child_fds_) {
+    fd.store(0);
+  }
 }
 
+namespace {
+int open_pidfd(pid_t pid) {
+#ifdef SYS_pidfd_open
+  const int fd = static_cast<int>(::syscall(SYS_pidfd_open, pid, 0));
+  return fd >= 0 ? fd : -1;
+#else
+  (void)pid;
+  return -1;
+#endif
+}
+}  // namespace
+
 bool NamespaceExecutor::register_child(pid_t pid) {
-  for (auto& child : children_) {
+  for (std::size_t index = 0; index < children_.size(); ++index) {
     pid_t expected = 0;
-    if (child.compare_exchange_strong(expected, pid)) {
-      return true;
+    if (!children_[index].compare_exchange_strong(expected, -1)) {
+      continue;
     }
+    // Open the pidfd before publishing the pid: stop() must never observe a
+    // pid without the handle that makes it safe to signal.
+    child_fds_[index].store(open_pidfd(pid));
+    children_[index].store(pid);
+    return true;
   }
   return false;
 }
 
 void NamespaceExecutor::unregister_child(pid_t pid) {
-  for (auto& child : children_) {
-    pid_t expected = pid;
-    if (child.compare_exchange_strong(expected, 0)) {
-      return;
+  for (std::size_t index = 0; index < children_.size(); ++index) {
+    if (children_[index].load() != pid) {
+      continue;
     }
+    children_[index].store(0);
+    const int fd = child_fds_[index].exchange(0);
+    if (fd > 0) {
+      ::close(fd);
+    }
+    return;
   }
 }
 
 void NamespaceExecutor::stop() {
   stopping_.store(true);
-  for (const auto& child : children_) {
-    const pid_t pid = child.load();
-    if (pid > 0) {
-      ::kill(-pid, SIGKILL);
-      ::kill(pid, SIGKILL);
+  for (std::size_t index = 0; index < children_.size(); ++index) {
+    const pid_t pid = children_[index].load();
+    if (pid <= 0) {
+      continue;
     }
+    const int fd = child_fds_[index].load();
+#ifdef SYS_pidfd_send_signal
+    if (fd > 0 &&
+        ::syscall(SYS_pidfd_send_signal, fd, SIGKILL, nullptr, 0) == 0) {
+      // The pidfd pins the pid, so the group signal cannot hit a recycled
+      // pid; it tears down any child that left the group.
+      ::kill(-pid, SIGKILL);
+      continue;
+    }
+#else
+    (void)fd;
+#endif
+    ::kill(-pid, SIGKILL);
+    ::kill(pid, SIGKILL);
   }
 }
 

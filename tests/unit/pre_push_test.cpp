@@ -337,4 +337,27 @@ TEST_F(PrePushTest, MissingTrailersAreRejected) {
   EXPECT_TRUE(has_finding(*findings, "trailer"));
 }
 
+
+TEST_F(PrePushTest, TrailerValuesAreCheckedAgainstTheRun) {
+  write_file(dir_ / "repo" / "src" / "a.cpp", "x\n");
+  cf::git::CommitTrailers trailers;
+  trailers.run_id = "R12";
+  trailers.milestone_id = "M3";
+  trailers.op_id = "op_1";
+  const std::string sha = commit({"src/a.cpp"}, "feat: a", trailers);
+
+  cf::github::PrePushConfig wrong;
+  wrong.expected_trailers["CF-Run"] = "R99";
+  auto findings = check_pre_push(*repository_, "cf/R12/M3", sha, wrong);
+  ASSERT_TRUE(findings.has_value());
+  EXPECT_TRUE(has_finding(*findings, "trailer"));
+
+  cf::github::PrePushConfig right;
+  right.expected_trailers["CF-Run"] = "R12";
+  right.expected_trailers["CF-Milestone"] = "M3";
+  findings = check_pre_push(*repository_, "cf/R12/M3", sha, right);
+  ASSERT_TRUE(findings.has_value());
+  EXPECT_TRUE(findings->empty());
+}
+
 }  // namespace

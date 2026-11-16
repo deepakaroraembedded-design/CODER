@@ -163,8 +163,10 @@ nlohmann::json build_role_config(const RoleConfigSpec& spec) {
                              {"command", std::move(mcp_command)},
                              {"enabled", true}};
   if (!spec.calls_file.empty()) {
-    config["mcp"]["cf"]["environment"] =
-        Json{{"CF_MCP_CALLS_FILE", spec.calls_file}};
+    config["mcp"]["cf"]["environment"] = Json{
+        {"CF_MCP_CALLS_FILE", spec.calls_file},
+        {"CF_MCP_ROLE", spec.role},
+        {"CF_MCP_READ_ONLY", "1"}};
   }
   return config;
 }

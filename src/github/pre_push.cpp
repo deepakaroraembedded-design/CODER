@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <optional>
 #include <fnmatch.h>
 #include <set>
 #include <sstream>
@@ -29,7 +30,8 @@ std::string_view trim_view(std::string_view text) {
 // Required trailers live in the final paragraph. Matching anywhere in the
 // message would let prose or a quoted diff satisfy the check (design section
 // 10.4.6).
-bool has_required_trailer(std::string_view message, std::string_view trailer) {
+std::optional<std::string_view> trailer_value(std::string_view message,
+                                              std::string_view trailer) {
   std::vector<std::string_view> lines;
   std::size_t begin = 0;
   while (begin <= message.size()) {
@@ -62,11 +64,12 @@ bool has_required_trailer(std::string_view message, std::string_view trailer) {
     if (trim_view(line.substr(0, colon)) != trailer) {
       continue;
     }
-    if (!trim_view(line.substr(colon + 1)).empty()) {
-      return true;
+    const std::string_view value = trim_view(line.substr(colon + 1));
+    if (!value.empty()) {
+      return value;
     }
   }
-  return false;
+  return std::nullopt;
 }
 
 std::vector<std::string> split_lines(const std::string& text) {
@@ -227,8 +230,16 @@ Result<std::vector<PrePushFinding>> check_pre_push(git::Repository& repository,
     return tl::make_unexpected(message.error());
   }
   for (const auto& trailer : config.required_trailers) {
-    if (!has_required_trailer(*message, trailer)) {
+    if (!trailer_value(*message, trailer).has_value()) {
       findings.push_back({"trailer", "commit is missing the " + trailer + " trailer"});
+    }
+  }
+  for (const auto& [trailer, expected] : config.expected_trailers) {
+    const auto value = trailer_value(*message, trailer);
+    if (value.has_value() && *value != expected) {
+      findings.push_back({"trailer", "commit has " + trailer + ": " +
+                                         std::string(*value) + ", expected " +
+                                         expected});
     }
   }
 

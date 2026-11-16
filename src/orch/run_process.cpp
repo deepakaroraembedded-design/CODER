@@ -10,6 +10,8 @@
 #include <unistd.h>
 
 #include "cf/common/path.hpp"
+#include "cf/orch/agent_intents.hpp"
+#include "cf/orch/agent_view.hpp"
 #include "cf/orch/escalation.hpp"
 #include "cf/orch/defect_export.hpp"
 #include "cf/orch/github_flow.hpp"
@@ -341,6 +343,9 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
       }
     }
     factory_config.environment = config_.environment;
+    factory_config.agent_dir = agent_dir(run_dir);
+    std::filesystem::create_directories(factory_config.agent_dir / "views", ec);
+    std::filesystem::create_directories(factory_config.agent_dir / "logs", ec);
     factory_config.retriever = retriever.get();
     factory_config.ambiguities_file = run_dir / "ambiguities.jsonl";
     factory_config.codeintel_db = codeintel_db;
@@ -367,7 +372,8 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
                         factory_config.ns_write_paths.end(), top) ==
               factory_config.ns_write_paths.end()) {
             factory_config.ns_write_paths.push_back(top);
-            if (slash == std::string::npos && top.find('.') != std::string::npos) {
+            if (slash == std::string::npos &&
+                cf::common::looks_like_file(top)) {
               factory_config.ns_write_files.push_back(top);
             }
           }
@@ -404,7 +410,49 @@ Result<RunState> RunProcess::execute(store::UnixTime now) {
   runner_options.blocking_severities = config_.review_blocking_severities;
   runner_options.allowed_commands = agent_command_summary(
       config_.profile, config_.profile_build_system, config_.profile_test_framework);
-  SessionAgentRunner agent_runner(driver_factory, run_dir, runner_options);
+  auto intent_ids = std::make_shared<std::map<std::string, std::string>>();
+  runner_options.role_models = config_.role_models;
+  runner_options.prices = llm::default_prices();
+  runner_options.require_priced_models =
+      config_.orchestrator.max_usd_total.has_value();
+  if (runner_options.require_priced_models) {
+    for (const auto& [role, model] : config_.role_models) {
+      if (runner_options.prices.count(model) == 0) {
+        return fail("ORCH_UNPRICED_MODEL",
+                    "no price for model '" + model + "' (role '" + role +
+                        "'); a USD budget would silently undercount. Add the "
+                        "model to the price table or drop the USD budget");
+      }
+    }
+  }
+  runner_options.on_usage = [this](const llm::CallRecord& record) {
+    store::LlmCallRecord row;
+    row.run_id = record.run_id;
+    row.role = record.role;
+    row.model = record.model;
+    row.prompt_tokens = record.usage.prompt_tokens;
+    row.completion_tokens = record.usage.completion_tokens;
+    row.cached_tokens = record.usage.cached_tokens;
+    row.usd = record.usd;
+    row.latency_ms = record.latency_ms;
+    row.at = store::unix_now();
+    (void)store_.record_llm_call(row);
+  };
+  runner_options.before_turn = [this, run_dir](const AgentTurnRequest& request) {
+    const auto view = agent_view_path(run_dir, request.role, request.worktree);
+    std::error_code view_ec;
+    std::filesystem::create_directories(view.parent_path(), view_ec);
+    return store_.backup_to(view);
+  };
+  runner_options.intent_handler =
+      [this, intent_ids](const AgentTurnRequest& request,
+                         const std::vector<nlohmann::json>& calls) {
+        return apply_agent_intents(store_, config_.run_id, request.milestone_id,
+                                   calls, *intent_ids,
+                                   config_.waiver_business_days);
+      };
+  SessionAgentRunner agent_runner(driver_factory, agent_dir(run_dir),
+                                  runner_options);
 
   DriverConfig driver_config;
   driver_config.run_id = config_.run_id;

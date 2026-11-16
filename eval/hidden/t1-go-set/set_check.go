@@ -31,6 +31,9 @@ func main() {
 	check(!s.Contains(2) && s.Len() == 2, "remove")
 
 	fmt.Printf("{\"tests\": %d, \"passed\": %d}\n", tests, passed)
+	if path := os.Getenv("CF_HIDDEN_RESULT"); path != "" {
+		_ = os.WriteFile(path, []byte(fmt.Sprintf("{\"tests\": %d, \"passed\": %d}\n", tests, passed)), 0644)
+	}
 	if passed != tests {
 		os.Exit(1)
 	}

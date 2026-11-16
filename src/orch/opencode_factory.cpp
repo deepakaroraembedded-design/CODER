@@ -1,5 +1,7 @@
 #include "cf/orch/opencode_factory.hpp"
 
+#include <map>
+
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -11,6 +13,8 @@
 
 #include "cf/common/path.hpp"
 #include "cf/common/process.hpp"
+#include "cf/orch/agent_view.hpp"
+#include "cf/store/run_store.hpp"
 #include "cf/orch/role_config.hpp"
 
 namespace cf::orch {
@@ -246,6 +250,9 @@ std::vector<std::string> sandboxed_server_launcher(
   }
   add_option(argv, "--network",
              config.sandbox_network.empty() ? "bridge" : config.sandbox_network);
+  if (config.pids_limit > 0) {
+    add_option(argv, "--pids-limit", std::to_string(config.pids_limit));
+  }
   add_option(argv, "--cap-drop", "ALL");
   add_option(argv, "--security-opt", "no-new-privileges");
   add_option(argv, "--user",
@@ -259,7 +266,10 @@ std::vector<std::string> sandboxed_server_launcher(
     add_option(argv, "-v", worktree + "/" + path + ":/work/" + path);
   }
   add_option(argv, "-v", worktree + "/.git:/work/.git:ro");
-  add_option(argv, "-v", config.run_dir.string() + ":/cf");
+  add_option(argv, "-v", config.run_dir.string() + ":/cf:ro");
+  const std::filesystem::path agent_root =
+      config.agent_dir.empty() ? agent_dir(config.run_dir) : config.agent_dir;
+  add_option(argv, "-v", agent_root.string() + ":/cf/agent");
   if (!config.mcp_binary_host.empty()) {
     add_option(argv, "-v", config.mcp_binary_host + ":/usr/local/bin/cf-mcp:ro");
   }
@@ -294,7 +304,7 @@ std::vector<std::string> sandboxed_server_launcher(
 
   add_option(argv, "-e", "HOME=/home/cf");
   add_option(argv, "-e", "OPENCODE_CONFIG=/cf/" + config_path.filename().string());
-  add_option(argv, "-e", "CF_MCP_CALLS_FILE=/cf/" + calls_file.filename().string());
+  add_option(argv, "-e", "CF_MCP_CALLS_FILE=/cf/agent/" + calls_file.filename().string());
   add_option(argv, "-e", "CF_ROLE=" + role);
   if (!config.api_key_env.empty()) {
     const char* api_key = std::getenv(config.api_key_env.c_str());
@@ -330,10 +340,17 @@ std::vector<std::string> namespace_server_launcher(
       config.ns_agent_binary, "host", "--worktree", worktree,
       "--run-dir", config.run_dir.string(),
       "--bridge-dir", (config.run_dir / "bridge").string(),
+      "--agent-dir",
+      (config.agent_dir.empty() ? agent_dir(config.run_dir) : config.agent_dir)
+          .string(),
       "--role", role,
       "--host-port", std::to_string(port),
       "--proxy", proxy_url,
-      "--inner-binary", "/cf/bin/cf-ns-agent"};
+      "--inner-binary", "/cf/agent/bin/cf-ns-agent"};
+  if (config.pids_limit > 0) {
+    argv.push_back("--pids-limit");
+    argv.push_back(std::to_string(config.pids_limit));
+  }
   if (!mcp_source.empty()) {
     argv.push_back("--mcp-source");
     argv.push_back(mcp_source);
@@ -361,7 +378,7 @@ std::vector<std::string> namespace_server_launcher(
     }
   }
   argv.push_back("--log");
-  argv.push_back("/cf/opencode-" + role + ".log");
+  argv.push_back("/cf/agent/logs/opencode-" + role + ".log");
   return argv;
 }
 
@@ -453,8 +470,22 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   // 1. The role's config and calls file. Sandboxed servers see the run
   // directory at /cf, so every path in the config is a container path.
   const bool sandboxed = !config_.sandbox_image.empty() || namespace_agent;
-  const std::filesystem::path calls_file =
-      config_.run_dir / ("calls-" + role + ".jsonl");
+  const std::filesystem::path agent_root =
+      config_.agent_dir.empty() ? agent_dir(config_.run_dir) : config_.agent_dir;
+  std::error_code agent_ec;
+  std::filesystem::create_directories(agent_root / "views", agent_ec);
+  std::filesystem::create_directories(agent_root / "logs", agent_ec);
+  const std::filesystem::path calls_file = agent_calls_path(config_.run_dir, role);
+  const std::filesystem::path view_file =
+      agent_view_path(config_.run_dir, role, worktree);
+  {
+    // Create the snapshot so the read-only mount target exists before the
+    // server starts; the orchestrator refreshes it before every turn.
+    auto created = store::RunStore::prepare_view(view_file);
+    if (!created) {
+      return tl::make_unexpected(created.error());
+    }
+  }
   RoleConfigSpec spec;
   spec.role = role;
   spec.provider_base_url = config_.provider_base_url;
@@ -473,7 +504,7 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   }
   spec.mcp_command =
       namespace_agent
-          ? "/cf/bin/cf-mcp"
+          ? "/cf/agent/bin/cf-mcp"
           : (sandboxed ? "/usr/local/bin/cf-mcp" : config_.mcp_command);
   spec.embeddings_model = config_.embeddings_model;
   spec.embeddings_base_url = config_.embeddings_base_url;
@@ -497,7 +528,8 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
     spec.standard_var = config_.standard_var;
   }
   spec.run_id = config_.run_id;
-  spec.db_path = sandboxed ? "/cf/run.db" : config_.db_path;
+  spec.db_path = sandboxed ? "/cf/agent/views/" + view_file.filename().string()
+                           : view_file.string();
   spec.docs_dir = sandboxed ? (config_.docs_dir.empty() ? "" : "/cf/docs")
                             : config_.docs_dir;
   if (!config_.reference_docs_dir.empty()) {
@@ -525,8 +557,9 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   spec.rag_bm25_weight = config_.rag_bm25_weight;
   spec.rag_vector_weight = config_.rag_vector_weight;
   spec.rag_precedence = config_.rag_precedence;
-  spec.calls_file = sandboxed ? "/cf/" + calls_file.filename().string()
-                              : calls_file.string();
+  spec.calls_file =
+      sandboxed ? "/cf/agent/" + calls_file.filename().string()
+                : calls_file.string();
 
   // The writable mount points must exist before the container starts,
   // otherwise Docker creates them root-owned and the agent cannot write.
@@ -535,6 +568,27 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
                       is_write_file(config_, path));
   }
 
+  // Read-only extra mounts under /cf need their targets to exist in the
+  // host run directory: /cf is mounted from it and cannot be written after.
+  {
+    std::error_code mount_ec;
+    for (const auto& [configured, name] :
+         std::initializer_list<std::pair<const std::string*, const char*>>{
+             {&config_.docs_dir, "docs"},
+             {&config_.reference_docs_dir, "reference-docs"},
+             {&config_.designs_dir, "designs"},
+             {&config_.patterns_dir, "catalog"}}) {
+      if (!configured->empty()) {
+        std::filesystem::create_directories(config_.run_dir / name, mount_ec);
+      }
+    }
+    if (!config_.reference_versions_file.empty()) {
+      const auto target = config_.run_dir / "reference-versions.json";
+      if (!std::filesystem::exists(target, mount_ec)) {
+        std::ofstream touch(target, std::ios::binary | std::ios::app);
+      }
+    }
+  }
   const std::filesystem::path config_path =
       config_.run_dir / ("opencode-" + role + ".json");
   {
@@ -564,7 +618,7 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
   server_options.port = port;
   server_options.config_path = config_path;
   server_options.working_directory = worktree;
-  server_options.log_path = config_.run_dir / ("opencode-" + role + ".log");
+  server_options.log_path = agent_log_path(config_.run_dir, role);
   server_options.start_timeout = config_.start_timeout;
   if (namespace_agent) {
     const std::string mcp_source = resolve_host_binary(
@@ -591,7 +645,7 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
       }
       launcher.push_back("--opencode-source");
       launcher.push_back(opencode_source);
-      binary = "/cf/bin/opencode";
+      binary = "/cf/agent/bin/opencode";
     }
     const auto add_source = [&launcher](const char* flag,
                                         const std::string& source) {
@@ -613,7 +667,7 @@ Result<std::unique_ptr<SessionDriver>> OpencodeRoleFactory::create(
     server_options.environment.push_back(
         {"OPENCODE_CONFIG", "/cf/" + config_path.filename().string()});
     server_options.environment.push_back(
-        {"CF_MCP_CALLS_FILE", "/cf/" + calls_file.filename().string()});
+        {"CF_MCP_CALLS_FILE", "/cf/agent/" + calls_file.filename().string()});
     server_options.environment.push_back({"CF_ROLE", role});
     state.client = std::make_unique<agents::OpencodeClient>(client_options);
     auto server = OpencodeServerProcess::start(server_options, *state.client);

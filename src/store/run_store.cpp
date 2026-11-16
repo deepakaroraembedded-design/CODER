@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <cstring>
 #include <ctime>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -16,6 +17,7 @@
 #include <openssl/rand.h>
 #include <sqlite3.h>
 
+#include <SQLiteCpp/Backup.h>
 #include <SQLiteCpp/SQLiteCpp.h>
 
 namespace cf::store {
@@ -141,7 +143,8 @@ CREATE TABLE IF NOT EXISTS checkpoints (
   worktree_heads_json TEXT,
   sessions_json       TEXT,
   milestone_state     TEXT,
-  at                  INT
+  at                  INT,
+  turn_op_id          TEXT
 );
 -- The commit a milestone's changed-file scope starts from; persisted so a
 -- restarted orchestrator does not silently report an empty diff (B-33).
@@ -210,6 +213,13 @@ auto sql_guard(std::string_view context, F&& fn) -> decltype(fn()) {
   } catch (const std::exception& e) {
     return fail(error_codes::kQueryFailed, std::string(context) + ": " + e.what());
   }
+}
+
+template <typename F>
+auto locked_sql_guard(std::recursive_mutex& mutex, std::string_view context,
+                      F&& fn) -> decltype(fn()) {
+  std::lock_guard<std::recursive_mutex> lock(mutex);
+  return sql_guard(context, std::forward<F>(fn));
 }
 
 OperationRecord read_operation(const SQLite::Statement& stmt) {
@@ -391,8 +401,10 @@ std::string random_id(std::string_view prefix) {
 std::string new_op_id() { return random_id("op_"); }
 
 struct RunStore::Impl {
-  Impl(const std::filesystem::path& db_path)
-      : db(db_path.string(), SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE),
+  Impl(const std::filesystem::path& db_path, bool read_only)
+      : db(db_path.string(), read_only
+                               ? SQLite::OPEN_READONLY
+                               : (SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE)),
         lock_path(db_path.string() + ".lease") {}
 
   ~Impl() {
@@ -429,26 +441,78 @@ struct RunStore::Impl {
   SQLite::Database db;
   std::string lock_path;
   int lock_fd = -1;
+  // SQLite is opened in serialized mode, but a transaction scope is not: two
+  // threads on the same connection can interleave BEGIN/COMMIT. Every public
+  // store call serializes here (design section 6.12.6: one authoritative
+  // writer).
+  mutable std::recursive_mutex mutex;
 };
 
 RunStore::RunStore(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 RunStore::~RunStore() = default;
 
-Result<std::unique_ptr<RunStore>> RunStore::open(const std::filesystem::path& db_path) {
+Result<std::unique_ptr<RunStore>> RunStore::open(const std::filesystem::path& db_path,
+                                                OpenOptions options) {
   try {
-    auto impl = std::make_unique<Impl>(db_path);
-    impl->db.exec("PRAGMA journal_mode=WAL;");
+    auto impl = std::make_unique<Impl>(db_path, options.read_only);
+    if (!options.read_only) {
+      impl->db.exec("PRAGMA journal_mode=WAL;");
+    }
     impl->db.exec("PRAGMA busy_timeout=5000;");
-    impl->db.exec("PRAGMA foreign_keys=ON;");
-    impl->db.exec(kSchema);
+    if (!options.read_only) {
+      impl->db.exec("PRAGMA foreign_keys=ON;");
+      impl->db.exec(kSchema);
+      bool has_turn_op = false;
+      SQLite::Statement columns(impl->db, "PRAGMA table_info(checkpoints)");
+      while (columns.executeStep()) {
+        if (columns.getColumn(1).getString() == "turn_op_id") {
+          has_turn_op = true;
+          break;
+        }
+      }
+      if (!has_turn_op) {
+        impl->db.exec("ALTER TABLE checkpoints ADD COLUMN turn_op_id TEXT");
+      }
+    }
     return std::unique_ptr<RunStore>(new RunStore(std::move(impl)));
   } catch (const std::exception& e) {
     return fail(error_codes::kOpenFailed, db_path.string() + ": " + e.what());
   }
 }
 
+Status RunStore::prepare_view(const std::filesystem::path& destination) {
+  try {
+    SQLite::Database db(destination.string(),
+                        SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+    db.exec("PRAGMA journal_mode=DELETE;");
+    db.exec(kSchema);
+    return {};
+  } catch (const std::exception& e) {
+    return fail(error_codes::kOpenFailed,
+                "prepare agent view " + destination.string() + ": " + e.what());
+  }
+}
+
+Status RunStore::backup_to(const std::filesystem::path& destination) const {
+  std::lock_guard<std::recursive_mutex> lock(impl_->mutex);
+  try {
+    // The destination is a disposable snapshot that cf-mcp opens read-only.
+    // A rollback journal keeps it readable without the WAL shm file.
+    SQLite::Database dest(destination.string(),
+                          SQLite::OPEN_READWRITE | SQLite::OPEN_CREATE);
+    dest.exec("PRAGMA journal_mode=DELETE;");
+    dest.exec("PRAGMA busy_timeout=5000;");
+    SQLite::Backup backup(dest, impl_->db);
+    backup.executeStep(-1);
+    return {};
+  } catch (const std::exception& e) {
+    return fail(error_codes::kQueryFailed,
+                "backup to " + destination.string() + ": " + e.what());
+  }
+}
+
 Status RunStore::create_run(const RunRecord& run) {
-  return sql_guard("create_run", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "create_run", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "INSERT INTO runs (run_id, plan_id, state, created_at, config_json) "
@@ -471,7 +535,7 @@ Status RunStore::create_run(const RunRecord& run) {
 }
 
 Result<RunRecord> RunStore::get_run(std::string_view run_id) const {
-  return sql_guard("get_run", [&]() -> Result<RunRecord> {
+  return locked_sql_guard(impl_->mutex, "get_run", [&]() -> Result<RunRecord> {
     SQLite::Statement stmt(
         impl_->db, "SELECT run_id, plan_id, state, created_at, config_json FROM runs "
                    "WHERE run_id = ?");
@@ -491,7 +555,7 @@ Result<RunRecord> RunStore::get_run(std::string_view run_id) const {
 
 Status RunStore::update_run_config(std::string_view run_id,
                                    std::string_view config_json) {
-  return sql_guard("update_run_config", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "update_run_config", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db, "UPDATE runs SET config_json = ? WHERE run_id = ?");
     stmt.bind(1, std::string(config_json));
@@ -507,7 +571,7 @@ Status RunStore::update_run_config(std::string_view run_id,
 Status RunStore::apply_transition(std::string_view run_id, std::string_view from_state,
                                   std::string_view to_state, std::string_view event_json,
                                   const std::vector<NewOperation>& intents, UnixTime now) {
-  return sql_guard("apply_transition", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "apply_transition", [&]() -> Status {
     SQLite::Transaction txn(impl_->db);
     auto applied = apply_transition_in_tx(impl_->db, run_id, from_state, to_state,
                                           event_json, intents, now);
@@ -521,7 +585,7 @@ Status RunStore::apply_transition(std::string_view run_id, std::string_view from
 
 Result<std::vector<TransitionRecord>> RunStore::list_transitions(
     std::string_view run_id, std::size_t limit) const {
-  return sql_guard("list_transitions", [&]() -> Result<std::vector<TransitionRecord>> {
+  return locked_sql_guard(impl_->mutex, "list_transitions", [&]() -> Result<std::vector<TransitionRecord>> {
     std::string sql =
         "SELECT id, run_id, from_state, to_state, event_json, at FROM transitions "
         "WHERE run_id = ? ORDER BY id";
@@ -553,7 +617,7 @@ Result<std::vector<TransitionRecord>> RunStore::list_transitions(
 }
 
 Status RunStore::upsert_milestone(const MilestoneRecord& milestone) {
-  return sql_guard("upsert_milestone", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "upsert_milestone", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "INSERT INTO milestones (run_id, milestone_id, state, iterations) "
@@ -571,7 +635,7 @@ Status RunStore::upsert_milestone(const MilestoneRecord& milestone) {
 
 Result<MilestoneRecord> RunStore::get_milestone(std::string_view run_id,
                                                 std::string_view milestone_id) const {
-  return sql_guard("get_milestone", [&]() -> Result<MilestoneRecord> {
+  return locked_sql_guard(impl_->mutex, "get_milestone", [&]() -> Result<MilestoneRecord> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT run_id, milestone_id, state, iterations FROM milestones "
@@ -595,7 +659,7 @@ Result<MilestoneRecord> RunStore::get_milestone(std::string_view run_id,
 
 Result<std::vector<MilestoneRecord>> RunStore::list_milestones(
     std::string_view run_id) const {
-  return sql_guard("list_milestones", [&]() -> Result<std::vector<MilestoneRecord>> {
+  return locked_sql_guard(impl_->mutex, "list_milestones", [&]() -> Result<std::vector<MilestoneRecord>> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT run_id, milestone_id, state, iterations FROM milestones "
@@ -620,7 +684,7 @@ Status RunStore::set_milestone_state(std::string_view run_id,
                                      std::string_view state, uint32_t iterations,
                                      UnixTime now) {
   (void)now;  // milestone table has no timestamp column in the design schema
-  return sql_guard("set_milestone_state", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "set_milestone_state", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "UPDATE milestones SET state = ?, iterations = ? "
@@ -640,7 +704,7 @@ Status RunStore::set_milestone_state(std::string_view run_id,
 
 Status RunStore::record_intents(std::string_view run_id,
                                 const std::vector<NewOperation>& intents, UnixTime now) {
-  return sql_guard("record_intents", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "record_intents", [&]() -> Status {
     SQLite::Transaction txn(impl_->db);
     for (const auto& intent : intents) {
       auto inserted = insert_operation(impl_->db, run_id, intent, now);
@@ -654,13 +718,13 @@ Status RunStore::record_intents(std::string_view run_id,
 }
 
 Result<OperationRecord> RunStore::get_operation(std::string_view op_id) const {
-  return sql_guard("get_operation",
+  return locked_sql_guard(impl_->mutex, "get_operation",
                    [&]() -> Result<OperationRecord> { return load_operation(impl_->db, op_id); });
 }
 
 Result<OperationRecord> RunStore::find_operation_by_key(
     std::string_view idempotency_key) const {
-  return sql_guard("find_operation_by_key", [&]() -> Result<OperationRecord> {
+  return locked_sql_guard(impl_->mutex, "find_operation_by_key", [&]() -> Result<OperationRecord> {
     SQLite::Statement stmt(
         impl_->db, std::string("SELECT ") + kOperationColumns +
                        " FROM operations WHERE idempotency_key = ?");
@@ -675,7 +739,7 @@ Result<OperationRecord> RunStore::find_operation_by_key(
 
 Result<std::vector<OperationRecord>> RunStore::list_operations(
     std::string_view run_id, const std::vector<std::string>& states) const {
-  return sql_guard("list_operations", [&]() -> Result<std::vector<OperationRecord>> {
+  return locked_sql_guard(impl_->mutex, "list_operations", [&]() -> Result<std::vector<OperationRecord>> {
     std::string sql = std::string("SELECT ") + kOperationColumns +
                       " FROM operations WHERE run_id = ?";
     if (!states.empty()) {
@@ -701,7 +765,7 @@ Result<std::vector<OperationRecord>> RunStore::list_operations(
 
 Status RunStore::mark_operation_started(std::string_view op_id, uint64_t epoch,
                                         UnixTime now) {
-  return sql_guard("mark_operation_started", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "mark_operation_started", [&]() -> Status {
     SQLite::Transaction txn(impl_->db);
     auto op = load_operation(impl_->db, op_id);
     if (!op) {
@@ -736,7 +800,7 @@ Status RunStore::mark_operation_started(std::string_view op_id, uint64_t epoch,
 
 Status RunStore::confirm_operation(std::string_view op_id, std::string_view result_json,
                                    uint64_t epoch, UnixTime now) {
-  return sql_guard("confirm_operation", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "confirm_operation", [&]() -> Status {
     SQLite::Transaction txn(impl_->db);
     auto op = load_operation(impl_->db, op_id);
     if (!op) {
@@ -765,7 +829,7 @@ Status RunStore::confirm_operation_with_transition(
     std::string_view op_id, std::string_view result_json, uint64_t epoch,
     std::string_view run_id, std::string_view from_state, std::string_view to_state,
     std::string_view event_json, const std::vector<NewOperation>& intents, UnixTime now) {
-  return sql_guard("confirm_operation_with_transition", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "confirm_operation_with_transition", [&]() -> Status {
     SQLite::Transaction txn(impl_->db);
     auto op = load_operation(impl_->db, op_id);
     if (!op) {
@@ -796,7 +860,7 @@ Status RunStore::confirm_operation_with_transition(
 
 Status RunStore::fail_operation(std::string_view op_id, std::string_view error_json,
                                 UnixTime now) {
-  return sql_guard("fail_operation", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "fail_operation", [&]() -> Status {
     SQLite::Transaction txn(impl_->db);
     auto op = load_operation(impl_->db, op_id);
     if (!op) {
@@ -820,7 +884,7 @@ Status RunStore::fail_operation(std::string_view op_id, std::string_view error_j
 
 Status RunStore::mark_operation_needs_reconcile(std::string_view op_id,
                                                 std::string_view note, UnixTime now) {
-  return sql_guard("mark_operation_needs_reconcile", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "mark_operation_needs_reconcile", [&]() -> Status {
     SQLite::Transaction txn(impl_->db);
     auto op = load_operation(impl_->db, op_id);
     if (!op) {
@@ -843,7 +907,7 @@ Status RunStore::mark_operation_needs_reconcile(std::string_view op_id,
 }
 
 Status RunStore::retry_operation(std::string_view op_id, UnixTime now) {
-  return sql_guard("retry_operation", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "retry_operation", [&]() -> Status {
     SQLite::Transaction txn(impl_->db);
     auto op = load_operation(impl_->db, op_id);
     if (!op) {
@@ -871,7 +935,7 @@ Status RunStore::retry_operation(std::string_view op_id, UnixTime now) {
 }
 
 Status RunStore::record_gate_result(const GateResultRow& row) {
-  return sql_guard("record_gate_result", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "record_gate_result", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "INSERT INTO gate_results (run_id, milestone_id, commit_sha, gate, passed, "
@@ -890,7 +954,7 @@ Status RunStore::record_gate_result(const GateResultRow& row) {
 
 Result<std::vector<GateResultRow>> RunStore::list_gate_results(
     std::string_view run_id, std::string_view commit_sha) const {
-  return sql_guard("list_gate_results", [&]() -> Result<std::vector<GateResultRow>> {
+  return locked_sql_guard(impl_->mutex, "list_gate_results", [&]() -> Result<std::vector<GateResultRow>> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT id, run_id, milestone_id, commit_sha, gate, passed, report_ref, at "
@@ -916,7 +980,7 @@ Result<std::vector<GateResultRow>> RunStore::list_gate_results(
 
 Result<std::vector<GateResultRow>> RunStore::list_all_gate_results(
     std::string_view run_id) const {
-  return sql_guard("list_all_gate_results",
+  return locked_sql_guard(impl_->mutex, "list_all_gate_results",
                    [&]() -> Result<std::vector<GateResultRow>> {
     SQLite::Statement stmt(
         impl_->db,
@@ -942,7 +1006,7 @@ Result<std::vector<GateResultRow>> RunStore::list_all_gate_results(
 
 Result<bool> RunStore::all_gates_passed(std::string_view run_id,
                                         std::string_view commit_sha) const {
-  return sql_guard("all_gates_passed", [&]() -> Result<bool> {
+  return locked_sql_guard(impl_->mutex, "all_gates_passed", [&]() -> Result<bool> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT COUNT(*), COALESCE(SUM(passed), 0) FROM gate_results "
@@ -958,7 +1022,7 @@ Result<bool> RunStore::all_gates_passed(std::string_view run_id,
 
 Result<std::vector<GateResultRow>> RunStore::latest_gate_results(
     std::string_view run_id, std::string_view milestone_id) const {
-  return sql_guard("latest_gate_results", [&]() -> Result<std::vector<GateResultRow>> {
+  return locked_sql_guard(impl_->mutex, "latest_gate_results", [&]() -> Result<std::vector<GateResultRow>> {
     std::string sql = "SELECT commit_sha FROM gate_results WHERE run_id = ?";
     if (!milestone_id.empty()) {
       sql += " AND milestone_id = ?";
@@ -978,7 +1042,7 @@ Result<std::vector<GateResultRow>> RunStore::latest_gate_results(
 }
 
 Status RunStore::upsert_defect(const DefectRecord& defect) {
-  return sql_guard("upsert_defect", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "upsert_defect", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "INSERT INTO defects (id, run_id, milestone_id, status, severity, fingerprint, "
@@ -1018,7 +1082,7 @@ DefectRecord read_defect(const SQLite::Statement& stmt) {
 }  // namespace
 
 Result<DefectRecord> RunStore::get_defect(std::string_view id) const {
-  return sql_guard("get_defect", [&]() -> Result<DefectRecord> {
+  return locked_sql_guard(impl_->mutex, "get_defect", [&]() -> Result<DefectRecord> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT id, run_id, milestone_id, status, severity, fingerprint, body_json, "
@@ -1033,7 +1097,7 @@ Result<DefectRecord> RunStore::get_defect(std::string_view id) const {
 
 Result<DefectRecord> RunStore::find_defect_by_fingerprint(
     std::string_view run_id, std::string_view fingerprint) const {
-  return sql_guard("find_defect_by_fingerprint", [&]() -> Result<DefectRecord> {
+  return locked_sql_guard(impl_->mutex, "find_defect_by_fingerprint", [&]() -> Result<DefectRecord> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT id, run_id, milestone_id, status, severity, fingerprint, body_json, "
@@ -1051,7 +1115,7 @@ Result<DefectRecord> RunStore::find_defect_by_fingerprint(
 Result<std::vector<DefectRecord>> RunStore::list_defects(
     std::string_view run_id, std::string_view milestone_id,
     const std::vector<std::string>& statuses) const {
-  return sql_guard("list_defects", [&]() -> Result<std::vector<DefectRecord>> {
+  return locked_sql_guard(impl_->mutex, "list_defects", [&]() -> Result<std::vector<DefectRecord>> {
     std::string sql =
         "SELECT id, run_id, milestone_id, status, severity, fingerprint, body_json, "
         "attempts FROM defects WHERE run_id = ?";
@@ -1085,7 +1149,7 @@ Result<std::vector<DefectRecord>> RunStore::list_defects(
 
 Status RunStore::set_defect_status(std::string_view id, std::string_view status,
                                    uint32_t attempts) {
-  return sql_guard("set_defect_status", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "set_defect_status", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db, "UPDATE defects SET status = ?, attempts = ? WHERE id = ?");
     stmt.bind(1, std::string(status));
@@ -1099,7 +1163,7 @@ Status RunStore::set_defect_status(std::string_view id, std::string_view status,
 }
 
 Result<WaiverRecord> RunStore::record_waiver(const WaiverRecord& waiver) {
-  return sql_guard("record_waiver", [&]() -> Result<WaiverRecord> {
+  return locked_sql_guard(impl_->mutex, "record_waiver", [&]() -> Result<WaiverRecord> {
     SQLite::Statement run(impl_->db, "SELECT COUNT(*) FROM runs WHERE run_id = ?");
     run.bind(1, waiver.run_id);
     run.executeStep();
@@ -1160,7 +1224,7 @@ Result<WaiverRecord> RunStore::record_waiver(const WaiverRecord& waiver) {
 
 Result<WaiverRequestRecord> RunStore::record_waiver_request(
     const WaiverRequestRecord& request) {
-  return sql_guard("record_waiver_request", [&]() -> Result<WaiverRequestRecord> {
+  return locked_sql_guard(impl_->mutex, "record_waiver_request", [&]() -> Result<WaiverRequestRecord> {
     SQLite::Statement run(impl_->db, "SELECT COUNT(*) FROM runs WHERE run_id = ?");
     run.bind(1, request.run_id);
     run.executeStep();
@@ -1245,7 +1309,7 @@ Result<WaiverRequestRecord> RunStore::record_waiver_request(
 
 Result<std::vector<WaiverRequestRecord>> RunStore::list_waiver_requests(
     std::string_view run_id, std::string_view milestone_id) const {
-  return sql_guard("list_waiver_requests",
+  return locked_sql_guard(impl_->mutex, "list_waiver_requests",
                    [&]() -> Result<std::vector<WaiverRequestRecord>> {
     std::string sql =
         "SELECT id, run_id, milestone_id, rule, scope, justification, "
@@ -1281,7 +1345,7 @@ Result<std::vector<WaiverRequestRecord>> RunStore::list_waiver_requests(
 
 Result<WaiverRequestRecord> RunStore::get_waiver_request(
     std::string_view id) const {
-  return sql_guard("get_waiver_request", [&]() -> Result<WaiverRequestRecord> {
+  return locked_sql_guard(impl_->mutex, "get_waiver_request", [&]() -> Result<WaiverRequestRecord> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT id, run_id, milestone_id, rule, scope, justification, "
@@ -1308,7 +1372,7 @@ Result<WaiverRequestRecord> RunStore::get_waiver_request(
 
 Status RunStore::set_waiver_request_status(std::string_view id,
                                            std::string_view status) {
-  return sql_guard("set_waiver_request_status", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "set_waiver_request_status", [&]() -> Status {
     SQLite::Statement stmt(impl_->db,
                            "UPDATE waiver_requests SET status = ? WHERE id = ?");
     stmt.bind(1, std::string(status));
@@ -1326,7 +1390,7 @@ Status RunStore::decide_waiver_requests(std::string_view run_id,
                                         std::string_view rule,
                                         std::string_view scope,
                                         std::string_view status, UnixTime now) {
-  return sql_guard("decide_waiver_requests", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "decide_waiver_requests", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "UPDATE waiver_requests SET status = ? WHERE run_id = ? AND status = "
@@ -1346,7 +1410,7 @@ Status RunStore::decide_waiver_requests(std::string_view run_id,
 
 Result<std::size_t> RunStore::expire_waiver_requests(std::string_view run_id,
                                                      UnixTime now) {
-  return sql_guard("expire_waiver_requests",
+  return locked_sql_guard(impl_->mutex, "expire_waiver_requests",
                    [&]() -> Result<std::size_t> {
     SQLite::Statement stmt(
         impl_->db,
@@ -1360,7 +1424,7 @@ Result<std::size_t> RunStore::expire_waiver_requests(std::string_view run_id,
 
 Result<std::vector<WaiverRecord>> RunStore::list_waivers(
     std::string_view run_id, std::string_view milestone_id) const {
-  return sql_guard("list_waivers", [&]() -> Result<std::vector<WaiverRecord>> {
+  return locked_sql_guard(impl_->mutex, "list_waivers", [&]() -> Result<std::vector<WaiverRecord>> {
     std::string sql =
         "SELECT waiver_id, run_id, milestone_id, rule, scope, justification, "
         "approved_by, at FROM waivers WHERE run_id = ?";
@@ -1394,7 +1458,7 @@ Result<std::vector<WaiverRecord>> RunStore::list_waivers(
 Status RunStore::set_milestone_base(std::string_view run_id,
                                     std::string_view milestone_id,
                                     std::string_view base_sha) {
-  return sql_guard("set_milestone_base", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "set_milestone_base", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "INSERT INTO milestone_bases (run_id, milestone_id, base_sha) "
@@ -1410,7 +1474,7 @@ Status RunStore::set_milestone_base(std::string_view run_id,
 
 Result<std::string> RunStore::get_milestone_base(
     std::string_view run_id, std::string_view milestone_id) const {
-  return sql_guard("get_milestone_base", [&]() -> Result<std::string> {
+  return locked_sql_guard(impl_->mutex, "get_milestone_base", [&]() -> Result<std::string> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT base_sha FROM milestone_bases WHERE run_id = ? AND milestone_id = ?");
@@ -1425,17 +1489,19 @@ Result<std::string> RunStore::get_milestone_base(
 }
 
 Status RunStore::save_checkpoint(const CheckpointRecord& checkpoint) {
-  return sql_guard("save_checkpoint", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "save_checkpoint", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "INSERT INTO checkpoints (run_id, milestone_id, worktree_heads_json, "
-        "sessions_json, milestone_state, at) VALUES (?, ?, ?, ?, ?, ?)");
+        "sessions_json, milestone_state, at, turn_op_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)");
     stmt.bind(1, checkpoint.run_id);
     stmt.bind(2, checkpoint.milestone_id);
     stmt.bind(3, checkpoint.worktree_heads_json);
     stmt.bind(4, checkpoint.sessions_json);
     stmt.bind(5, checkpoint.milestone_state);
     stmt.bind(6, static_cast<int64_t>(checkpoint.at));
+    stmt.bind(7, checkpoint.turn_op_id);
     stmt.exec();
     return {};
   });
@@ -1443,11 +1509,12 @@ Status RunStore::save_checkpoint(const CheckpointRecord& checkpoint) {
 
 Result<CheckpointRecord> RunStore::latest_checkpoint(
     std::string_view run_id, std::string_view milestone_id) const {
-  return sql_guard("latest_checkpoint", [&]() -> Result<CheckpointRecord> {
+  return locked_sql_guard(impl_->mutex, "latest_checkpoint", [&]() -> Result<CheckpointRecord> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT id, run_id, milestone_id, worktree_heads_json, sessions_json, "
-        "milestone_state, at FROM checkpoints WHERE run_id = ? AND milestone_id = ? "
+        "milestone_state, at, turn_op_id FROM checkpoints "
+        "WHERE run_id = ? AND milestone_id = ? "
         "ORDER BY at DESC, id DESC LIMIT 1");
     stmt.bind(1, std::string(run_id));
     stmt.bind(2, std::string(milestone_id));
@@ -1464,6 +1531,7 @@ Result<CheckpointRecord> RunStore::latest_checkpoint(
     checkpoint.sessions_json = stmt.getColumn("sessions_json").getString();
     checkpoint.milestone_state = stmt.getColumn("milestone_state").getString();
     checkpoint.at = stmt.getColumn("at").getInt64();
+    checkpoint.turn_op_id = stmt.getColumn("turn_op_id").getString();
     return checkpoint;
   });
 }
@@ -1472,7 +1540,7 @@ Result<LockRecord> RunStore::acquire_lock(std::string_view lock_id, std::string_
                                         std::string_view kind,
                                         std::string_view holder_milestone, uint64_t epoch,
                                         UnixTime now) {
-  return sql_guard("acquire_lock", [&]() -> Result<LockRecord> {
+  return locked_sql_guard(impl_->mutex, "acquire_lock", [&]() -> Result<LockRecord> {
     SQLite::Transaction txn(impl_->db);
     SQLite::Statement select(
         impl_->db,
@@ -1517,7 +1585,7 @@ Result<LockRecord> RunStore::acquire_lock(std::string_view lock_id, std::string_
 
 Status RunStore::release_lock(std::string_view lock_id, std::string_view holder_milestone,
                               uint64_t epoch) {
-  return sql_guard("release_lock", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "release_lock", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "DELETE FROM locks WHERE lock_id = ? AND holder_milestone = ? AND epoch = ?");
@@ -1535,7 +1603,7 @@ Status RunStore::release_lock(std::string_view lock_id, std::string_view holder_
 }
 
 Result<LockRecord> RunStore::get_lock(std::string_view lock_id) const {
-  return sql_guard("get_lock", [&]() -> Result<LockRecord> {
+  return locked_sql_guard(impl_->mutex, "get_lock", [&]() -> Result<LockRecord> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT lock_id, run_id, kind, holder_milestone, epoch, acquired_at "
@@ -1556,7 +1624,7 @@ Result<LockRecord> RunStore::get_lock(std::string_view lock_id) const {
 }
 
 Result<std::vector<LockRecord>> RunStore::list_locks(std::string_view run_id) const {
-  return sql_guard("list_locks", [&]() -> Result<std::vector<LockRecord>> {
+  return locked_sql_guard(impl_->mutex, "list_locks", [&]() -> Result<std::vector<LockRecord>> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT lock_id, run_id, kind, holder_milestone, epoch, acquired_at "
@@ -1579,7 +1647,7 @@ Result<std::vector<LockRecord>> RunStore::list_locks(std::string_view run_id) co
 
 Result<std::size_t> RunStore::release_stale_locks(std::string_view run_id,
                                                   uint64_t current_epoch) {
-  return sql_guard("release_stale_locks", [&]() -> Result<std::size_t> {
+  return locked_sql_guard(impl_->mutex, "release_stale_locks", [&]() -> Result<std::size_t> {
     SQLite::Statement stmt(
         impl_->db, "DELETE FROM locks WHERE run_id = ? AND epoch < ?");
     stmt.bind(1, std::string(run_id));
@@ -1591,7 +1659,7 @@ Result<std::size_t> RunStore::release_stale_locks(std::string_view run_id,
 Result<LeaseRecord> RunStore::acquire_lease(std::string_view run_id,
                                             std::string_view holder,
                                             std::chrono::seconds ttl, UnixTime now) {
-  return sql_guard("acquire_lease", [&]() -> Result<LeaseRecord> {
+  return locked_sql_guard(impl_->mutex, "acquire_lease", [&]() -> Result<LeaseRecord> {
     auto locked = impl_->ensure_lock();
     if (!locked) {
       return tl::make_unexpected(locked.error());
@@ -1638,7 +1706,7 @@ Result<LeaseRecord> RunStore::acquire_lease(std::string_view run_id,
 
 Status RunStore::renew_lease(std::string_view run_id, std::string_view holder,
                              uint64_t epoch, UnixTime now) {
-  return sql_guard("renew_lease", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "renew_lease", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "UPDATE run_lease SET renewed_at = ? WHERE run_id = ? AND holder = ? AND epoch = ?");
@@ -1656,7 +1724,7 @@ Status RunStore::renew_lease(std::string_view run_id, std::string_view holder,
 }
 
 Result<LeaseRecord> RunStore::get_lease(std::string_view run_id) const {
-  return sql_guard("get_lease", [&]() -> Result<LeaseRecord> {
+  return locked_sql_guard(impl_->mutex, "get_lease", [&]() -> Result<LeaseRecord> {
     SQLite::Statement stmt(
         impl_->db, "SELECT run_id, holder, epoch, renewed_at FROM run_lease WHERE run_id = ?");
     stmt.bind(1, std::string(run_id));
@@ -1703,7 +1771,7 @@ Status RunStore::release_lease(std::string_view run_id, std::string_view holder,
 }
 
 Status RunStore::record_llm_call(const LlmCallRecord& call) {
-  return sql_guard("record_llm_call", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "record_llm_call", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "INSERT INTO llm_calls (run_id, role, model, prompt_tokens, completion_tokens, "
@@ -1726,7 +1794,7 @@ Status RunStore::record_llm_call(const LlmCallRecord& call) {
 }
 
 Result<double> RunStore::total_usd(std::string_view run_id) const {
-  return sql_guard("total_usd", [&]() -> Result<double> {
+  return locked_sql_guard(impl_->mutex, "total_usd", [&]() -> Result<double> {
     SQLite::Statement stmt(
         impl_->db, "SELECT COALESCE(SUM(usd), 0.0) FROM llm_calls WHERE run_id = ?");
     stmt.bind(1, std::string(run_id));
@@ -1736,7 +1804,7 @@ Result<double> RunStore::total_usd(std::string_view run_id) const {
 }
 
 Result<int64_t> RunStore::total_tokens(std::string_view run_id) const {
-  return sql_guard("total_tokens", [&]() -> Result<int64_t> {
+  return locked_sql_guard(impl_->mutex, "total_tokens", [&]() -> Result<int64_t> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) FROM llm_calls "
@@ -1749,7 +1817,7 @@ Result<int64_t> RunStore::total_tokens(std::string_view run_id) const {
 
 Status RunStore::record_rag_latency(std::string_view run_id,
                                     int64_t latency_ms, UnixTime at) {
-  return sql_guard("record_rag_latency", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "record_rag_latency", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "INSERT INTO rag_latency (run_id, latency_ms, at) VALUES (?, ?, ?)");
@@ -1763,7 +1831,7 @@ Status RunStore::record_rag_latency(std::string_view run_id,
 
 Result<std::vector<RagLatencyRow>> RunStore::list_rag_latencies(
     std::string_view run_id) const {
-  return sql_guard("list_rag_latencies",
+  return locked_sql_guard(impl_->mutex, "list_rag_latencies",
                    [&]() -> Result<std::vector<RagLatencyRow>> {
     SQLite::Statement stmt(
         impl_->db,
@@ -1785,7 +1853,7 @@ Result<std::vector<RagLatencyRow>> RunStore::list_rag_latencies(
 
 Result<std::vector<LlmCallRecord>> RunStore::list_llm_calls(
     std::string_view run_id) const {
-  return sql_guard("list_llm_calls",
+  return locked_sql_guard(impl_->mutex, "list_llm_calls",
                    [&]() -> Result<std::vector<LlmCallRecord>> {
     SQLite::Statement stmt(
         impl_->db,
@@ -1814,7 +1882,7 @@ Result<std::vector<LlmCallRecord>> RunStore::list_llm_calls(
 }
 
 Status RunStore::upsert_doc_version(const DocVersionRow& row) {
-  return sql_guard("upsert_doc_version", [&]() -> Status {
+  return locked_sql_guard(impl_->mutex, "upsert_doc_version", [&]() -> Status {
     SQLite::Statement stmt(
         impl_->db,
         "INSERT INTO doc_versions (doc_id, version, sha256, precedence, ingested_at) "
@@ -1832,7 +1900,7 @@ Status RunStore::upsert_doc_version(const DocVersionRow& row) {
 }
 
 Result<std::vector<DocVersionRow>> RunStore::list_doc_versions() const {
-  return sql_guard("list_doc_versions", [&]() -> Result<std::vector<DocVersionRow>> {
+  return locked_sql_guard(impl_->mutex, "list_doc_versions", [&]() -> Result<std::vector<DocVersionRow>> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT doc_id, version, sha256, precedence, ingested_at FROM doc_versions "
@@ -1853,7 +1921,7 @@ Result<std::vector<DocVersionRow>> RunStore::list_doc_versions() const {
 
 Result<DocVersionRow> RunStore::get_doc_version(std::string_view doc_id,
                                                 std::string_view version) const {
-  return sql_guard("get_doc_version", [&]() -> Result<DocVersionRow> {
+  return locked_sql_guard(impl_->mutex, "get_doc_version", [&]() -> Result<DocVersionRow> {
     SQLite::Statement stmt(
         impl_->db,
         "SELECT doc_id, version, sha256, precedence, ingested_at FROM doc_versions "

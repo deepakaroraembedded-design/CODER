@@ -1,7 +1,16 @@
+import os
 import sys
+
 
 sys.path.insert(0, sys.argv[1])
 import stats
+
+
+def _cf_write_hidden_result(tests, passed):
+    path = os.environ.get("CF_HIDDEN_RESULT")
+    if path:
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write('{"tests": %d, "passed": %d}\n' % (tests, passed))
 
 tests = 0
 passed = 0

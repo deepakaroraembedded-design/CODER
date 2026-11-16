@@ -1,4 +1,6 @@
 #include <iostream>
+#include <cstdlib>
+#include <fstream>
 #include <map>
 #include <string>
 #include <vector>
@@ -20,6 +22,18 @@ void check(bool condition, const char* name) {
 }
 }  // namespace
 
+
+namespace {
+void write_hidden_result(int tests, int passed) {
+  const char* path = std::getenv("CF_HIDDEN_RESULT");
+  if (path == nullptr || *path == '\0') {
+    return;
+  }
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out << "{\"tests\": " << tests << ", \"passed\": " << passed << "}\n";
+}
+}  // namespace
+
 int main() {
   const auto parsed = golden::parse_record("  alpha=7 ");
   check(parsed.has_value() && parsed->first == "alpha" && parsed->second == 7,
@@ -34,5 +48,6 @@ int main() {
   check(totals.size() == 2, "ignores malformed lines");
 
   std::cout << "{\"tests\":" << tests << ",\"passed\":" << passed << "}\n";
+  write_hidden_result(tests, passed);
   return passed == tests ? 0 : 1;
 }

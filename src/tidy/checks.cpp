@@ -4,7 +4,10 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
+#include <iostream>
 #include <memory>
+#include <optional>
+#include <regex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -14,10 +17,12 @@
 #include <clang/AST/ExprCXX.h>
 #include <clang/ASTMatchers/ASTMatchFinder.h>
 #include <clang/ASTMatchers/ASTMatchers.h>
+#include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/Tooling/ArgumentsAdjusters.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
+#include <llvm/Support/raw_ostream.h>
 #include <yaml-cpp/yaml.h>
 
 #include "cf/common/result.hpp"
@@ -328,14 +333,33 @@ class GuardrailCallback final
 };
 
 std::optional<std::string> allowed_namespaces_from_clang_tidy(
-    const fs::path& build_dir) {
-  // clang-tidy reads .clang-tidy from the source tree, not the build tree.
-  // Search upwards from the build directory so a target repo's standard
-  // configuration also drives cf-tidy.
+    const std::vector<fs::path>& files) {
+  // clang-tidy reads .clang-tidy from the source tree. The walk is bounded to
+  // the target checkout: a file above the repository root (for example a
+  // user's home directory) must never configure the gate (B-37).
   std::error_code error;
-  fs::path directory = fs::absolute(build_dir, error);
+  if (files.empty()) {
+    return std::nullopt;
+  }
+  fs::path directory = fs::absolute(files.front(), error).parent_path();
   if (error) {
     return std::nullopt;
+  }
+  fs::path stop = directory;
+  for (fs::path probe = directory;;) {
+    if (fs::exists(probe / ".git", error)) {
+      stop = probe;
+      break;
+    }
+    const fs::path parent = probe.parent_path();
+    if (parent == probe || parent.empty()) {
+      break;
+    }
+    probe = parent;
+  }
+  if (stop == directory && !fs::exists(directory / ".git", error)) {
+    // No repository marker: only the file's own directory is trusted.
+    stop = directory;
   }
   for (;;) {
     const fs::path candidate = directory / ".clang-tidy";
@@ -362,11 +386,20 @@ std::optional<std::string> allowed_namespaces_from_clang_tidy(
                         "AllowedNamespaces") == 0) {
           const std::string value = option["value"].as<std::string>();
           if (!value.empty()) {
-            allowed = value;
+            try {
+              (void)std::regex(value);
+              allowed = value;
+            } catch (const std::regex_error&) {
+              std::cerr << "cf-tidy: ignoring invalid AllowedNamespaces regex '"
+                        << value << "' in " << candidate.string() << "\n";
+            }
           }
         }
       }
       return allowed;
+    }
+    if (directory == stop) {
+      break;
     }
     const fs::path parent = directory.parent_path();
     if (parent == directory || parent.empty()) {
@@ -415,7 +448,7 @@ Result<std::vector<TidyDiagnostic>> run_company_checks(
   const fs::path root = fs::absolute(build_dir);
   TidyOptions effective = options;
   if (effective.allowed_namespaces.empty()) {
-    if (auto configured = allowed_namespaces_from_clang_tidy(root)) {
+    if (auto configured = allowed_namespaces_from_clang_tidy(files)) {
       effective.allowed_namespaces = std::move(*configured);
     }
   }
@@ -509,10 +542,24 @@ Result<std::vector<TidyDiagnostic>> run_company_checks(
   finder.addMatcher(std::move(weak_hash_matcher).bind("weak_hash"), &callback);
 
   auto factory = clang::tooling::newFrontendActionFactory(&finder);
+  std::string diagnostic_text;
+  llvm::raw_string_ostream diagnostic_stream(diagnostic_text);
+  // The tool may outlive this scope; the options are intentionally leaked
+  // (one small object per cf-tidy process).
+  auto* diagnostic_options = new clang::DiagnosticOptions();
+  clang::TextDiagnosticPrinter printer(diagnostic_stream, diagnostic_options);
+  tool.setDiagnosticConsumer(&printer);
   const int result = tool.run(factory.get());
+  diagnostic_stream.flush();
   if (result != 0) {
+    std::string first_line = diagnostic_text;
+    const std::size_t newline = first_line.find('\n');
+    if (newline != std::string::npos) {
+      first_line.resize(newline);
+    }
     return fail("TIDY_PARSE_FAILED",
-                "cf-tidy could not parse one or more translation units");
+                "cf-tidy could not parse one or more translation units" +
+                    (first_line.empty() ? std::string() : ": " + first_line));
   }
 
   std::sort(diagnostics.begin(), diagnostics.end(),

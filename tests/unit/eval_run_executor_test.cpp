@@ -176,10 +176,16 @@ tests:
 
 const char* kAnswerTest = R"cpp(
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include "answer.hpp"
 int main() {
   const int ok = answer() == 42 ? 1 : 0;
   std::printf("{\"tests\": 1, \"passed\": %d}\n", ok);
+  if (const char* path = std::getenv("CF_HIDDEN_RESULT")) {
+    std::ofstream out(path);
+    out << "{\"tests\": 1, \"passed\": " << ok << "}\n";
+  }
   return ok == 1 ? 0 : 1;
 }
 )cpp";

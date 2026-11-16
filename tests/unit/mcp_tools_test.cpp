@@ -800,4 +800,62 @@ TEST(McpValidationTest, ValidatorChecksSchemaRules) {
   }
 }
 
+
+TEST(McpReadOnlyStoreTest, WriteToolsBecomePendingIntents) {
+  const auto dir = make_temp_dir();
+  auto opened = cf::store::RunStore::open(dir / "run.db");
+  ASSERT_TRUE(opened.has_value());
+  auto store = std::move(*opened);
+  cf::store::RunRecord run;
+  run.run_id = "R12";
+  run.state = "Executing";
+  run.created_at = 1;
+  ASSERT_TRUE(store->create_run(run).has_value());
+
+  auto view = dir / "view.db";
+  ASSERT_TRUE(cf::store::RunStore::prepare_view(view).has_value());
+  ASSERT_TRUE(store->backup_to(view).has_value());
+  auto read_only = cf::store::RunStore::open(
+      view, cf::store::StoreOpenOptions{true});
+  ASSERT_TRUE(read_only.has_value()) << read_only.error().message;
+
+  cf::mcp::ToolDependencies dependencies;
+  dependencies.run_id = "R12";
+  dependencies.milestone_id = "M3";
+  dependencies.role = "qa";
+  dependencies.store = read_only->get();
+  dependencies.store_read_only = true;
+  const ToolRegistry registry =
+      cf::mcp::build_tool_registry(std::move(dependencies));
+
+  const Json defect = Json{{"test_id", "t3"},
+                           {"summary", "ring buffer drops an item"},
+                           {"severity", "major"}};
+  const ToolResult filed = registry.call(ToolRole::Qa, "file_defect",
+                                         Json{{"defect_json", defect}});
+  EXPECT_FALSE(filed.is_error) << filed.text;
+  ASSERT_TRUE(filed.structured.contains("id"));
+  const std::string id = filed.structured["id"].get<std::string>();
+  // The real store is untouched; the orchestrator applies the intent from
+  // the calls file (design section 6.8.1).
+  EXPECT_FALSE(store->get_defect(id).has_value());
+  auto real_defects = store->list_defects("R12");
+  ASSERT_TRUE(real_defects.has_value());
+  EXPECT_TRUE(real_defects->empty());
+
+  const ToolResult verified = registry.call(
+      ToolRole::Qa, "verify_defect", Json{{"id", id}, {"result", "VERIFIED"}});
+  EXPECT_FALSE(verified.is_error) << verified.text;
+
+  const ToolResult waiver = registry.call(
+      ToolRole::Qa, "request_waiver",
+      Json{{"rule", "guardrails"}, {"scope", "src/a.cpp:1"},
+           {"justification", "legacy API"}});
+  EXPECT_FALSE(waiver.is_error) << waiver.text;
+  EXPECT_EQ(waiver.structured["status"], "PENDING");
+
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+}
+
 }  // namespace

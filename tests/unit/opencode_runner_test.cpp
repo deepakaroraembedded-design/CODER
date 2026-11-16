@@ -410,4 +410,17 @@ TEST_F(OpencodeRunnerTest, PromptNamesTheReadOnlyToolsForTheReviewer) {
   EXPECT_EQ(prompt.find("cmake, ninja, ctest"), std::string::npos);
 }
 
+
+TEST_F(OpencodeRunnerTest, PromptWithCredentialShapedTextIsRefused) {
+  FakeSessionDriver driver;
+  OpencodeAgentRunner runner(driver, options_);
+  AgentTurnRequest turn =
+      request(cf::orch::MilestonePhase::Code);
+  turn.brief = "connect with AKIAABCDEFGHIJKLMNOP";
+  const auto outcome = runner.run_turn(turn);
+  ASSERT_FALSE(outcome.has_value());
+  EXPECT_NE(outcome.error().message.find("credential-like"), std::string::npos);
+  EXPECT_TRUE(driver.prompts.empty());
+}
+
 }  // namespace

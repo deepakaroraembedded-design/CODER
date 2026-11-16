@@ -29,12 +29,14 @@
 #include <clang/Basic/SourceManager.h>
 #include <clang/Frontend/CompilerInstance.h>
 #include <clang/Frontend/FrontendActions.h>
+#include <clang/Frontend/TextDiagnosticPrinter.h>
 #include <clang/Lex/Lexer.h>
 #include <clang/Lex/PPCallbacks.h>
 #include <clang/Lex/Preprocessor.h>
 #include <clang/Tooling/ArgumentsAdjusters.h>
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
+#include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/Error.h>
 
 #include "cf/codeintel/treesitter_backend.hpp"
@@ -454,9 +456,11 @@ void add_file_record(SymbolGraph& graph, const fs::path& root,
 
 class ClangBackend final : public LanguageBackend {
  public:
-  ClangBackend(std::string language, std::vector<std::string> extensions)
+  ClangBackend(std::string language, std::vector<std::string> extensions,
+               std::string standard)
       : language_(std::move(language)),
         extensions_(std::move(extensions)),
+        standard_(std::move(standard)),
         fallback_(language_ == "c" ? make_c_backend() : make_cpp_backend()) {}
 
   std::string_view language() const override { return language_; }
@@ -597,11 +601,10 @@ class ClangBackend final : public LanguageBackend {
         root.generic_string(), error);
     if (!database) {
       std::vector<std::string> flags;
-      if (language_ == "c") {
-        flags = {"-x", "c", "-std=c11", "-fsyntax-only"};
-      } else {
-        flags = {"-x", "c++", "-std=c++17", "-fsyntax-only"};
-      }
+      const std::string standard =
+          standard_.empty() ? (language_ == "c" ? "c11" : "c++17") : standard_;
+      flags = {"-x", language_ == "c" ? "c" : "c++",
+               "-std=" + standard, "-fsyntax-only"};
       flags.push_back("-I" + root.generic_string());
       flags.push_back("-I" + (root / "include").generic_string());
       flags.push_back("-I" + (root / "src").generic_string());
@@ -628,22 +631,40 @@ class ClangBackend final : public LanguageBackend {
     tool.appendArgumentsAdjuster(clang::tooling::getInsertArgumentAdjuster(
         "-fparse-all-comments", clang::tooling::ArgumentInsertPosition::END));
     ClangFrontendActionFactory factory(graph, root, symbols, calls, includes);
-    clang::IgnoringDiagConsumer diagnostics;
-    tool.setDiagnosticConsumer(&diagnostics);
-    tool.run(&factory);
+    std::string diagnostic_text;
+    llvm::raw_string_ostream diagnostic_stream(diagnostic_text);
+    auto* diagnostic_options = new clang::DiagnosticOptions();
+    clang::TextDiagnosticPrinter printer(diagnostic_stream, diagnostic_options);
+    tool.setDiagnosticConsumer(&printer);
+    const int result = tool.run(&factory);
+    diagnostic_stream.flush();
+    if (result != 0 && graph.symbols.empty()) {
+      std::string first_line = diagnostic_text;
+      const std::size_t newline = first_line.find('\n');
+      if (newline != std::string::npos) {
+        first_line.resize(newline);
+      }
+      return fail(error_codes::kParseFailed,
+                  "clang could not parse " + root.generic_string() +
+                      (first_line.empty() ? std::string()
+                                          : ": " + first_line));
+    }
     return Status{};
   }
 
   std::string language_;
   std::vector<std::string> extensions_;
+  std::string standard_;
   std::unique_ptr<LanguageBackend> fallback_;
 };
 
 }  // namespace
 
 std::unique_ptr<LanguageBackend> make_clang_backend(
-    std::string language, std::vector<std::string> extensions) {
-  return std::make_unique<ClangBackend>(std::move(language), std::move(extensions));
+    std::string language, std::vector<std::string> extensions,
+    std::string standard) {
+  return std::make_unique<ClangBackend>(std::move(language), std::move(extensions),
+                                        std::move(standard));
 }
 
 }  // namespace cf::codeintel

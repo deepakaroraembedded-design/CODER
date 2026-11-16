@@ -119,6 +119,10 @@ struct CheckpointRecord {
   std::string sessions_json;
   std::string milestone_state;
   UnixTime at = 0;
+  // The agent turn this checkpoint precedes; a snapshot commit carries the
+  // same CF-Op so recovery can tell this turn's commit from an older one
+  // (B-32).
+  std::string turn_op_id;
 };
 
 struct LeaseRecord {
@@ -234,12 +238,31 @@ inline std::vector<std::string> open_defect_statuses() {
   return {"OPEN", "IN_PROGRESS", "FIXED_PENDING_VERIFY", "REOPENED", "DISPUTED"};
 }
 
+// Opens an existing database without WAL/journal writes or the lease lock.
+// Used by the read-only agent view (design section 6.8.1: agents never write
+// the run store).
+struct StoreOpenOptions {
+  bool read_only = false;
+};
+
 class RunStore {
  public:
+  using OpenOptions = StoreOpenOptions;
+
   // Opens (creating if needed) the store at db_path in WAL mode. The store
   // also owns the exclusive file lock `<db_path>.lease` used by the run
   // lease (design section 6.12.6).
-  static Result<std::unique_ptr<RunStore>> open(const std::filesystem::path& db_path);
+  static Result<std::unique_ptr<RunStore>> open(const std::filesystem::path& db_path,
+                                                OpenOptions options = OpenOptions());
+
+  // Creates an empty agent-view database (rollback journal, schema only) so
+  // cf-mcp can open it read-only before the first snapshot exists.
+  static Status prepare_view(const std::filesystem::path& destination);
+
+  // Writes a consistent point-in-time copy to destination (SQLite online
+  // backup). The agent view is a disposable read-only snapshot: agents read
+  // it through cf-mcp and their writes become intents in the calls file.
+  Status backup_to(const std::filesystem::path& destination) const;
 
   ~RunStore();
   RunStore(const RunStore&) = delete;

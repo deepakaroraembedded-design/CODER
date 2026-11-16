@@ -17,6 +17,19 @@ public final class PipelineTest {
     }
   }
 
+
+  private static void writeHiddenResult(int tests, int passed) {
+    String path = System.getenv("CF_HIDDEN_RESULT");
+    if (path == null || path.isEmpty()) {
+      return;
+    }
+    String json = "{\"tests\":" + tests + ",\"passed\":" + passed + "}";
+    try {
+      java.nio.file.Files.writeString(java.nio.file.Path.of(path), json);
+    } catch (java.io.IOException ignored) {
+    }
+  }
+
   public static void main(String[] args) {
     Record parsed = RecordParser.parse("  alpha=7 ").orElseThrow();
     check(parsed.key().equals("alpha") && parsed.value() == 7, "parses trimmed record");
@@ -36,6 +49,7 @@ public final class PipelineTest {
     check(immutable, "result map is immutable");
 
     System.out.println("{\"tests\":" + tests + ",\"passed\":" + passed + "}");
+    writeHiddenResult(tests, passed);
     if (passed != tests) {
       System.exit(1);
     }

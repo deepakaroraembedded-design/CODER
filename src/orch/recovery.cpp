@@ -1,5 +1,7 @@
 #include "cf/orch/recovery.hpp"
 
+#include "cf/common/path.hpp"
+
 #include <algorithm>
 #include <thread>
 #include <utility>
@@ -216,12 +218,39 @@ Status GitWorktreeHook::reset_worktrees(const store::CheckpointRecord& checkpoin
       trailers.run_id = checkpoint.run_id;
       trailers.milestone_id = checkpoint.milestone_id;
       trailers.op_id = "recovery";
-      auto committed = repository_.commit_paths(
-          worktree, {"."},
+      // Park tracked edits and untracked non-artifact files; build output
+      // and caches stay out of the parking commit (B-24).
+      auto untracked = repository_.untracked_files(worktree);
+      if (!untracked) {
+        return tl::make_unexpected(untracked.error());
+      }
+      std::vector<std::string> parkable;
+      for (const auto& path : *untracked) {
+        if (!cf::common::is_build_artifact(path)) {
+          parkable.push_back(path);
+        }
+      }
+      if (!parkable.empty()) {
+        auto staged = repository_.stage_paths(worktree, parkable);
+        if (!staged) {
+          return tl::make_unexpected(staged.error());
+        }
+      }
+      auto committed = repository_.commit_tracked(
+          worktree,
           "cf-recovered: partial work from " + role + " at " +
               std::to_string(checkpoint.at),
           trailers);
       if (!committed) {
+        if (committed.error().code == git::error_codes::kNoChanges) {
+          // Only untracked build output/scratch files were dirty; nothing
+          // worth parking and nothing to reset (B-24).
+          auto reset = repository_.reset_hard(worktree, checkpoint_sha);
+          if (!reset) {
+            return tl::make_unexpected(reset.error());
+          }
+          continue;
+        }
         return tl::make_unexpected(committed.error());
       }
       head = committed;

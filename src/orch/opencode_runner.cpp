@@ -1,5 +1,7 @@
 #include "cf/orch/opencode_runner.hpp"
 
+#include "cf/github/secrets.hpp"
+
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
@@ -95,21 +97,70 @@ OpencodeAgentRunner::OpencodeAgentRunner(SessionDriver& driver,
 
 void OpencodeAgentRunner::record_usage(const AgentTurnRequest& request,
                                        std::string_view session_id) {
-  if (options_.usage_file.empty()) {
-    return;
-  }
   auto usage = driver_.session_usage(session_id);
   if (!usage.has_value()) {
     return;  // best effort; the ledger simply lacks this turn
   }
-  Json line;
-  line["role"] = request.role;
-  line["milestone_id"] = request.milestone_id;
-  line["session_id"] = std::string(session_id);
-  line["usage"] = *usage;
-  std::ofstream out(options_.usage_file, std::ios::app | std::ios::binary);
-  if (out) {
-    out << line.dump() << "\n";
+  const Json& raw = *usage;
+  llm::Usage totals;
+  const Json tokens = raw.value("tokens", Json::object());
+  if (tokens.is_object()) {
+    totals.prompt_tokens = tokens.value("input", int64_t{0}) +
+                           tokens.value("prompt", int64_t{0});
+    totals.completion_tokens = tokens.value("output", int64_t{0}) +
+                               tokens.value("completion", int64_t{0}) +
+                               tokens.value("reasoning", int64_t{0});
+    const Json cache = tokens.value("cache", Json::object());
+    if (cache.is_object()) {
+      totals.cached_tokens = cache.value("read", int64_t{0}) +
+                             cache.value("write", int64_t{0});
+    }
+  }
+  totals.prompt_tokens += raw.value("prompt_tokens", int64_t{0});
+  totals.completion_tokens += raw.value("completion_tokens", int64_t{0});
+  totals.cached_tokens += raw.value("cached_tokens", int64_t{0});
+
+  double usd = raw.value("cost", 0.0);
+  const auto model_it = options_.role_models.find(request.role);
+  const std::string model =
+      model_it == options_.role_models.end() ? std::string() : model_it->second;
+  if (usd <= 0.0 && !model.empty()) {
+    const auto price = options_.prices.find(model);
+    if (price != options_.prices.end()) {
+      usd = static_cast<double>(totals.prompt_tokens) / 1e6 *
+                price->second.usd_per_mtok_in +
+            static_cast<double>(totals.completion_tokens) / 1e6 *
+                price->second.usd_per_mtok_out;
+    } else if (options_.require_priced_models) {
+      spdlog::error("no price for model '{}' (role {}); the run budget would "
+                    "silently undercount",
+                    model, request.role);
+    }
+  }
+
+  if (options_.on_usage) {
+    llm::CallRecord record;
+    record.run_id = request.run_id;
+    record.role = request.role;
+    record.model = model;
+    record.usage = totals;
+    record.usd = usd;
+    options_.on_usage(record);
+  }
+
+  if (!options_.usage_file.empty()) {
+    Json line;
+    line["role"] = request.role;
+    line["milestone_id"] = request.milestone_id;
+    line["session_id"] = std::string(session_id);
+    line["model"] = model;
+    line["usd"] = usd;
+    line["ledger_recorded"] = options_.on_usage != nullptr;
+    line["usage"] = raw;
+    std::ofstream out(options_.usage_file, std::ios::app | std::ios::binary);
+    if (out) {
+      out << line.dump() << "\n";
+    }
   }
 }
 
@@ -242,6 +293,12 @@ Result<AgentTurnOutcome> OpencodeAgentRunner::outcome_from_submission(
 
 Result<AgentTurnOutcome> OpencodeAgentRunner::drive(const AgentTurnRequest& request,
                                                     bool system_validation) {
+  if (options_.before_turn) {
+    auto refreshed = options_.before_turn(request);
+    if (!refreshed) {
+      return tl::make_unexpected(refreshed.error());
+    }
+  }
   auto session = driver_.create_session();
   if (!session) {
     return tl::make_unexpected(session.error());
@@ -253,6 +310,21 @@ Result<AgentTurnOutcome> OpencodeAgentRunner::drive(const AgentTurnRequest& requ
   }
 
   const std::string prompt = build_prompt(request, system_validation);
+  // Never send a credential-shaped value to the provider (design sections
+  // 6.7 stage 2, 13). The finding names the pattern and line only.
+  const auto secrets = github::scan_for_secrets(prompt);
+  if (!secrets.empty()) {
+    std::string detail = "the role prompt contains credential-like text (";
+    for (std::size_t i = 0; i < secrets.size() && i < 8; ++i) {
+      if (i > 0) {
+        detail += ", ";
+      }
+      detail += secrets[i].pattern + " at line " +
+                std::to_string(secrets[i].line);
+    }
+    detail += "); redact it before the turn";
+    return fail(error_codes::kUnexpectedSubmission, detail);
+  }
   std::string last_tool;
   for (uint32_t attempt = 0; attempt <= options_.max_continuations; ++attempt) {
     const std::string& text = attempt == 0 ? prompt : options_.continuation_message;
@@ -294,6 +366,12 @@ Result<AgentTurnOutcome> OpencodeAgentRunner::drive(const AgentTurnRequest& requ
         return tl::make_unexpected(more.error());
       }
       calls->insert(calls->end(), more->begin(), more->end());
+    }
+    if (options_.intent_handler && !calls->empty()) {
+      auto applied = options_.intent_handler(request, *calls);
+      if (!applied) {
+        return tl::make_unexpected(applied.error());
+      }
     }
     for (const auto& call : *calls) {
       last_tool = call.value("tool", "");

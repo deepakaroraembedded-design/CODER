@@ -107,7 +107,8 @@ Json usage_rows(const std::map<std::string, UsageTotals, std::less<>>& rows,
 void read_agent_usage(
     const std::filesystem::path& run_dir,
     std::map<std::string, UsageTotals, std::less<>>& by_role,
-    std::map<std::string, UsageTotals, std::less<>>& by_milestone) {
+    std::map<std::string, UsageTotals, std::less<>>& by_milestone,
+    UsageTotals* unrecorded) {
   std::error_code ec;
   if (run_dir.empty() || !std::filesystem::is_directory(run_dir, ec)) {
     return;
@@ -130,10 +131,17 @@ void read_agent_usage(
       if (milestone.empty()) {
         milestone = "(run)";
       }
-      const UsageTotals totals =
-          usage_totals(parsed.value("usage", Json::object()));
+      UsageTotals totals = usage_totals(parsed.value("usage", Json::object()));
+      if (parsed.contains("usd") && parsed["usd"].is_number()) {
+        totals.usd = parsed["usd"].get<double>();
+      }
       by_role[role.empty() ? "unknown" : role].add(totals);
       by_milestone[milestone].add(totals);
+      // Production runs record each turn in the store ledger (so the budget
+      // sees it); those lines must not be counted twice here.
+      if (unrecorded != nullptr && !parsed.value("ledger_recorded", false)) {
+        unrecorded->add(totals);
+      }
     }
   }
 }
@@ -263,12 +271,8 @@ Result<RunSummary> build_run_summary(store::RunStore& store,
   // (design sections 6.11, 14).
   std::map<std::string, UsageTotals, std::less<>> by_role;
   std::map<std::string, UsageTotals, std::less<>> by_milestone;
-  read_agent_usage(run_dir, by_role, by_milestone);
   UsageTotals agent_totals;
-  for (const auto& [role, totals] : by_role) {
-    (void)role;
-    agent_totals.add(totals);
-  }
+  read_agent_usage(run_dir, by_role, by_milestone, &agent_totals);
   summary.usd += agent_totals.usd;
   summary.tokens += agent_totals.tokens();
   summary.agent_usage_by_role = usage_rows(by_role, "role");

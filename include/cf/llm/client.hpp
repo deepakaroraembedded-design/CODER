@@ -150,6 +150,11 @@ struct ModelPrice {
   double usd_per_mtok_out = 0.0;
 };
 
+// Prices for the models pinned in third_party/VERSIONS, taken from the
+// Fireworks catalog used by the Phase 0b benchmark. Custom-provider model
+// entries report cost 0, so the cost ledger and the budget use this table.
+std::map<std::string, ModelPrice, std::less<>> default_prices();
+
 struct ClientOptions {
   std::string base_url = "https://api.fireworks.ai/inference/v1";
   std::string api_key;

@@ -110,7 +110,9 @@ ProcessResult supervise_child(pid_t pid, int stdout_fd, int stderr_fd,
       ++count;
     }
     const int remaining = remaining_ms(deadline);
-    if (remaining <= 0 && !child_done) {
+    // The deadline applies even after the direct child exits: a background
+    // process can keep a pipe ready indefinitely (B-18).
+    if (remaining <= 0) {
       result.timed_out = true;
       break;
     }

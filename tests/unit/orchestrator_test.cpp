@@ -219,7 +219,9 @@ TEST_F(OrchestratorTest, AChangedInterfaceRevalidatesDoneDependents) {
       ++m2_gates;
     }
   }
-  EXPECT_EQ(m2_gates, 2);
+  // One Gating run plus two stability repeats, then the same three after
+  // revalidation (design section 11.1 item 3).
+  EXPECT_EQ(m2_gates, 6);
   const auto m2 = store_->get_milestone("R12", "M2");
   ASSERT_TRUE(m2.has_value());
   EXPECT_EQ(m2->state, "Done");

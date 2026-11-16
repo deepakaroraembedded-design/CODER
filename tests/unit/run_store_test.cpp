@@ -7,6 +7,8 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include <unistd.h>
 
@@ -326,6 +328,66 @@ TEST_F(RunStoreTest, CheckpointsLatestWins) {
   ASSERT_TRUE(latest.has_value()) << latest.error().message;
   EXPECT_EQ(latest->worktree_heads_json, "{\"coder\":\"bbb\"}");
   EXPECT_EQ(latest->milestone_state, "Gating");
+}
+
+TEST_F(RunStoreTest, AgentViewSnapshotIsReadOnly) {
+  create_run();
+  cf::store::DefectRecord defect;
+  defect.id = "D-1";
+  defect.run_id = "R12";
+  defect.milestone_id = "M3";
+  defect.status = "OPEN";
+  defect.severity = "major";
+  defect.fingerprint = "fp-1";
+  defect.body_json = "{}";
+  ASSERT_TRUE(store_->upsert_defect(defect).has_value());
+
+  const auto view = dir_ / "agent-view.db";
+  ASSERT_TRUE(RunStore::prepare_view(view).has_value());
+  ASSERT_TRUE(store_->backup_to(view).has_value());
+
+  auto opened = RunStore::open(view, cf::store::StoreOpenOptions{true});
+  ASSERT_TRUE(opened.has_value()) << opened.error().message;
+  auto snapshot = std::move(*opened);
+  auto defects = snapshot->list_defects("R12");
+  ASSERT_TRUE(defects.has_value()) << defects.error().message;
+  ASSERT_EQ(defects->size(), 1u);
+  EXPECT_EQ(defects->front().id, "D-1");
+  // The snapshot is disposable, not a second writer: a write must fail
+  // (design section 6.8.1).
+  const auto written = snapshot->set_defect_status("D-1", "VERIFIED", 0);
+  EXPECT_FALSE(written.has_value());
+  auto real = store_->get_defect("D-1");
+  ASSERT_TRUE(real.has_value());
+  EXPECT_EQ(real->status, "OPEN");
+}
+
+TEST_F(RunStoreTest, ConcurrentWritersOnOneStoreDoNotLoseRows) {
+  create_run();
+  constexpr int kThreads = 4;
+  constexpr int kRows = 50;
+  std::vector<std::thread> writers;
+  for (int thread = 0; thread < kThreads; ++thread) {
+    writers.emplace_back([this, thread] {
+      for (int row = 0; row < kRows; ++row) {
+        cf::store::LlmCallRecord call;
+        call.run_id = "R12";
+        call.role = thread % 2 == 0 ? "coder" : "reviewer";
+        call.model = "m";
+        call.prompt_tokens = 1;
+        call.completion_tokens = 1;
+        call.at = now_;
+        const auto recorded = store_->record_llm_call(call);
+        EXPECT_TRUE(recorded.has_value()) << recorded.error().message;
+      }
+    });
+  }
+  for (auto& writer : writers) {
+    writer.join();
+  }
+  auto calls = store_->list_llm_calls("R12");
+  ASSERT_TRUE(calls.has_value()) << calls.error().message;
+  EXPECT_EQ(calls->size(), static_cast<std::size_t>(kThreads * kRows));
 }
 
 TEST_F(RunStoreTest, MilestoneBasePersistsAndUpdates) {

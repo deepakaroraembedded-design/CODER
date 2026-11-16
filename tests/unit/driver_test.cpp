@@ -206,6 +206,21 @@ class DriverTest : public ::testing::Test {
     std::filesystem::remove_all(dir_, ec);
   }
 
+  // Startup recovery resets a role worktree to its pre-turn checkpoint
+  // before the turn is retried (design section 6.12.3).
+  void reset_to_checkpoint(WorkspaceDriver& driver, const std::string& milestone,
+                           const std::string& role) {
+    auto checkpoint = store_->latest_checkpoint("R12", milestone);
+    ASSERT_TRUE(checkpoint.has_value()) << checkpoint.error().message;
+    const auto heads =
+        nlohmann::json::parse(checkpoint->worktree_heads_json, nullptr, false);
+    ASSERT_TRUE(heads.is_object());
+    ASSERT_TRUE(heads.contains(role)) << checkpoint->worktree_heads_json;
+    auto reset = repository_->reset_hard(driver.worktree_for(milestone, role),
+                                         heads[role].get<std::string>());
+    ASSERT_TRUE(reset.has_value()) << reset.error().message;
+  }
+
   DriverConfig config_for(const std::string& profile_yaml) {
     auto profile = cf::gates::load_profile_string(profile_yaml);
     EXPECT_TRUE(profile.has_value()) << profile.error().message;
@@ -567,10 +582,35 @@ TEST_F(DriverTest, FixSnapshotIsRecoveredAfterACrashBeforeStateUpdate) {
   ASSERT_TRUE(first.run(MilestonePhase::Code, "M3").completed);
   ASSERT_TRUE(first.run(MilestonePhase::Fix, "M3").completed);
 
+  reset_to_checkpoint(first, "M3", "coder");
   WorkspaceDriver second(plan_, config_for(kPassingProfile), *repository_,
                          executor_, runner, store_.get());
   const TurnResult retried = second.run(MilestonePhase::Fix, "M3");
   EXPECT_TRUE(retried.completed) << retried.detail;
+}
+
+TEST_F(DriverTest, RepeatedNoOpTurnIsRejected) {
+  FakeAgentRunner runner;
+  int calls = 0;
+  runner.on_turn = [&calls](const AgentTurnRequest& request)
+      -> cf::Result<AgentTurnOutcome> {
+    ++calls;
+    if (calls == 1) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "m3.cpp",
+                 "int registry() { return 0; }\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  WorkspaceDriver driver(plan_, config_for(kPassingProfile), *repository_,
+                         executor_, runner, store_.get());
+  ASSERT_TRUE(driver.run(MilestonePhase::Code, "M3").completed);
+  // The HEAD commit belongs to the previous turn (different CF-Op); a no-op
+  // submission must not be mistaken for crash recovery (B-32).
+  const TurnResult second = driver.run(MilestonePhase::Code, "M3");
+  EXPECT_FALSE(second.completed);
 }
 
 TEST_F(DriverTest, TestSnapshotIsRecoveredAfterACrashBeforeStateUpdate) {
@@ -589,6 +629,7 @@ TEST_F(DriverTest, TestSnapshotIsRecoveredAfterACrashBeforeStateUpdate) {
                         executor_, runner, store_.get());
   ASSERT_TRUE(first.run(MilestonePhase::AuthorTests, "M3").completed);
 
+  reset_to_checkpoint(first, "M3", "qa");
   WorkspaceDriver second(plan_, config_for(kPassingProfile), *repository_,
                          executor_, runner, store_.get());
   const TurnResult retried = second.run(MilestonePhase::AuthorTests, "M3");
@@ -611,9 +652,9 @@ TEST_F(DriverTest, SnapshotCommitIsRecoveredAfterACrashBeforeStateUpdate) {
                         executor_, runner, store_.get());
   ASSERT_TRUE(first.run(MilestonePhase::Code, "M3").completed);
 
-  // A restarted process sees the snapshot commit but the run store never
-  // recorded the state transition. The CF-Phase trailer proves the commit is
-  // this milestone's Code snapshot, so a no-change retry is accepted.
+  // A restarted process resets the worktree to the pre-turn checkpoint and
+  // retries the turn; the retried snapshot carries the same CF-Op (B-32).
+  reset_to_checkpoint(first, "M3", "coder");
   WorkspaceDriver second(plan_, config_for(kPassingProfile), *repository_,
                          executor_, runner, store_.get());
   const TurnResult retried = second.run(MilestonePhase::Code, "M3");
@@ -923,9 +964,9 @@ TEST_F(DriverTest, ChangesOutsideTheDeclaredWriteSetAreRejected) {
   EXPECT_NE(result.detail.find("outside the declared write set"), std::string::npos);
   EXPECT_NE(result.detail.find("src/elsewhere/bad.cpp"), std::string::npos);
   EXPECT_EQ(result.detail.find("build/artifact.o"), std::string::npos);
-  EXPECT_EQ(result.detail.find("build_strict/artifact.o"), std::string::npos);
+  EXPECT_NE(result.detail.find("build_strict/artifact.o"), std::string::npos);
   EXPECT_EQ(result.detail.find("__pycache__"), std::string::npos);
-  EXPECT_EQ(result.detail.find("package-lock.json"), std::string::npos);
+  EXPECT_NE(result.detail.find("package-lock.json"), std::string::npos);
 
   // Nothing was committed.
   const auto coder_worktree = driver.worktree_for("M3", "coder");

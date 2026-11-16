@@ -14,6 +14,19 @@ public final class OrderTest {
     else System.err.println("FAILED: " + name);
   }
 
+
+  private static void writeHiddenResult(int tests, int passed) {
+    String path = System.getenv("CF_HIDDEN_RESULT");
+    if (path == null || path.isEmpty()) {
+      return;
+    }
+    String json = "{\"tests\":" + tests + ",\"passed\":" + passed + "}";
+    try {
+      java.nio.file.Files.writeString(java.nio.file.Path.of(path), json);
+    } catch (java.io.IOException ignored) {
+    }
+  }
+
   public static void main(String[] args) {
     Ledger empty = OrderProcessor.process(List.of());
     check(empty.itemCount() == 0 && empty.total().cents() == 0, "empty order");
@@ -35,6 +48,7 @@ public final class OrderTest {
     check(immutable, "result ledger is immutable");
 
     System.out.println("{\"tests\":" + tests + ",\"passed\":" + passed + "}");
+    writeHiddenResult(tests, passed);
     if (passed != tests) System.exit(1);
   }
 }

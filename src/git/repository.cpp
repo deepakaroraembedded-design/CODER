@@ -293,6 +293,44 @@ Result<std::string> Repository::head_sha(const std::filesystem::path& worktree,
   return run({"rev-parse", ref}, worktree);
 }
 
+Result<std::string> Repository::commit_tracked(
+    const std::filesystem::path& worktree, const std::string& message,
+    const CommitTrailers& trailers) const {
+  auto added = run({"add", "-u"}, worktree);
+  if (!added) {
+    return tl::make_unexpected(added.error());
+  }
+  const process::ProcessResult staged = run_raw({"diff", "--cached", "--quiet"}, worktree);
+  if (!staged.launched) {
+    return fail(error_codes::kCommandFailed, "cannot run git: " + staged.error);
+  }
+  if (staged.exit_code == 0) {
+    return fail(error_codes::kNoChanges, "no tracked changes to commit in " +
+                                             worktree.string());
+  }
+  return commit_staged(worktree, message, trailers);
+}
+
+Result<std::vector<std::string>> Repository::untracked_files(
+    const std::filesystem::path& worktree) const {
+  const process::ProcessResult status =
+      run_raw({"ls-files", "--others", "--exclude-standard"}, worktree);
+  if (!status.launched) {
+    return fail(error_codes::kCommandFailed, "cannot run git: " + status.error);
+  }
+  if (status.exit_code != 0) {
+    return fail(error_codes::kCommandFailed, trim(status.stderr_text));
+  }
+  std::vector<std::string> files;
+  std::istringstream lines(status.stdout_text);
+  for (std::string line; std::getline(lines, line);) {
+    if (!line.empty()) {
+      files.push_back(line);
+    }
+  }
+  return files;
+}
+
 Result<std::string> Repository::commit_paths(
     const std::filesystem::path& worktree, const std::vector<std::string>& paths,
     const std::string& message, const CommitTrailers& trailers) const {

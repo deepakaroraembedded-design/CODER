@@ -105,7 +105,10 @@ class WorkspaceDriver final : public MilestoneDriver {
   // Records the pre-turn checkpoint (design section 6.12.3): the head of
   // every existing role worktree of the milestone and its stored state, so
   // recovery can reset a half-finished turn.
-  void record_checkpoint(std::string_view milestone_id);
+  // Records the pre-turn checkpoint and returns the turn's CF-Op. The op id
+  // is reused when the milestone state and worktree heads are unchanged, so
+  // a retried turn keeps the same identity (B-32).
+  std::string record_checkpoint(std::string_view milestone_id);
   Status snapshot(std::string_view milestone_id, std::string_view role,
                   const std::vector<std::string>& paths, const std::string& message,
                   const std::string& op_id, std::string_view phase);

@@ -342,8 +342,14 @@ TEST(EvalHiddenTest, RunsCompiledHiddenTests) {
   const auto dir = make_temp_dir();
   write_file(dir / "hidden_test.cpp", R"cpp(
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 int main() {
   std::printf("{\"tests\": 2, \"passed\": 2}\n");
+  if (const char* path = std::getenv("CF_HIDDEN_RESULT")) {
+    std::ofstream out(path);
+    out << "{\"tests\": 2, \"passed\": 2}\n";
+  }
   return 0;
 }
 )cpp");

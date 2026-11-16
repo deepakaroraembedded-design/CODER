@@ -60,14 +60,20 @@ Result<std::vector<HiddenStep>> parse_steps(const YAML::Node& node,
   return steps;
 }
 
-process::ProcessRequest make_request(const HiddenStep& step,
-                                     const std::filesystem::path& worktree,
-                                     const std::filesystem::path& hidden_dir,
-                                     const std::filesystem::path& build_dir,
-                                     const std::filesystem::path& run_dir,
-                                     std::chrono::milliseconds timeout) {
+process::ProcessRequest make_request(
+    const HiddenStep& step, const std::filesystem::path& worktree,
+    const std::filesystem::path& hidden_dir,
+    const std::filesystem::path& build_dir,
+    const std::filesystem::path& run_dir, std::chrono::milliseconds timeout,
+    const std::filesystem::path& result_file) {
   process::ProcessRequest request;
   request.argv = expand_hidden_argv(step.argv, worktree, hidden_dir, build_dir, run_dir);
+  if (!result_file.empty()) {
+    // The harness owns the result oracle: the test program writes its counts
+    // here and stdout is never trusted (B-31).
+    request.environment.push_back(
+        {"CF_HIDDEN_RESULT", result_file.string()});
+  }
   if (step.disable_aslr && !request.argv.empty()) {
     request.argv.insert(request.argv.begin(), "-R");
     request.argv.insert(request.argv.begin(), "setarch");
@@ -211,7 +217,8 @@ HiddenTestResult run_hidden_tests(const HiddenTestSpec& spec,
 
   for (const auto& step : spec.compile) {
     const process::ProcessRequest request =
-        make_request(step, worktree, spec.base_dir, build_dir, run_dir, timeout);
+        make_request(step, worktree, spec.base_dir, build_dir, run_dir, timeout,
+                     {});
     const process::ProcessResult run = executor.run(request);
     if (!run.launched || run.exit_code != 0) {
       result.ok = false;
@@ -229,19 +236,42 @@ HiddenTestResult run_hidden_tests(const HiddenTestSpec& spec,
                          "' ok");
   }
 
+  std::size_t test_index = 0;
   for (const auto& step : spec.tests) {
+    const std::filesystem::path result_file =
+        build_dir / ("hidden-result-" + std::to_string(test_index++) + ".json");
+    std::error_code remove_ec;
+    std::filesystem::remove(result_file, remove_ec);
     const process::ProcessRequest request =
-        make_request(step, worktree, spec.base_dir, build_dir, run_dir, timeout);
+        make_request(step, worktree, spec.base_dir, build_dir, run_dir, timeout,
+                     result_file);
     const process::ProcessResult run = executor.run(request);
     const std::string label =
         step.name.empty() ? request.argv.front() : step.name;
     TestCounts counts;
-    if (parse_test_counts(run.stdout_text, &counts)) {
+    bool has_counts = false;
+    std::ifstream result_in(result_file, std::ios::binary);
+    if (result_in) {
+      const Json parsed = Json::parse(result_in, nullptr, false);
+      if (parsed.is_object() && parsed["tests"].is_number_integer() &&
+          parsed["passed"].is_number_integer() &&
+          parsed["tests"].get<int>() >= 0 &&
+          parsed["passed"].get<int>() >= 0 &&
+          parsed["passed"].get<int>() <= parsed["tests"].get<int>()) {
+        counts.tests = parsed["tests"].get<int>();
+        counts.passed = parsed["passed"].get<int>();
+        has_counts = true;
+      }
+    }
+    if (has_counts) {
       result.tests += counts.tests;
       result.passed += counts.passed;
-      result.log.push_back("test '" + label + "': " + std::to_string(counts.passed) +
-                           "/" + std::to_string(counts.tests) + " passed");
+      result.log.push_back("test '" + label + "': " +
+                           std::to_string(counts.passed) + "/" +
+                           std::to_string(counts.tests) + " passed");
     } else {
+      // No result file: one case whose verdict is the exit code. stdout
+      // counts are ignored so the agent's binary cannot forge a score.
       ++result.tests;
       if (run.launched && run.exit_code == 0) {
         ++result.passed;

@@ -88,6 +88,15 @@ class Repository {
 
   // Stages exactly `paths` (relative and inside the worktree) and creates a
   // commit carrying the CF trailers. GIT_NO_CHANGES when nothing is staged.
+  // Stages tracked modifications only (git add -u) and commits; used by
+  // crash recovery so untracked build output and scratch files never enter
+  // the parking commit (B-24).
+  Result<std::string> commit_tracked(const std::filesystem::path& worktree,
+                                     const std::string& message,
+                                     const CommitTrailers& trailers) const;
+  // Untracked, non-ignored files in the worktree (B-29).
+  Result<std::vector<std::string>> untracked_files(
+      const std::filesystem::path& worktree) const;
   Result<std::string> commit_paths(const std::filesystem::path& worktree,
                                    const std::vector<std::string>& paths,
                                    const std::string& message,

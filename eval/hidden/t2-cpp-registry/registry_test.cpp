@@ -8,6 +8,8 @@
 // const in registration order, and set_observer(std::function<void(const
 // Key&, bool added)>), called once per successful mutation.
 #include <cstdio>
+#include <cstdlib>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -25,6 +27,18 @@ void check(bool condition) {
   }
 }
 
+}  // namespace
+
+
+namespace {
+void write_hidden_result(int tests, int passed) {
+  const char* path = std::getenv("CF_HIDDEN_RESULT");
+  if (path == nullptr || *path == '\0') {
+    return;
+  }
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  out << "{\"tests\": " << tests << ", \"passed\": " << passed << "}\n";
+}
 }  // namespace
 
 int main() {
@@ -84,5 +98,6 @@ int main() {
   }
 
   std::printf("{\"tests\": %d, \"passed\": %d}\n", checks, passed);
+  write_hidden_result(checks, passed);
   return passed == checks ? 0 : 1;
 }

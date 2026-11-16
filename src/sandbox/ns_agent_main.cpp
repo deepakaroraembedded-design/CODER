@@ -52,7 +52,9 @@ struct Options {
   std::string run_dir;
   std::string bridge_dir;
   std::string role;
-  std::string inner_binary = "/cf/bin/cf-ns-agent";
+  std::string inner_binary = "/cf/agent/bin/cf-ns-agent";
+  std::string agent_dir;
+  std::size_t pids_limit = 0;
   std::string mcp_source;
   std::string opencode_source;
   std::string inner_log;
@@ -91,6 +93,20 @@ bool parse_port(const std::string& value, uint16_t* port) {
     *port = static_cast<uint16_t>(parsed);
     return true;
   } catch (...) {
+    return false;
+  }
+}
+
+bool parse_u64(const std::string& value, std::size_t* out) {
+  try {
+    std::size_t consumed = 0;
+    const unsigned long long parsed = std::stoull(value, &consumed);
+    if (consumed != value.size() || parsed == 0) {
+      return false;
+    }
+    *out = static_cast<std::size_t>(parsed);
+    return true;
+  } catch (const std::exception&) {
     return false;
   }
 }
@@ -158,6 +174,13 @@ bool parse_options(int argc, char** argv, Options* options) {
         if (!take("--run-dir", &options->run_dir)) return false;
       } else if (std::strcmp(argv[index], "--bridge-dir") == 0) {
         if (!take("--bridge-dir", &options->bridge_dir)) return false;
+      } else if (std::strcmp(argv[index], "--agent-dir") == 0) {
+        if (!take("--agent-dir", &options->agent_dir)) return false;
+      } else if (std::strcmp(argv[index], "--pids-limit") == 0) {
+        std::string value;
+        if (!take("--pids-limit", &value) || !parse_u64(value, &options->pids_limit)) {
+          return false;
+        }
       } else if (std::strcmp(argv[index], "--role") == 0) {
         if (!take("--role", &options->role)) return false;
       } else if (std::strcmp(argv[index], "--proxy") == 0) {
@@ -496,11 +519,31 @@ int run_host(const Options& options) {
     std::cerr << "cf-ns-agent: opencode command needs --port\n";
     return 2;
   }
-  if (!make_dir(options.run_dir + "/bin")) {
-    std::cerr << "cf-ns-agent: cannot create the bridge directory\n";
+  const std::string agent_dir =
+      options.agent_dir.empty() ? options.run_dir + "/agent" : options.agent_dir;
+  // The run directory is mounted read-only, so every writable mount point
+  // nested under /cf must exist in the host tree before the bind.
+  if (!make_dir(options.run_dir + "/bridge")) {
+    std::cerr << "cf-ns-agent: cannot create the bridge mount point\n";
     return 2;
   }
-  const std::filesystem::path inner = options.run_dir + "/bin/cf-ns-agent";
+  if (!make_dir(agent_dir + "/bin")) {
+    std::cerr << "cf-ns-agent: cannot create the agent directory\n";
+    return 2;
+  }
+  for (const char* binary_name : {"cf-mcp", "opencode"}) {
+    const std::string path = agent_dir + "/bin/" + binary_name;
+    struct stat st {};
+    if (::stat(path.c_str(), &st) != 0) {
+      const int fd = ::open(path.c_str(), O_CREAT | O_WRONLY | O_CLOEXEC, 0644);
+      if (fd < 0) {
+        std::cerr << "cf-ns-agent: cannot create the binary mount point\n";
+        return 2;
+      }
+      ::close(fd);
+    }
+  }
+  const std::filesystem::path inner = agent_dir + "/bin/cf-ns-agent";
   if (!install_binary("/proc/self/exe", inner,
                       std::filesystem::perms::owner_all |
                           std::filesystem::perms::group_read |
@@ -557,8 +600,14 @@ int run_host(const Options& options) {
       }
     }
   }
-  spec.extra_writable_mounts.push_back({options.run_dir, "/cf"});
+  // The run directory is read-only for the agent (design section 6.8.1);
+  // only the disposable agent state (calls, store snapshot, logs, helper)
+  // is writable.
+  spec.pids_limit = options.pids_limit;
+  spec.extra_readonly_mounts.push_back({options.run_dir, "/cf"});
+  spec.extra_writable_mounts.push_back({agent_dir, "/cf/agent"});
   spec.extra_writable_mounts.push_back({bridge_dir, "/cf/bridge"});
+  spec.writable_files = options.write_files;
   if (!options.mcp_source.empty()) {
     std::error_code ec;
     const auto source = std::filesystem::absolute(options.mcp_source, ec);
@@ -566,7 +615,7 @@ int run_host(const Options& options) {
       std::cerr << "cf-ns-agent: cannot resolve cf-mcp\n";
       return 2;
     }
-    spec.extra_readonly_mounts.push_back({source.string(), "/cf/bin/cf-mcp"});
+    spec.extra_readonly_mounts.push_back({source.string(), "/cf/agent/bin/cf-mcp"});
   }
   if (!options.opencode_source.empty()) {
     std::error_code ec;
@@ -575,7 +624,7 @@ int run_host(const Options& options) {
       std::cerr << "cf-ns-agent: cannot resolve opencode\n";
       return 2;
     }
-    spec.extra_readonly_mounts.push_back({source.string(), "/cf/bin/opencode"});
+    spec.extra_readonly_mounts.push_back({source.string(), "/cf/agent/bin/opencode"});
   }
   const auto mount_source = [&spec](const std::string& source, const char* target) {
     if (source.empty()) {
