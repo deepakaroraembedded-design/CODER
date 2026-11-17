@@ -222,6 +222,31 @@ bool within_write_set(const std::vector<std::string>& writes, std::string_view p
   return false;
 }
 
+// The architecture gate runs after the profile's stage 1/2 gates pass: a
+// failing build or test makes later checks meaningless (design section 6.7).
+void append_architecture_gate(
+    const std::vector<gates::ArchitectureRule>& rules,
+    const std::filesystem::path& worktree, gates::GateReport& report) {
+  if (rules.empty() || !report.passed) {
+    return;
+  }
+  auto findings = gates::check_architecture_rules(worktree, rules);
+  gates::GateResult result;
+  result.gate = "architecture";
+  if (!findings) {
+    result.passed = false;
+    result.findings.push_back(
+        gates::GateFinding{"architecture", "error", findings.error().message});
+  } else {
+    result.passed = findings->empty();
+    result.findings = std::move(*findings);
+  }
+  if (!result.passed) {
+    report.passed = false;
+  }
+  report.results.push_back(std::move(result));
+}
+
 }  // namespace
 
 WorkspaceDriver::WorkspaceDriver(plan::Plan plan, DriverConfig config,
@@ -1221,6 +1246,8 @@ GateOutcome WorkspaceDriver::run_gates(std::string_view milestone_id) {
   }
 
   outcome.report = runner->run(*plan, options);
+  append_architecture_gate(config_.architecture_rules, *worktree,
+                           outcome.report);
   // A human can waive a failed gate rule at a scope (design section 10.2);
   // only fully covered gates are waived, and skipped checks never are.
   if (store_ != nullptr) {
@@ -1531,6 +1558,8 @@ Result<GateOutcome> WorkspaceDriver::run_integration_gates(
   }
 
   outcome.report = runner->run(*plan, options);
+  append_architecture_gate(config_.architecture_rules, *worktree,
+                           outcome.report);
   if (store_ != nullptr) {
     auto waivers = store_->list_waivers(config_.run_id);
     if (waivers) {

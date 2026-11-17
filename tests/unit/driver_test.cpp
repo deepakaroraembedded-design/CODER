@@ -528,6 +528,44 @@ TEST_F(DriverTest, NoOpFixOnAnIntegratedMilestoneProceedsToTheGates) {
   EXPECT_TRUE(no_op.completed) << no_op.detail;
 }
 
+TEST_F(DriverTest, ArchitectureRulesFailTheGateRun) {
+  FakeAgentRunner runner;
+  runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {
+    if (request.phase == MilestonePhase::Code) {
+      write_file(std::filesystem::path(request.worktree) / "src" / "ui" /
+                     "view.cpp",
+                 "#include \"src/storage/db.hpp\"\nint view() { return 0; }\n");
+      write_file(std::filesystem::path(request.worktree) / "src" / "storage" /
+                     "db.hpp",
+                 "#pragma once\n");
+    }
+    AgentTurnOutcome outcome;
+    outcome.completed = true;
+    outcome.summary = "done";
+    return outcome;
+  };
+  DriverConfig config = config_for(kPassingProfile);
+  config.architecture_rules = {{"ARCH-1", "src/ui/", "src/storage/"}};
+  WorkspaceDriver driver(plan_, config, *repository_, executor_, runner,
+                         store_.get());
+
+  const auto code = driver.run(MilestonePhase::Code, "M3");
+  ASSERT_TRUE(code.completed) << code.detail;
+  const GateOutcome gates = driver.run_gates("M3");
+  EXPECT_FALSE(gates.passed);
+  bool found = false;
+  for (const auto& result : gates.report.results) {
+    if (result.gate == "architecture") {
+      found = true;
+      EXPECT_FALSE(result.passed);
+      ASSERT_FALSE(result.findings.empty());
+      EXPECT_NE(result.findings.front().message.find("ARCH-1"),
+                std::string::npos);
+    }
+  }
+  EXPECT_TRUE(found);
+}
+
 TEST_F(DriverTest, ReviewChangesRequestedPropagates) {
   FakeAgentRunner runner;
   runner.on_turn = [](const AgentTurnRequest& request) -> cf::Result<AgentTurnOutcome> {

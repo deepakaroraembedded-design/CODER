@@ -106,6 +106,9 @@ gates:
   profile: c-cpp
   coverage: { line: 0.9, branch: 0.8, scope: all }
   mutation: { enabled: true, min_score: 0.7 }
+  architecture:
+    rules:
+      - { id: ARCH-1, from: "src/ui/", forbidden: "src/storage/" }
 review:
   diff_threshold_lines: 250
   blocking_severities: [blocker, major, minor]
@@ -189,6 +192,11 @@ TEST_F(ConfigTest, LoadsTheFullSchema) {
   EXPECT_EQ(*config->gates.coverage.scope, "all");
   EXPECT_TRUE(*config->gates.mutation.enabled);
   EXPECT_DOUBLE_EQ(*config->gates.mutation.min_score, 0.7);
+  ASSERT_EQ(config->gates.architecture_rules.size(), 1u);
+  EXPECT_EQ(config->gates.architecture_rules[0].id, "ARCH-1");
+  EXPECT_EQ(config->gates.architecture_rules[0].from_prefix, "src/ui/");
+  EXPECT_EQ(config->gates.architecture_rules[0].forbidden_prefix,
+            "src/storage/");
   EXPECT_EQ(*config->review.diff_threshold_lines, 250u);
   EXPECT_EQ(*config->review.blocking_severities,
             (std::vector<std::string>{"blocker", "major", "minor"}));

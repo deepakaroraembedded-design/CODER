@@ -482,7 +482,8 @@ target_link_libraries(cf-refmirror PRIVATE
 # cf-gates: toolchain profiles and the staged gate runner (design section 6.7)
 add_library(cf_gates STATIC
   src/gates/profile.cpp
-  src/gates/runner.cpp)
+  src/gates/runner.cpp
+  src/gates/architecture.cpp)
 target_link_libraries(cf_gates PUBLIC
   cf_common
   yaml-cpp::yaml-cpp

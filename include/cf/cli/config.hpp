@@ -17,6 +17,7 @@
 
 #include "cf/cli/commands.hpp"
 #include "cf/common/result.hpp"
+#include "cf/gates/architecture.hpp"
 
 namespace cf::cli {
 
@@ -158,6 +159,8 @@ struct FrameworkConfig {
       std::optional<double> min_score;
     };
     Mutation mutation;
+    // Config-driven layering rules (design sections 6.5, 6.7 stage 2).
+    std::vector<cf::gates::ArchitectureRule> architecture_rules;
   };
   Gates gates;
 

@@ -22,6 +22,7 @@
 #include "cf/common/process.hpp"
 #include "cf/common/result.hpp"
 #include "cf/gates/profile.hpp"
+#include "cf/gates/architecture.hpp"
 #include "cf/gates/runner.hpp"
 #include "cf/git/repository.hpp"
 #include "cf/orch/agent_runner.hpp"
@@ -53,6 +54,9 @@ struct DriverConfig {
   double gate_cpus = 0.0;
   std::uint64_t gate_memory_mb = 0;
   std::uint64_t gate_pids_limit = 0;
+  // Optional layering rules checked after the profile gates pass (design
+  // sections 6.5, 6.7 stage 2).
+  std::vector<gates::ArchitectureRule> architecture_rules;
   // When set, gates run inside a Docker sandbox using this image (design
   // section 6.8); empty runs them through the local executor.
   std::string sandbox_image;

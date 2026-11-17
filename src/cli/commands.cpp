@@ -2584,6 +2584,7 @@ int execute_command(const ExecuteOptions& options, std::ostream& out, std::ostre
     config.orchestrator.system_validation_every_n_milestones =
         *options.system_validation_every_n_milestones;
   }
+  config.architecture_rules = options.architecture_rules;
   config.orchestrator.max_usd_per_role = options.budget_usd_per_role;
   config.orchestrator.max_tokens_per_role = options.budget_tokens_per_role;
   if (effective.budget.max_wall_clock_hours.has_value()) {

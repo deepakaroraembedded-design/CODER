@@ -729,7 +729,7 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
     for (const auto& entry : gates) {
       const std::string key = entry.first.as<std::string>();
       if (key == "profiles_dir" || key == "profile" || key == "coverage" ||
-          key == "mutation") {
+          key == "mutation" || key == "architecture") {
         continue;
       }
       return unsupported("gates." + key);
@@ -811,6 +811,39 @@ Result<FrameworkConfig> load_config(const std::filesystem::path& path) {
           (*config.gates.mutation.min_score < 0.0 ||
            *config.gates.mutation.min_score > 1.0)) {
         return invalid("gates.mutation.min_score", "must be between 0 and 1");
+      }
+    }
+    if (const YAML::Node architecture = gates["architecture"]) {
+      auto checked =
+          check_keys(architecture, "gates.architecture", {"rules"});
+      if (!checked) {
+        return tl::make_unexpected(checked.error());
+      }
+      const YAML::Node rules = architecture["rules"];
+      if (!rules || !rules.IsSequence()) {
+        return invalid("gates.architecture.rules", "must be a sequence");
+      }
+      for (const auto& rule : rules) {
+        auto rule_checked = check_keys(rule, "gates.architecture.rules[]",
+                                       {"id", "from", "forbidden"});
+        if (!rule_checked) {
+          return tl::make_unexpected(rule_checked.error());
+        }
+        cf::gates::ArchitectureRule parsed;
+        parsed.id = rule["id"].as<std::string>("");
+        parsed.from_prefix = rule["from"].as<std::string>("");
+        parsed.forbidden_prefix = rule["forbidden"].as<std::string>("");
+        if (parsed.id.empty() || parsed.from_prefix.empty() ||
+            parsed.forbidden_prefix.empty()) {
+          return invalid("gates.architecture.rules",
+                         "each rule needs id, from and forbidden");
+        }
+        if (parsed.from_prefix.front() == '/' ||
+            parsed.forbidden_prefix.front() == '/') {
+          return invalid("gates.architecture.rules",
+                         "prefixes must be repository-relative");
+        }
+        config.gates.architecture_rules.push_back(std::move(parsed));
       }
     }
   }
@@ -945,6 +978,7 @@ Status apply_config(ExecuteOptions& options, const FrameworkConfig& config) {
   if (config.github.installation_id.has_value()) {
     options.github_installation_id = *config.github.installation_id;
   }
+  options.architecture_rules = config.gates.architecture_rules;
   if (config.run.system_validation_every_n_milestones.has_value()) {
     options.system_validation_every_n_milestones =
         *config.run.system_validation_every_n_milestones;

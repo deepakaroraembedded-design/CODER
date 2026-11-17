@@ -17,6 +17,7 @@
 #include <nlohmann/json.hpp>
 
 #include "cf/common/process.hpp"
+#include "cf/gates/architecture.hpp"
 #include "cf/llm/client.hpp"
 #include "cf/orch/refiner.hpp"
 #include "cf/orch/session_agent_runner.hpp"
@@ -261,6 +262,8 @@ struct ExecuteOptions {
   std::optional<std::uint32_t> max_attempts_per_defect;
   std::optional<double> budget_wall_clock_hours;
   std::optional<std::uint32_t> system_validation_every_n_milestones;
+  // Config-driven architecture/layering rules (gates.architecture).
+  std::vector<cf::gates::ArchitectureRule> architecture_rules;
   std::map<std::string, double, std::less<>> budget_usd_per_role;
   std::map<std::string, std::uint64_t, std::less<>> budget_tokens_per_role;
   // Waiting-state deadlines in business days (design section 12.1); a plan's
